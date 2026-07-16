@@ -1,0 +1,12 @@
+flowchart LR
+    A(["Needs assessment<br/>stop if one-off"]) --> B["Personnel questions<br/>role · rights · no-gos"]
+    B --> C["Name & personality<br/>3 candidates"]
+    C --> D(["Personnel file created"])
+
+    classDef start fill:#e8f0fe,stroke:#4c6ef5,stroke-width:1.5px,color:#1c2b4a
+    classDef step fill:#f5f0ff,stroke:#8a63d2,stroke-width:1.5px,color:#2c1a4a
+    classDef done fill:#e6f9f0,stroke:#2f9e64,stroke-width:1.5px,color:#0b3d24
+    class A start
+    class B,C step
+    class D done
+    linkStyle default stroke:#8a8a8a,stroke-width:1.3px

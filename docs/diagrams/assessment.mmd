@@ -1,0 +1,17 @@
+flowchart LR
+    A(["Personnel file"]) --> B["Panel<br/>security · expertise · brand"]
+    B --> C{"Findings report<br/>🛑 · ⚠️ · ℹ️"}
+    C -- clear --> D(["Probation"])
+    C -. "🛑 open" .-> E["Fix & re-examine"]
+
+    classDef start fill:#e8f0fe,stroke:#4c6ef5,stroke-width:1.5px,color:#1c2b4a
+    classDef step fill:#f5f0ff,stroke:#8a63d2,stroke-width:1.5px,color:#2c1a4a
+    classDef decision fill:#fff4e0,stroke:#d99a2b,stroke-width:1.5px,color:#4a3200
+    classDef done fill:#e6f9f0,stroke:#2f9e64,stroke-width:1.5px,color:#0b3d24
+    classDef exception fill:#fdecec,stroke:#d64545,stroke-width:1.5px,color:#4a0e0e
+    class A start
+    class B step
+    class C decision
+    class D done
+    class E exception
+    linkStyle default stroke:#8a8a8a,stroke-width:1.3px
