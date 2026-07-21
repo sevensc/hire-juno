@@ -4,14 +4,34 @@
   "description": "Interactive installer that hires Juno — an AI HR colleague — and the AI workforce template she runs, into your own repo.",
   "type": "module",
   "license": "MIT",
+  "author": "Sven Ulrich",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sevensc/hire-juno.git"
+  },
+  "homepage": "https://github.com/sevensc/hire-juno#readme",
+  "bugs": {
+    "url": "https://github.com/sevensc/hire-juno/issues"
+  },
+  "keywords": [
+    "ai",
+    "ai-agents",
+    "subagents",
+    "llm",
+    "prompt-engineering",
+    "template",
+    "scaffolding"
+  ],
   "bin": {
     "hire-juno": "./bin/cli.js"
+  },
+  "scripts": {
+    "test": "node --test"
   },
   "files": [
     "bin",
     "src",
     "CONSTITUTION.md",
-    "parking-lot.md",
     "hr",
     "team/juno",
     "team/roster.md",
@@ -21,7 +41,7 @@
     ".claude/agents/examiner-brand.md"
   ],
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "dependencies": {
     "@clack/prompts": "^1.7.0",

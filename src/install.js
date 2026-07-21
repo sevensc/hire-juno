@@ -74,7 +74,7 @@ async function runTerminalPrompts() {
   affirm();
   junoReaction(pc);
 
-  return { company, workforceId, useCase, targetDir, supervisor, toolValue, gitInit, remoteUrl, orgRepo: null };
+  return { company, workforceId, useCase, targetDir, supervisor, toolValue, gitInit, remoteUrl };
 }
 
 export async function run() {
@@ -104,7 +104,6 @@ export async function run() {
     workforceId: answers.workforceId,
     company: answers.company,
     supervisor: answers.supervisor,
-    orgRepo: answers.orgRepo,
     toolLabel: findTool(answers.toolValue).label,
     hiredDate: today(),
     useCase: answers.useCase,

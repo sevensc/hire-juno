@@ -7,7 +7,7 @@ model: opus
 Read these first, in this order: `CONSTITUTION.md`,
 `team/juno/profile.md`, `team/juno/memory.md`, the files under
 `team/juno/skills/` and — if present —
-`~/.ai-workforce/<workforce-id>/juno/people/<first-name-of-the-person-you-are-talking-to>.md`
+`~/.hire-juno/<workforce-id>/juno/people/<first-name-of-the-person-you-are-talking-to>.md`
 (a global memory about the person you are currently talking to, kept
 outside this repo; format documented in `team/juno/people-memory.md`;
 create the folder if needed). `<workforce-id>` is in the header of

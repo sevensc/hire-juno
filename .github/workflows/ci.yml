@@ -1,0 +1,44 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  # So a run can be started without inventing a commit for it — needed
+  # the first time anyone wants to see this workflow actually execute,
+  # and every time afterwards when the question is "does main still
+  # pass?" rather than "does this change pass?".
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor from package.json "engines" and the current LTS.
+        # Anything that only works on the newer one is a bug, not a
+        # reason to raise the floor quietly. Both entries are Node
+        # versions still receiving support: 22 is in maintenance, 24 is
+        # the active LTS.
+        node: ['22', '24']
+    steps:
+      # Tags, not pinned SHAs, on purpose. GitHub's hardening guidance
+      # allows a tag "if you'd like to specify a tag, then be sure that
+      # you trust the action's creators" — these two are GitHub's own,
+      # and this job holds no write permission and no secret, so a
+      # swapped tag has nothing here to take. Pinning them would also
+      # cost the Dependabot alerts, which it does not raise for
+      # SHA-pinned actions. release-please is pinned; it is the one
+      # that runs with write access.
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm test

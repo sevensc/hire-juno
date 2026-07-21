@@ -1,7 +1,7 @@
 # Template: GitHub ticket
 
-Applies to every ticket a colleague opens in the product repo
-(`<your-org>/<your-repo>`). The structure is identical for all
+Applies to every ticket a colleague opens in a product repo — whichever
+repo their work actually lands in, not this one. The structure is identical for all
 colleagues — the prose inside it deliberately is not: everyone writes
 in their own voice (see `Personality` in their personnel file), not in
 a generic AI-assistant tone. You should be able to tell who opened a

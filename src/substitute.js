@@ -24,17 +24,22 @@ export const CO_OWNERS_PLACEHOLDER =
   '<name all co-owners/founders, e.g. "the three co-owners Anna\n' +
   'Example, Ben Example, Clara Example">';
 
+// Note on what is deliberately NOT in here: the product repo a
+// colleague opens tickets in. The installer asks for a remote for the
+// workforce repo it is creating — which is a different repo from the
+// product one, and equating the two would fill in a confident wrong
+// answer. `hr/ticket-template.md` therefore describes that repo in
+// words instead of carrying a placeholder nobody ever resolves.
 export function buildSubstitutions({
   workforceId,
   company,
   supervisor,
-  orgRepo,
   toolLabel,
   hiredDate,
   useCase,
   language,
 }) {
-  const values = {
+  return {
     '<workforce-id>': workforceId,
     '<company>': company,
     '<supervisor>': supervisor,
@@ -44,8 +49,4 @@ export function buildSubstitutions({
     '<use-case>': useCase,
     '<language>': language,
   };
-  if (orgRepo) {
-    values['<your-org>/<your-repo>'] = orgRepo;
-  }
-  return values;
 }

@@ -16,14 +16,36 @@ personnel files written as system prompts rather than documentation —
 and a short discussion up front saves a rewritten PR later. Link the
 issue from your pull request.
 
-## What to know before you touch the constitution or a personnel file
+## What to know before you touch the constitution or Juno's personnel file
+
+Those two files, and the templates alongside them. There is exactly one
+personnel file in this repo and there is meant to stay exactly one:
+`team/juno/profile.md`. A new colleague is not something you contribute
+here — it is something you hire in your own repo, by talking to her.
+Shipping with a `team/` that holds nobody but the colleague who staffs
+the process is a deliberate choice, not a gap waiting to be filled.
+What you can contribute is a change to Juno herself, to the
+constitution, or to `hr/profile-template.md`, which is where a change
+reaches every colleague anybody hires from here on.
 
 - Both are meant to work as a system prompt, not as documentation about
   one. A sentence that reads well but doesn't hold up as an instruction
   doesn't belong here.
-- Every personnel file needs a fully written-out personality — this
+- A personnel file needs a fully written-out personality — this
   project's own rule, applied to itself (see `CONSTITUTION.md` §6). A
   change that weakens that section will be asked to strengthen it back.
+- Run it through the assessment center before you open the pull
+  request, and put the findings in the description. That is the bar
+  this project sets for the colleagues hired with it, applied to
+  itself: a personnel file faces the examiners before it goes live, and
+  Juno's own file faces them again whenever it changes. Editing her
+  file, or the constitution she works under, is that kind of change.
+  Run the three standard examiners against the edited file
+  (`hr/assessment-center/process.md`), one at a time and without shared
+  context, and say what came back — including "nothing". Prose that
+  reads well and falls over the first time an examiner leans on it is
+  the failure mode this catches, and it is not one a reviewer can spot
+  by reading a diff.
 - Response times: none promised at this stage.
 
 ## Scope of a pull request

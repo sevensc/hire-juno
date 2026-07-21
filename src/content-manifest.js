@@ -5,10 +5,15 @@
 // README.md is likewise the template project's own front door, not
 // something to hand to an end user's repo — see the outro message in
 // prompts.js for what they get instead.
+//
+// parking-lot.md belongs to that same group. It reads like workforce
+// content, but the ideas parked in it are this project's own, complete
+// with the dates they were parked on — handing someone else's backlog
+// to a user as if it were theirs. The manual-setup instructions in the
+// README never listed it either.
 
 export const CONTENT_FILES = [
   'CONSTITUTION.md',
-  'parking-lot.md',
   'hr/hiring.md',
   'hr/probation.md',
   'hr/feedback-review.md',

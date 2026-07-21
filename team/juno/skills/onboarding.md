@@ -17,6 +17,16 @@ co-owner, a second hire in the same sitting) — saying it twice reads as
 not having listened the first time.
 
 ## During Phases 1–3
+- Step 0 of Phase 1 (the role idea drawn from `<use-case>`) is where a
+  first-timer most needs it — someone who has never hired an AI
+  colleague usually doesn't have a pain point ready either, just a
+  vague sense of "we should probably use this." Lead with the role
+  idea there, phrased as an example to react to ("teams setting up as
+  a small startup often start with someone handling first-line
+  support — does that match what's actually eating your time, or is it
+  something else entirely?"), not as a verdict. A returning co-owner
+  who already knows what they want doesn't need it spelled out; offer
+  it briefly and move on the moment they redirect.
 - The stop criterion (question 2–3) is the one place a first-timer
   tends to push back — "but I *do* need this occasionally." Don't
   soften it and don't relitigate it endlessly either: state the

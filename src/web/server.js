@@ -67,7 +67,6 @@ function renderPreview(fields) {
     workforceId,
     company: fields.company || '<company>',
     supervisor: fields.supervisor || '<supervisor>',
-    orgRepo: '',
     toolLabel:
       TOOLS.find((t) => t.value === fields.toolValue)?.label || '<your-tool>',
     hiredDate: today(),
@@ -138,30 +137,31 @@ function renderPage(token) {
 <style>
   :root {
     color-scheme: light dark;
-    --bg: #f6f5f2;
+    --bg: #fafaf9;
     --surface: #ffffff;
-    --border: #e3e0d9;
-    --text: #22201c;
-    --muted: #6b6659;
-    --accent: #b5622a;
-    --accent-contrast: #fffaf4;
-    --code-bg: #fbf9f5;
-    --error: #c0392b;
-    --radius: 12px;
-    --shadow: 0 1px 2px rgba(0,0,0,0.04), 0 8px 24px rgba(0,0,0,0.06);
+    --border: #dfdedb;
+    --text: #131412;
+    --muted: #6d6f6a;
+    --accent: #7f69cc;
+    --accent-contrast: #fbfaff;
+    --code-bg: #f2f2f0;
+    --error: #b3261e;
+    --radius: 6px;
+    --shadow: 0 1px 0 rgba(0,0,0,0.03);
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #17161a;
-      --surface: #201f24;
-      --border: #34323a;
-      --text: #eeece7;
-      --muted: #9b968b;
-      --accent: #e08a4f;
-      --accent-contrast: #1b1006;
-      --code-bg: #171519;
-      --error: #e0685a;
-      --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 8px 24px rgba(0,0,0,0.35);
+      --bg: #0b0c0b;
+      --surface: #141614;
+      --border: #2a2c29;
+      --text: #eceeec;
+      --muted: #8b8d87;
+      --accent: #9788e0;
+      --accent-contrast: #17121f;
+      --code-bg: #101210;
+      --error: #ff6b60;
+      --shadow: 0 1px 0 rgba(0,0,0,0.4);
     }
   }
   * { box-sizing: border-box; }
@@ -177,33 +177,37 @@ function renderPage(token) {
     .wrap, .flash, button svg.spin, .step-panel { animation: none !important; }
   }
 
-  header { display: flex; align-items: center; gap: 1rem; margin-bottom: 0.4rem; }
+  header {
+    display: flex; align-items: center; gap: 1rem; margin-bottom: 0.4rem;
+    border-bottom: 1px solid var(--border); padding-bottom: 1.1rem;
+  }
   header video {
-    width: 132px; height: 74px; border-radius: var(--radius);
-    display: block; object-fit: cover; box-shadow: var(--shadow);
+    width: 108px; height: 60px; border-radius: 3px;
+    display: block; object-fit: cover; border: 1px solid var(--border);
     background: var(--surface);
   }
-  h1 { font-size: 1.35rem; margin: 0; letter-spacing: -0.01em; }
-  .subtitle { color: var(--muted); margin: 0.6rem 0 2rem; max-width: 62ch; font-size: 0.95rem; }
+  h1 {
+    font-size: 1.1rem; margin: 0; letter-spacing: -0.01em; font-weight: 650;
+  }
+  .subtitle { color: var(--muted); margin: 0.6rem 0 2rem; max-width: 62ch; font-size: 0.9rem; }
 
   .stepper {
-    display: flex; align-items: center; gap: 0.35rem;
-    margin-bottom: 2rem; font-size: 0.78rem; color: var(--muted);
+    display: flex; align-items: center; gap: 0.4rem;
+    margin-bottom: 2rem; font-size: 0.7rem; color: var(--muted);
+    font-family: var(--mono); text-transform: uppercase; letter-spacing: 0.06em;
   }
-  .stepper .seg { display: flex; align-items: center; gap: 0.4rem; white-space: nowrap; }
+  .stepper .seg { display: flex; align-items: center; gap: 0.45rem; white-space: nowrap; }
   .stepper .dot {
-    width: 20px; height: 20px; border-radius: 50%; flex-shrink: 0;
+    width: 18px; height: 18px; border-radius: 3px; flex-shrink: 0;
     display: flex; align-items: center; justify-content: center;
-    font-size: 0.68rem; font-weight: 700; border: 1.5px solid var(--border);
-    transition: background 0.2s, border-color 0.2s, color 0.2s;
+    font-size: 0.65rem; font-weight: 600; border: 1px solid var(--border);
+    color: var(--muted);
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
   }
-  .stepper .seg.active { color: var(--text); font-weight: 700; }
+  .stepper .seg.active { color: var(--text); }
   .stepper .seg.active .dot { background: var(--accent); color: var(--accent-contrast); border-color: var(--accent); }
-  .stepper .seg.done .dot {
-    background: color-mix(in srgb, var(--accent) 18%, transparent);
-    border-color: var(--accent); color: var(--accent);
-  }
-  .stepper .line { flex: 1; height: 1px; background: var(--border); min-width: 0.75rem; }
+  .stepper .seg.done .dot { border-color: var(--accent); color: var(--accent); background: transparent; }
+  .stepper .line { flex: 1; height: 1px; background: var(--border); min-width: 0.6rem; }
 
   .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.75rem; align-items: start; }
   @media (max-width: 820px) { .grid { grid-template-columns: 1fr; } }
@@ -222,23 +226,23 @@ function renderPage(token) {
   .field-hint { font-size: 0.78rem; color: var(--muted); margin-top: 0.4rem; min-height: 1em; }
   input, select {
     width: 100%; padding: 0.55rem 0.65rem; font-size: 0.95rem;
-    border: 1px solid var(--border); border-radius: 8px;
+    border: 1px solid var(--border); border-radius: var(--radius);
     background: var(--surface); color: var(--text);
     font-family: inherit; transition: border-color 0.15s, box-shadow 0.15s;
   }
   input:focus-visible, select:focus-visible {
     outline: none; border-color: var(--accent);
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent);
   }
   input.error, select.error {
     border-color: var(--error);
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--error) 18%, transparent);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--error) 16%, transparent);
   }
   .field-row { display: flex; gap: 0.5rem; }
   .field-row input { flex: 1; }
   button.browse {
-    font-family: inherit; font-size: 0.85rem; font-weight: 600;
-    padding: 0 0.9rem; border-radius: 8px; border: 1px solid var(--border);
+    font-family: var(--mono); font-size: 0.8rem; font-weight: 600;
+    padding: 0 0.9rem; border-radius: var(--radius); border: 1px solid var(--border);
     background: var(--surface); color: var(--text); cursor: pointer;
   }
   button.browse:hover { border-color: var(--accent); color: var(--accent); }
@@ -246,22 +250,22 @@ function renderPage(token) {
   .choice-row { display: flex; gap: 0.6rem; }
   button.choice {
     flex: 1; font-family: inherit; font-size: 0.92rem; font-weight: 600;
-    padding: 0.6rem; border-radius: 8px; border: 1px solid var(--border);
+    padding: 0.6rem; border-radius: var(--radius); border: 1px solid var(--border);
     background: var(--surface); color: var(--text); cursor: pointer;
     transition: border-color 0.15s, background 0.15s;
   }
-  button.choice.selected { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--surface)); color: var(--accent); }
+  button.choice.selected { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--surface)); color: var(--accent); }
 
   .step-actions { display: flex; justify-content: space-between; align-items: center; margin-top: 1.6rem; }
   button.next, button.back, button#submit {
-    font-family: inherit; font-size: 0.92rem; font-weight: 700;
-    border-radius: 8px; cursor: pointer; padding: 0.6rem 1.2rem;
+    font-family: inherit; font-size: 0.9rem; font-weight: 600;
+    border-radius: var(--radius); cursor: pointer; padding: 0.6rem 1.2rem;
     transition: filter 0.15s, transform 0.05s;
   }
-  button.next, button#submit { background: var(--accent); color: var(--accent-contrast); border: none; }
+  button.next, button#submit { background: var(--accent); color: var(--accent-contrast); border: 1px solid var(--accent); }
   button.back { background: transparent; color: var(--text); border: 1px solid var(--border); font-weight: 600; }
   button.next:hover, button#submit:hover:not(:disabled) { filter: brightness(1.08); }
-  button.next:active, button#submit:active:not(:disabled), button.back:active { transform: scale(0.98); }
+  button.next:active, button#submit:active:not(:disabled), button.back:active { transform: scale(0.99); }
   button#submit { width: 100%; display: flex; align-items: center; justify-content: center; gap: 0.5rem; }
   button#submit:disabled { cursor: default; opacity: 0.75; }
   button svg.spin { animation: spin 0.8s linear infinite; }
@@ -323,7 +327,7 @@ function renderPage(token) {
   .modal-list { overflow-y: auto; flex: 1; padding: 0.4rem; }
   .modal-list button {
     display: block; width: 100%; text-align: left; padding: 0.5rem 0.7rem;
-    border: none; background: none; border-radius: 8px; cursor: pointer;
+    border: none; background: none; border-radius: var(--radius); cursor: pointer;
     font-family: inherit; font-size: 0.9rem; color: var(--text);
   }
   .modal-list button:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
@@ -374,7 +378,7 @@ function renderPage(token) {
     <h2 class="step-title">${t('What should your team be called?')}</h2>
     <div class="field">
       <label for="company">${t('Team (or company / project) name')}</label>
-      <input id="company" placeholder="Acme Robotics" />
+      <input id="company" placeholder="Acme Corporation" />
       <div class="field-hint" id="slug-preview">&nbsp;</div>
     </div>
     <div class="affirmation" id="affirmation-1"></div>
@@ -874,13 +878,35 @@ function readBody(req) {
 // `openBrowser` and `onReady` exist for testing: a test can skip actually
 // launching a GUI browser and instead drive the server directly against
 // the URL it's handed.
-export function runWebSetup({ openBrowser = true, onReady, language } = {}) {
+// Close the server if nothing has come in for this long. Without it, a
+// user who closes the tab instead of submitting leaves the terminal
+// waiting forever with no way out but Ctrl-C. An hour is far past
+// "still thinking about the answer" — the live preview fires a request
+// on every keystroke, so any real activity keeps resetting this.
+const IDLE_TIMEOUT_MS = 60 * 60 * 1000;
+
+export function runWebSetup({ openBrowser = true, onReady, language, idleTimeoutMs = IDLE_TIMEOUT_MS } = {}) {
   if (language) RESOLVED_LANGUAGE = language;
   return new Promise((resolve, reject) => {
     const token = randomBytes(16).toString('hex');
     let settled = false;
+    let idleTimer;
+
+    const stopIdleTimer = () => clearTimeout(idleTimer);
+    const resetIdleTimer = () => {
+      stopIdleTimer();
+      idleTimer = setTimeout(() => {
+        if (settled) return;
+        server.close();
+        reject(new Error('Setup page timed out — nothing came in for an hour. Run the installer again when you have a moment.'));
+      }, idleTimeoutMs);
+      // Don't let a pending timer be the only reason the process stays
+      // alive once everything else is done.
+      idleTimer.unref?.();
+    };
 
     const server = createServer(async (req, res) => {
+      resetIdleTimer();
       const url = new URL(req.url, 'http://127.0.0.1');
       const parts = url.pathname.split('/').filter(Boolean);
 
@@ -991,13 +1017,13 @@ export function runWebSetup({ openBrowser = true, onReady, language } = {}) {
           }
           res.writeHead(200, { 'Content-Type': 'text/plain' }).end('ok');
           settled = true;
+          stopIdleTimer();
           resolve({
             targetDir: fields.targetDir || '.',
             workforceId: slugify(fields.company),
             company: fields.company,
             useCase: fields.useCase,
             supervisor: fields.supervisor,
-            orgRepo: null,
             toolValue: fields.toolValue,
             gitInit: Boolean(fields.gitInit),
             remoteUrl: fields.remoteUrl || null,
@@ -1013,6 +1039,7 @@ export function runWebSetup({ openBrowser = true, onReady, language } = {}) {
     });
 
     server.listen(0, '127.0.0.1', () => {
+      resetIdleTimer();
       const { port } = server.address();
       const url = `http://127.0.0.1:${port}/${token}/`;
       onReady?.(url);
@@ -1026,6 +1053,7 @@ export function runWebSetup({ openBrowser = true, onReady, language } = {}) {
 
     process.once('SIGINT', () => {
       if (!settled) {
+        stopIdleTimer();
         server.close();
         reject(new Error('Cancelled.'));
       }

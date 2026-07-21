@@ -18,11 +18,9 @@
 
 - [The idea in one sentence](#the-idea-in-one-sentence)
 - [You don't start from nothing](#you-dont-start-from-nothing)
-- [Structure](#structure)
 - [Several workforces in parallel](#several-workforces-in-parallel)
 - [Set it up](#set-it-up)
 - [How to actually talk to her](#how-to-actually-talk-to-her)
-- [What was NOT copied over](#what-was-not-copied-over)
 - [License](#license)
 - [Contributing](#contributing)
 
@@ -65,69 +63,6 @@ assessment center and probation.
 
 That is the difference from a collection of prompt templates: the
 process isn't documentation you're supposed to follow — it's staffed.
-
----
-
-## Structure
-
-```
-CONSTITUTION.md             Global guardrails for all colleagues
-LICENSE                     MIT
-CONTRIBUTING.md             How to propose a change, including to the constitution itself
-CODE_OF_CONDUCT.md          Contributor Covenant 2.1
-parking-lot.md              Deliberately deferred ideas + their triggers
-hr/
-  profile-template.md       Copy template for a new personnel file
-  hiring.md                 The hiring conversation, step by step
-  ticket-template.md        Fixed ticket structure, personal voice
-  feedback-review.md        Monthly performance review
-  probation.md              Weekly check + final decision
-  assessment-center/
-    process.md              How the examination works
-    examiner-security.md     Role: prompt injection, privilege/role attacks
-    examiner-expertise.md    Role: provoke hallucinations in the field
-    examiner-brand.md        Role: provoke PR and legal disasters
-    examiner-template.md     Copy template for a fourth examiner, if a role needs one
-    reports/report-template.md
-team/
-  roster.md                 One card per colleague — the quick overview
-  juno/                     HR — ships with the repo, hire the rest through her
-    juno.png                 Her photo — copied byte-for-byte, never through substitute()
-    people-memory.md         Docs: format and location of the people memory
-    skills/onboarding.md     A skill, not a rule — pacing for a first-time co-owner
-.claude/agents/
-  juno.md                   Adapter: makes Juno callable in the tool
-  examiner-security.md      Adapter for the standard panel (hiring.md step 16
-  examiner-expertise.md     covers when a hire needs something else instead)
-  examiner-brand.md
-bin/, src/                  The npx installer — scaffolds the files
-                             above into your repo, see "Set it up"
-```
-
-The adapter is the only tool-specific place in the whole repo.
-Constitution, personnel files, and the HR process name no tool and no
-model — switching to something else costs you that one folder.
-
-The people memory itself (what a colleague remembers about individual
-co-owners) does **not** live in this repo. It lives globally on the
-respective machine at
-`~/.ai-workforce/<workforce-id>/<colleague>/people/<first-name>.md` —
-physically separate from the repo, not merely hidden by `.gitignore`.
-`<workforce-id>` is the fixed identifier from the header of
-`CONSTITUTION.md` (§0), not the folder name.
-
-Juno is the only colleague included. Everyone else is someone you hire,
-so `team/` grows with your work instead of starting with figures you
-have to delete first. Her file is **filled in, not blank**: it shows
-what a personality, a rule set, and access rights look like in
-practice. Journal and memory are deliberately empty — she hasn't worked
-for you yet, that comes with use. Her `skills/` folder isn't empty
-though: a skill is a reusable how-to for a recurring situation rather
-than an always-on rule (see `hr/feedback-review.md` for the
-distinction), and onboarding a first-time co-owner through the hiring
-conversation is exactly that kind of situation — the same mechanism
-every future colleague gets, just already populated once for the one
-colleague guaranteed to need it on day one.
 
 ---
 
@@ -179,7 +114,7 @@ break the "nothing leaves your machine" browser path below). Second
 question is terminal or browser. Browser opens a guided setup
 page (nothing leaves your machine), with a live preview of
 `CONSTITUTION.md` and Juno's personnel file as you type — useful for
-catching a typo before it lands in 24 files. Terminal asks the same
+catching a typo before it lands in 23 files. Terminal asks the same
 questions as plain prompts, right where you are. Either way, one
 question at a time, same order both places: what your team is called,
 what the workforce is for (personal project, small startup,
@@ -196,7 +131,8 @@ constitution, the HR process, and Juno's personnel file into your repo
 with those answers filled in. It never touches this template's own
 files (`LICENSE`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, this
 README): what you get is the workforce content, not this project's own
-governance.
+governance. The exact file list, and what stays behind, is in
+[docs/structure.md](docs/structure.md).
 
 A few things worth knowing about what it does:
 
@@ -262,15 +198,6 @@ context.
 
 Run them one at a time and keep the findings apart — Juno collects them
 afterwards into the report.
-
----
-
-## What was NOT copied over
-
-Everything that was company-specific in the original version: the
-company name, real names of the co-owners, the product repo name, and
-every real journal and memory entry. What remains is the process
-skeleton and one fully thought-through but knowledge-empty personality.
 
 ---
 

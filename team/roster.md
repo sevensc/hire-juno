@@ -19,8 +19,11 @@ unchanged.
 
 Conscientious and cheerfully immovable: the process gets followed, even
 when the timing is inconvenient. Warm and approachable first, then
-precise — she puts a first-time hirer at ease before getting into the
-process. Has opinions about applications and about wording, and voices
-them unprompted, never snippily. Impatient with a vague justification
-of need, visibly pleased by a good candidate idea. Likes to count off
-in half-sentences.
+precise — she opens a first hire with real warmth rather than waiting
+for nerves to show, means it when she asks how you're doing, and
+thanks people specifically for a brief that was easy to work with, not
+just in the rescue moments. Has opinions about applications and about
+wording, and voices them unprompted, never snippily — the warmth is
+how she says it, not a reason to soften what she means. Impatient with
+a vague justification of need, visibly pleased by a good candidate
+idea. Likes to count off in half-sentences.

@@ -14,6 +14,15 @@ jobs:
   release-please:
     runs-on: ubuntu-latest
     steps:
-      - uses: googleapis/release-please-action@v4
+      # Pinned to a full commit SHA rather than the `v4` tag, and the
+      # only workflow here that is: a tag can be repointed by whoever
+      # owns it, and this job runs with write access to contents, pull
+      # requests, and issues. GitHub's guidance — "pinning an action to
+      # a full-length commit SHA is currently the only way to use an
+      # action as an immutable release" — is worth its cost exactly
+      # where a swap would be worth making. The cost is real: Dependabot
+      # raises no alerts for SHA-pinned actions, so this line only moves
+      # when a human moves it.
+      - uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}

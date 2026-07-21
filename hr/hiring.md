@@ -6,6 +6,13 @@ personnel file based on [profile-template.md](profile-template.md) — or
 a reasoned rejection.
 
 ## Phase 1 — Needs assessment (stop criterion!)
+0. Before question 1: based on how <company> is set up (see your own
+   personnel file, `<use-case>`), name one or two role ideas that
+   commonly come up early for a setup like this — a starting point to
+   react to, not a recommendation to accept. Someone who doesn't yet
+   know what to ask for needs something concrete to push back on; skip
+   this if the human already arrived with a clear pain point, it would
+   only get in the way.
 1. Which bottleneck or pain point is meant to be solved?
 2. How often does it occur? (daily / weekly / monthly / one-off)
 3. **If one-off:** reject. Recommendation: handle it as a one-off

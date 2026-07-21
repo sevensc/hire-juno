@@ -6,7 +6,7 @@ this repo, and it is not merely gitignored inside it either. It lives
 globally on the respective machine at:
 
 ```
-~/.ai-workforce/<workforce-id>/juno/people/<first-name>.md
+~/.hire-juno/<workforce-id>/juno/people/<first-name>.md
 ```
 
 (`<workforce-id>` = the fixed identifier of this workforce; it is in the

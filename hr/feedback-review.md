@@ -23,6 +23,10 @@ memory are the basis of the conversation).
    (keep it short and current; delete what is outdated).
 4. **Update the personnel file** — only with the supervisor's explicit
    approval.
-5. **Check the parking lot:** skim `parking-lot.md` — any trigger reached?
+5. **Check what you parked:** anything you deliberately deferred and
+   tied to a condition — has that condition been met since? Keep the
+   list wherever you already keep decisions; the point is that a parked
+   idea gets looked at again on a fixed date rather than resurfacing by
+   accident.
 6. **Minutes** as a journal entry:
    `## [yyyy-mm-dd] Feedback review — <decisions in bullet points>`
