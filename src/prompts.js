@@ -1,13 +1,14 @@
-import { existsSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 
 import {
+  autocomplete,
   cancel,
   confirm,
   intro,
   isCancel,
   log,
   outro,
-  path,
   select,
   spinner,
   text,
@@ -110,20 +111,54 @@ export async function askUseCase() {
   return custom.trim();
 }
 
+// Existing subdirectories matching what's typed so far — same listing
+// logic @clack/prompts' own `path()` widget uses (an entry qualifies
+// once its full path starts with the current input), minus the join()
+// normalization bug that widget has with a relative starting value
+// (path.join('.', 'src') is 'src', not './src', so a leading '.' input
+// silently dropped every non-dotfile entry). We always start from an
+// absolute path (see initialUserInput below), so that never comes up
+// here.
+function matchingSubdirs(input) {
+  let dir;
+  try {
+    dir = existsSync(input) && lstatSync(input).isDirectory() && input.endsWith('/') ? input : dirname(input);
+  } catch {
+    return [];
+  }
+  const prefix = input.length > 1 && input.endsWith('/') ? input.slice(0, -1) : input;
+  try {
+    return readdirSync(dir)
+      .map((name) => join(dir, name))
+      .filter((candidate) => candidate.startsWith(prefix) && lstatSync(candidate).isDirectory());
+  } catch {
+    return [];
+  }
+}
+
 export async function askTargetDir() {
-  return ask(path, {
+  return ask(autocomplete, {
     message: t('Where should your team live? (a folder — tab-completes)'),
-    directory: true,
-    // @clack/prompts' `path()` widget filters its listing by checking
-    // whether each entry's *joined* path starts with the current input
-    // (`options()` in @clack/prompts/dist/index.mjs). Node's path.join
-    // normalizes away a leading "./", so join('.', 'src') is 'src', not
-    // './src' — with initialValue '.' that entry no longer starts with
-    // '.' and gets filtered out. Only dotfiles ('.git', ...) survived,
-    // so the picker looked all but empty in the actual working
-    // directory. An absolute path doesn't hit that normalization, so
-    // pass one instead of the relative shorthand.
-    initialValue: process.cwd(),
+    initialUserInput: process.cwd(),
+    maxItems: 5,
+    options() {
+      const input = this.userInput;
+      if (input === '') return [];
+      const matches = matchingSubdirs(input);
+      // `path()` from @clack/prompts only ever accepts one of the
+      // listed matches — type a name that doesn't exist yet (a new
+      // team's folder, most of the time) and there's nothing to
+      // select, so Enter submits nothing and the prompt just re-shows
+      // "Please select a path" forever. Offering the typed value
+      // itself as a candidate is what actually lets a new folder name
+      // through; confirmCreateDir() asks before it gets created.
+      const normalized = input.length > 1 && input.endsWith('/') ? input.slice(0, -1) : input;
+      if (!matches.includes(input) && !matches.includes(normalized)) matches.push(input);
+      return matches.map((value) => ({ value }));
+    },
+    validate(value) {
+      if (!value) return t('Please select a path');
+    },
   });
 }
 
