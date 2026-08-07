@@ -112,7 +112,16 @@ export async function askTargetDir() {
   return ask(path, {
     message: t('Where should your team live? (a folder — tab-completes)'),
     directory: true,
-    initialValue: '.',
+    // @clack/prompts' `path()` widget filters its listing by checking
+    // whether each entry's *joined* path starts with the current input
+    // (`options()` in @clack/prompts/dist/index.mjs). Node's path.join
+    // normalizes away a leading "./", so join('.', 'src') is 'src', not
+    // './src' — with initialValue '.' that entry no longer starts with
+    // '.' and gets filtered out. Only dotfiles ('.git', ...) survived,
+    // so the picker looked all but empty in the actual working
+    // directory. An absolute path doesn't hit that normalization, so
+    // pass one instead of the relative shorthand.
+    initialValue: process.cwd(),
   });
 }
 
