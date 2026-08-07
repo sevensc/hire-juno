@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 import pc from 'picocolors';
 
 import { t } from './i18n.js';
-import { junoReaction, playJunoIntro } from './juno-ascii.js';
+import { playJunoIntro } from './juno-ascii.js';
 import {
   affirm,
   askGitInit,
@@ -52,27 +52,21 @@ function setUpGit(targetDir, remoteUrl) {
 async function runTerminalPrompts() {
   const { company, workforceId } = await askTeamName();
   affirm();
-  junoReaction(pc);
 
   const useCase = await askUseCase();
   affirm();
-  junoReaction(pc);
 
   const targetDir = await askTargetDir();
   affirm();
-  junoReaction(pc);
 
   const supervisor = await askSupervisor();
   affirm();
-  junoReaction(pc);
 
   const toolValue = await askToolChoice(TOOLS);
   affirm();
-  junoReaction(pc);
 
   const { gitInit, remoteUrl } = await askGitInit();
   affirm();
-  junoReaction(pc);
 
   return { company, workforceId, useCase, targetDir, supervisor, toolValue, gitInit, remoteUrl };
 }

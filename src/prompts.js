@@ -71,9 +71,9 @@ export async function chooseMode() {
 
 // One question, one field, in a fixed order: team name,
 // use case, folder, supervisor, tool, git. Each is its own function
-// instead of one big runPrompts() so install.js can weave
-// affirm()/junoReaction() between them without this file knowing
-// anything about the terminal art — that stays install.js's job.
+// instead of one big runPrompts() so install.js can weave affirm()
+// between them without this file knowing anything about the terminal
+// art — that stays install.js's job.
 
 export async function askTeamName() {
   const name = await ask(text, {
