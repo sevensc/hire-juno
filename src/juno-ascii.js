@@ -254,15 +254,3 @@ export async function playJunoIntro(pc) {
   await redraw(JUNO_WINK_ANSI, JUNO_WINK_PLAIN, 260);
   await redraw(JUNO_NEUTRAL_ANSI, JUNO_NEUTRAL_PLAIN, 0);
 }
-
-// The "Juno does something" beat after each wizard question — printed
-// once as plain scrollback, not redrawn in place. Deliberately not
-// another full playJunoIntro(): that runs once as the greeting, this
-// runs after every answer, and replaying a 7-stage animation five
-// times in a row would be noise, not a reaction. No-op for non-TTY
-// output for the same reason the intro skips it — nothing sensible to
-// print without a real terminal to render it in.
-export function junoReaction(pc) {
-  if (!process.stdout.isTTY) return;
-  paint(pc.isColorSupported ? JUNO_WINK_ANSI : JUNO_WINK_PLAIN);
-}
