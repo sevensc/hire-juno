@@ -16,6 +16,7 @@ import {
   askToolChoice,
   askUseCase,
   chooseMode,
+  confirmCreateDir,
   confirmOverwrite,
   printOutro,
   showIntro,
@@ -92,6 +93,7 @@ export async function run() {
     answers = await runTerminalPrompts();
   }
 
+  await confirmCreateDir(resolve(answers.targetDir));
   await confirmOverwrite(findCollisions(answers.targetDir, answers.toolValue));
 
   const substitutions = buildSubstitutions({

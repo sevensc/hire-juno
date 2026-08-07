@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs';
+
 import {
   cancel,
   confirm,
@@ -168,6 +170,20 @@ export async function askGitInit() {
 // Shared by both the terminal and the browser path: the browser can tell
 // you what it would overwrite, but the confirmation itself happens back
 // in the terminal you're actually running the installer from.
+// The path picker (askTargetDir) and the browser's free-text field both
+// accept a folder that doesn't exist yet — scaffold()'s own recursive
+// mkdir would then create it silently while writing the first file. Ask
+// once, so a typo in the folder name doesn't quietly leave a new folder
+// lying around with no chance to back out.
+export async function confirmCreateDir(targetDir) {
+  if (existsSync(targetDir)) return;
+  const create = await ask(confirm, {
+    message: t('"{dir}" doesn\'t exist yet — create it?', { dir: targetDir }),
+    initialValue: true,
+  });
+  if (!create) bail();
+}
+
 export async function confirmOverwrite(collisions) {
   if (collisions.length === 0) return;
   const proceed = await ask(confirm, {
