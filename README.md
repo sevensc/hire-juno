@@ -13,7 +13,7 @@
 <p align="center"><code>npx github:sevensc/hire-juno</code></p>
 
 <p align="center">
-  <img src="team/juno/juno.png" alt="Juno" width="240">
+  <img src="team/juno/juno.png" alt="Juno" width="480">
 </p>
 
 ---
