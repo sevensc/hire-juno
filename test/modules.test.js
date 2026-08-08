@@ -29,10 +29,23 @@ function collectModules(dir) {
   return found;
 }
 
-const modules = collectModules(join(PACKAGE_ROOT, 'src'));
+// chat/server sits alongside src/ for the same reason: it's the other
+// place shipped code imports runtime dependencies (`ws`, `open`) that a
+// pure node:* test never touches. chat/public isn't in here — that's
+// browser code, not Node module code, and would just fail to import.
+// shared/ is the small third tree src/install.js and chat/server/
+// index.js both import from without importing each other (see
+// shared/workforceRegistry.js's own comment on why it lives there) —
+// shipped the same way (package.json's own "files"), so it gets the
+// same load coverage.
+const modules = [
+  ...collectModules(join(PACKAGE_ROOT, 'src')),
+  ...collectModules(join(PACKAGE_ROOT, 'chat', 'server')),
+  ...collectModules(join(PACKAGE_ROOT, 'shared')),
+];
 
 test('there is something to load', () => {
-  assert.ok(modules.length > 0, 'no modules found under src/');
+  assert.ok(modules.length > 0, 'no modules found under src/ or chat/server/');
 });
 
 for (const file of modules) {
@@ -42,6 +55,8 @@ for (const file of modules) {
   });
 }
 
-// bin/cli.js is deliberately not in here: importing it calls run() and
-// the installer would sit waiting for an answer. It is two lines over
-// src/install.js, which this file does load.
+// bin/cli.js and chat/bin/chat.js are deliberately not in here:
+// importing either calls its run function and the process would sit
+// waiting on a server/prompt instead of returning. They are two lines
+// over src/install.js and chat/server/index.js, which this file does
+// load.

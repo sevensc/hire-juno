@@ -1,0 +1,318 @@
+// Chat history, kept the same way the people-memory feature already
+// keeps its own state: physically outside the repo, under
+// ~/.hire-juno/<workforce-id>/ — never committed, never even
+// gitignored-and-therefore-forgettable, just not there. See
+// workforceId.js for where <workforce-id> comes from.
+//
+// better-sqlite3 over the newer built-in `node:sqlite`: as of this
+// writing node:sqlite is a release candidate only from Node 25.7.0 —
+// on the Node 22.5–22.12 range this repo's own `engines.node: ">=22"`
+// still allows, it sits behind the `--experimental-sqlite` flag, which
+// an npx-launched CLI has no reliable way to set for the user
+// (https://nodejs.org/api/sqlite.html). A synchronous
+// native dependency with prebuilt binaries for the common platforms is
+// the safer bet for something meant to "just work" after `npx`.
+
+import { mkdirSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+
+import DatabaseConstructor from 'better-sqlite3';
+
+// The id every message/adapter uses before the human ever starts a
+// second, parallel conversation with the same colleague — existing
+// rows from before `sessions` existed are implicitly this one, so
+// nothing about a pre-upgrade chat.db needs to change to keep working.
+export const DEFAULT_SESSION_ID = 'default';
+
+const SCHEMA = `
+  CREATE TABLE IF NOT EXISTS messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    colleague_id TEXT NOT NULL,
+    session_id TEXT NOT NULL DEFAULT 'default',
+    role TEXT NOT NULL,
+    text TEXT NOT NULL,
+    -- JSON array of {kind:'tool_use', name, input} | {kind:'thinking', text}
+    -- — the reply's trail (see chat/src/app.js's TrailBox), same shape the
+    -- live socket updates already carry, just collected server-side (see
+    -- bindAdapter's pendingTrails/pendingThinking) and stored alongside
+    -- the finished reply instead of only relayed and then dropped. NULL
+    -- for a message that had no trail (a plain "you" turn, a colleague's
+    -- reply with no tool calls or thinking) — not an empty JSON array, so
+    -- a legacy row (this column didn't exist before) reads back exactly
+    -- the same way.
+    trail TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS sessions (
+    id TEXT PRIMARY KEY,
+    colleague_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS channels (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    member_ids TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS channel_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel_id TEXT NOT NULL,
+    sender_id TEXT NOT NULL,
+    text TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  );
+
+  -- The Claude Agent SDK's OWN session id (its resumable transcript,
+  -- ~/.claude/projects/.../<sdk_session_id>.jsonl) for one (colleague,
+  -- our own session_id) adapter — distinct from this table's own
+  -- session_id column, which is hire-juno's parallel-conversation concept
+  -- (see the messages table). Without this, a server restart made a
+  -- colleague a stranger to her own chat history: a fresh ClaudeAdapter
+  -- meant a fresh query() with no resume option, even though the
+  -- transcript was sitting right there in "messages" (the colleague
+  -- would reply without any context mid-conversation right after a
+  -- restart). One row per (colleague_id, session_id); overwritten
+  -- every time the adapter (re-)learns its session_id from the SDK's own
+  -- 'init' system message (see adapters/claude.js).
+  CREATE TABLE IF NOT EXISTS adapter_sessions (
+    colleague_id TEXT NOT NULL,
+    session_id TEXT NOT NULL DEFAULT 'default',
+    sdk_session_id TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    PRIMARY KEY (colleague_id, session_id)
+  );
+`;
+
+// No workforce ID (CONSTITUTION.md missing or still carrying its
+// placeholder) falls back to an in-memory database rather than
+// refusing to start: the chat still works for the session, it just
+// doesn't survive a restart — and guessing a folder name instead would
+// risk silently splitting history later once the real ID is set.
+export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno') } = {}) {
+  const db = workforceId
+    ? (() => {
+        const dir = join(baseDir, workforceId, 'chat');
+        mkdirSync(dir, { recursive: true });
+        return new DatabaseConstructor(join(dir, 'chat.db'));
+      })()
+    : new DatabaseConstructor(':memory:');
+
+  db.exec(SCHEMA);
+  // A pre-existing chat.db from before sessions existed has `messages`
+  // without the column at all — CREATE TABLE IF NOT EXISTS above only
+  // covers a brand-new database. The default on the ALTER matches the
+  // one on CREATE TABLE, so a fresh DB's redundant ALTER just fails
+  // with "duplicate column" (caught, ignored) and an upgraded DB's old
+  // rows read back as DEFAULT_SESSION_ID exactly like new ones written
+  // without an explicit session.
+  try {
+    db.exec("ALTER TABLE messages ADD COLUMN session_id TEXT NOT NULL DEFAULT 'default'");
+  } catch (err) {
+    if (!/duplicate column/i.test(err.message)) throw err;
+  }
+  // Same upgrade path, same reasoning, for the trail column — a database
+  // from before it existed just gets it added, defaulting to NULL (no
+  // trail) for every row already there, exactly like a message that
+  // genuinely had none.
+  try {
+    db.exec('ALTER TABLE messages ADD COLUMN trail TEXT');
+  } catch (err) {
+    if (!/duplicate column/i.test(err.message)) throw err;
+  }
+
+  const insertStmt = db.prepare(
+    'INSERT INTO messages (colleague_id, session_id, role, text, trail) VALUES (?, ?, ?, ?, ?)'
+  );
+  const historyStmt = db.prepare(
+    'SELECT role, text, trail, created_at FROM messages WHERE colleague_id = ? AND session_id = ? ORDER BY id ASC'
+  );
+  // One row per colleague's *main* thread only (session_id = 'default')
+  // — the sidebar preview is about "what's the latest in this
+  // colleague's DM", not about parallel sessions or subagent panels,
+  // which never hit this table the same way (see selectColleague's own
+  // comment on subagent threads having no server-side history at all).
+  const lastMessagesStmt = db.prepare(
+    `SELECT colleague_id, role, text, created_at FROM messages
+     WHERE session_id = ? AND id IN (
+       SELECT MAX(id) FROM messages WHERE session_id = ? GROUP BY colleague_id
+     )`
+  );
+  const insertSessionStmt = db.prepare('INSERT INTO sessions (id, colleague_id, title) VALUES (?, ?, ?)');
+  const listSessionsStmt = db.prepare(
+    'SELECT id, colleague_id, title, created_at FROM sessions WHERE colleague_id = ? ORDER BY created_at ASC'
+  );
+  const insertChannelStmt = db.prepare(
+    'INSERT OR REPLACE INTO channels (id, name, member_ids) VALUES (?, ?, ?)'
+  );
+  const listChannelsStmt = db.prepare('SELECT id, name, member_ids FROM channels ORDER BY created_at ASC');
+  const insertChannelMessageStmt = db.prepare(
+    'INSERT INTO channel_messages (channel_id, sender_id, text) VALUES (?, ?, ?)'
+  );
+  const channelHistoryStmt = db.prepare(
+    'SELECT sender_id, text, created_at FROM channel_messages WHERE channel_id = ? ORDER BY id ASC'
+  );
+  const saveAdapterSessionStmt = db.prepare(
+    `INSERT INTO adapter_sessions (colleague_id, session_id, sdk_session_id, updated_at)
+     VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+     ON CONFLICT(colleague_id, session_id) DO UPDATE SET sdk_session_id = excluded.sdk_session_id, updated_at = excluded.updated_at`
+  );
+  const getAdapterSessionStmt = db.prepare(
+    'SELECT sdk_session_id FROM adapter_sessions WHERE colleague_id = ? AND session_id = ?'
+  );
+  const deleteMessagesStmt = db.prepare('DELETE FROM messages WHERE colleague_id = ? AND session_id = ?');
+  const deleteAdapterSessionStmt = db.prepare(
+    'DELETE FROM adapter_sessions WHERE colleague_id = ? AND session_id = ?'
+  );
+  const deleteChannelMessagesStmt = db.prepare('DELETE FROM channel_messages WHERE channel_id = ?');
+  // `%`/`_` are LIKE wildcards — escaped in the JS helper below so a
+  // literal search for e.g. "50% done" doesn't silently turn into a
+  // wildcard match. ESCAPE '\' names the escape character for SQLite;
+  // without it a `\%` in the pattern would be read as a literal
+  // backslash followed by the wildcard, not an escaped percent sign.
+  const searchMessagesStmt = db.prepare(
+    `SELECT colleague_id, role, text, created_at FROM messages
+     WHERE session_id = ? AND text LIKE ? ESCAPE '\\' ORDER BY id DESC LIMIT 50`
+  );
+  const searchChannelMessagesStmt = db.prepare(
+    `SELECT channel_id, sender_id, text, created_at FROM channel_messages
+     WHERE text LIKE ? ESCAPE '\\' ORDER BY id DESC LIMIT 50`
+  );
+
+  return {
+    persisted: Boolean(workforceId),
+    // `trail` (optional): the same [{kind:'tool_use'|'thinking', ...}]
+    // shape TrailBox renders (see chat/src/app.js and the messages
+    // table's own comment above) — stored as JSON, `null` when omitted or
+    // empty so a plain message keeps reading back exactly as before this
+    // column existed.
+    appendMessage(colleagueId, sessionId, role, text, trail) {
+      insertStmt.run(
+        colleagueId,
+        sessionId || DEFAULT_SESSION_ID,
+        role,
+        text,
+        trail?.length ? JSON.stringify(trail) : null
+      );
+    },
+    getHistory(colleagueId, sessionId) {
+      return historyStmt.all(colleagueId, sessionId || DEFAULT_SESSION_ID).map((row) => ({
+        ...row,
+        trail: row.trail ? JSON.parse(row.trail) : undefined,
+      }));
+    },
+    // colleagueId -> {role, text, createdAt} for the sidebar preview —
+    // one query for every colleague at once (the roster route needs
+    // all of them together), not N+1 per-colleague lookups.
+    getLastMessages() {
+      const map = new Map();
+      for (const row of lastMessagesStmt.all(DEFAULT_SESSION_ID, DEFAULT_SESSION_ID)) {
+        map.set(row.colleague_id, { role: row.role, text: row.text, createdAt: row.created_at });
+      }
+      return map;
+    },
+    // A session is just an alternate, independent conversation with the
+    // same colleague, for running two topics side by side rather than
+    // one thread mixing both. `DEFAULT_SESSION_ID`
+    // itself is never created through here — it exists implicitly the
+    // moment a colleague does — so this only ever holds the *extra*
+    // ones.
+    createSession(id, colleagueId, title) {
+      insertSessionStmt.run(id, colleagueId, title);
+    },
+    listSessions(colleagueId) {
+      return listSessionsStmt.all(colleagueId).map((row) => ({
+        id: row.id,
+        colleagueId: row.colleague_id,
+        title: row.title,
+        createdAt: row.created_at,
+      }));
+    },
+    // Channels are structural (who's in the group), not chat noise —
+    // worth persisting even under the same "text only, nothing fancy"
+    // rule the rest of this store follows: it's still just text and an
+    // id list, no tool-use/thinking richness to leave out.
+    createChannel(id, name, memberIds) {
+      insertChannelStmt.run(id, name, JSON.stringify(memberIds));
+    },
+    listChannels() {
+      return listChannelsStmt.all().map((row) => ({
+        id: row.id,
+        name: row.name,
+        memberIds: JSON.parse(row.member_ids),
+      }));
+    },
+    appendChannelMessage(channelId, senderId, text) {
+      insertChannelMessageStmt.run(channelId, senderId, text);
+    },
+    getChannelHistory(channelId) {
+      return channelHistoryStmt.all(channelId);
+    },
+    // See the adapter_sessions table comment above — the SDK's own
+    // resumable session id for one (colleague, our session) adapter.
+    saveAdapterSession(colleagueId, sessionId, sdkSessionId) {
+      saveAdapterSessionStmt.run(colleagueId, sessionId || DEFAULT_SESSION_ID, sdkSessionId);
+    },
+    getAdapterSession(colleagueId, sessionId) {
+      return getAdapterSessionStmt.get(colleagueId, sessionId || DEFAULT_SESSION_ID)?.sdk_session_id ?? null;
+    },
+    // The SDK-side counterpart to closing the in-memory adapter (see
+    // index.js's 'reset_context' handler, which does both together
+    // now): without this, the *next* message would call
+    // getAdapterSession() again, fetch the exact same sdk_session_id,
+    // and resume right back into whatever this reset was trying to
+    // leave behind (e.g. a session stuck on a turn that hung forever
+    // would otherwise be resumed again on the very next try). Message history is untouched; only
+    // clearHistory below also removes that.
+    clearAdapterSession(colleagueId, sessionId) {
+      deleteAdapterSessionStmt.run(colleagueId, sessionId || DEFAULT_SESSION_ID);
+    },
+    // "Chat leeren" — deliberately more than resetContext's own
+    // adapter-drop above: this removes the persisted rows too, so
+    // there's nothing left to scroll back through, not just nothing
+    // left for the colleague to remember. Also drops the adapter_sessions
+    // row for the same (colleague, session) — leaving it behind would
+    // let a later reply silently resume the SDK session whose transcript
+    // was just deleted.
+    clearHistory(colleagueId, sessionId) {
+      const sid = sessionId || DEFAULT_SESSION_ID;
+      deleteMessagesStmt.run(colleagueId, sid);
+      deleteAdapterSessionStmt.run(colleagueId, sid);
+    },
+    clearChannelHistory(channelId) {
+      deleteChannelMessagesStmt.run(channelId);
+    },
+    // Main-thread messages only (session_id = 'default'), same scope as
+    // getLastMessages above — parallel sessions and subagent panels
+    // aren't what "search everything" means here.
+    searchMessages(query) {
+      const like = `%${escapeLike(query)}%`;
+      return searchMessagesStmt.all(DEFAULT_SESSION_ID, like).map((row) => ({
+        colleagueId: row.colleague_id,
+        role: row.role,
+        text: row.text,
+        createdAt: row.created_at,
+      }));
+    },
+    searchChannelMessages(query) {
+      const like = `%${escapeLike(query)}%`;
+      return searchChannelMessagesStmt.all(like).map((row) => ({
+        channelId: row.channel_id,
+        senderId: row.sender_id,
+        text: row.text,
+        createdAt: row.created_at,
+      }));
+    },
+    close() {
+      db.close();
+    },
+  };
+}
+
+function escapeLike(text) {
+  return text.replace(/[\\%_]/g, (c) => `\\${c}`);
+}

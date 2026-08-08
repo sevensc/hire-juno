@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<!-- viewport-fit=cover: without it, env(safe-area-inset-*) (see
+     styles.css's mobile-first section) always reports 0 — the page
+     never opts into drawing under the iPhone notch/home-indicator, so
+     there'd be nothing for those insets to describe. Needed for the
+     standalone PWA window especially (no browser chrome there to
+     already keep content clear of them). -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>hire-juno chat</title>
+<link rel="stylesheet" href="styles.css" />
+<!-- PWA support so the page passes as an app on iPhone. The
+     manifest carries __TEAM_NAME__/__TOKEN__ placeholders the same way
+     this file's own <title>/app.js's document.title do (see
+     server/index.js's serveStatic/TEMPLATED); its start_url/scope are
+     "." (relative to wherever the manifest itself was fetched from,
+     already under /<token>/ by then), not templated with the token
+     directly. iOS Safari still reads the apple-* tags/apple-touch-icon
+     for "Add to Home Screen" ahead of (or instead of) the manifest, so
+     both are here, not just the manifest alone. -->
+<link rel="manifest" href="manifest.webmanifest" />
+<meta name="theme-color" content="#3358d6" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="default" />
+<meta name="apple-mobile-web-app-title" content="__TEAM_NAME__" />
+<link rel="apple-touch-icon" href="logo.png" />
+</head>
+<body>
+<div id="app">
+  <div id="sidebar-column">
+    <div id="brand">
+      <!-- src set from app.js's loadRoster, once api/status has resolved
+           — logo.png itself serves a custom logo.png at the target
+           repo's root if one exists, the built-in mark otherwise (see
+           server/index.js's resolveCustomLogo). No src here at load:
+           avoids a flash of the wrong image before that fetch
+           resolves. -->
+      <img id="brand-logo" alt="" width="28" height="28" />
+      <!-- The workforce's own name is what stands here (see app.js's
+           loadRoster). Making it the switcher puts the way to the other
+           workforces where the name is already visible, instead of two
+           clicks deep in the settings dialog behind an unlabelled icon. -->
+      <button id="workforce-switcher" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="workforce-menu" title="Switch workforce">
+        <span id="brand-name">hire-juno</span>
+        <svg class="icon icon--chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
+      </button>
+      <button id="diff-button" type="button" title="Changed files" aria-label="Changed files">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="2"/><line x1="7" y1="8" x2="9" y2="8"/><line x1="8" y1="7" x2="8" y2="9"/><line x1="11" y1="8" x2="16" y2="8"/><line x1="7" y1="14" x2="9" y2="14"/><line x1="11" y1="14" x2="16" y2="14"/></svg>
+      </button>
+      <button id="settings-button" type="button" title="Settings &amp; usage" aria-label="Settings and usage">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="5" y1="4" x2="5" y2="20"/><circle cx="5" cy="9" r="2"/><line x1="12" y1="4" x2="12" y2="20"/><circle cx="12" cy="15" r="2"/><line x1="19" y1="4" x2="19" y2="20"/><circle cx="19" cy="7" r="2"/></svg>
+      </button>
+    <!-- Inside #brand, not beside it, so the menu can position itself
+         against the row it belongs to (`top: 100%`) instead of against
+         the whole sidebar column. Switching workforce is navigation,
+         not a setting, so it belongs on the header it renames rather
+         than in a modal — and managing the list (add, remove) lives in
+         the same place as picking from it, so there is exactly one
+         screen that knows about workforces instead of two that have to
+         agree. -->
+    <div id="workforce-menu" hidden>
+      <div id="workforce-menu__header">Workforces</div>
+      <!-- Deliberately not .settings-list any more: that class styles
+           the rows of the settings dialog, where every row is a label
+           plus bordered buttons, and its `.settings-list button` rule
+           (inline-flex, centered, min 2.75rem square) turned each
+           switcher row into a centered box with the path squeezed out
+           of it. These rows are their own thing — see .workforce-row
+           in styles.css. -->
+      <ul id="workforce-list"></ul>
+      <form id="workforce-add-form">
+        <input id="workforce-add-input" type="text" placeholder="Path to another workforce repo…" autocomplete="off" />
+        <button type="submit" class="secondary-button">Add</button>
+      </form>
+      <div id="workforce-error" role="alert" hidden></div>
+    </div>
+    </div><!-- /#brand -->
+    <button id="notify-permission-button" type="button" hidden>
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9z"/><path d="M10 21a2 2 0 0 0 4 0"/></svg>
+      Enable notifications
+    </button>
+    <div id="no-persistence-banner" hidden>
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2 22 20 2 20Z"/><line x1="12" y1="9" x2="12" y2="14"/><line x1="12" y1="17" x2="12" y2="17.01"/></svg>
+      No workforce ID found — nothing here (messages, channels, sessions) will
+      survive a restart. Check CONSTITUTION.md/verfassung.md.
+    </div>
+    <!-- Search across everything, above the colleague list:
+         colleague names (filtered client-side, instant) and message
+         text (server-side via api/search, debounced — see app.js's
+         runSidebarSearch) merged into one result list that replaces the
+         normal roster while a query is typed (renderSidebar itself
+         branches on sidebarSearchQuery). -->
+    <div id="sidebar-search">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <input id="sidebar-search-input" type="search" placeholder="Search colleagues & messages…" autocomplete="off" />
+    </div>
+    <!-- "Colleagues" undersold what this holds even before channels
+         existed alongside them, and the tab bar below already settled on
+         "Chats" for the same list — this now agrees with it instead of
+         naming the list two different things depending on which button
+         you look at. -->
+    <nav id="sidebar" aria-label="Chats"></nav>
+  </div>
+  <main id="pane">
+    <!-- Mobile navigation: on a narrow screen (see
+         styles.css's mobile breakpoint) the sidebar and this pane can't
+         both fit side by side, so only one shows at a time (toggled via
+         #app's own "pane-active" class, see app.js) and this is the way
+         back to the list. No [hidden] attribute here on purpose (a [hidden]-vs-bare-display
+         specificity clash) —
+         visibility is entirely the media query's call, `display: none`
+         outside it by default. -->
+    <!-- Was labelled "Colleagues" while the tab bar below names the very
+         same destination "Chats" — two names on screen at once for one
+         place to go back to, and "Colleagues" was already too narrow:
+         the list it leads to holds channels too. -->
+    <button id="mobile-back-button" type="button">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+      Chats
+    </button>
+    <div id="pane-header" hidden></div>
+    <!-- Search in the open conversation, lives outside the ⋮ dialog,
+         where it would be three taps deep for something people reach for
+         mid-read, and it closed itself on every hit, so a second search
+         meant reopening the dialog. A disclosure panel, not a modal:
+         it does not cover the rest of the screen, so it gets its own
+         lighter open/close handling in app.js rather than the shared
+         modal dialog machinery. -->
+    <div id="conv-search-panel" hidden role="search">
+      <div id="conv-search-panel__row">
+        <input id="conv-search-input" type="search" placeholder="Search this conversation…" autocomplete="off" aria-label="Search this conversation" />
+        <button id="conv-search-close" type="button" aria-label="Close search">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="5" y1="5" x2="19" y2="19"/><line x1="19" y1="5" x2="5" y2="19"/></svg>
+        </button>
+      </div>
+      <ul id="conv-search-results" class="settings-list"></ul>
+    </div>
+    <div id="hiring-mode-banner" hidden>
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="5" y1="3" x2="5" y2="21"/><path d="M5 4h13l-3 4 3 4H5"/></svg>
+      Einstellungsprozess läuft
+    </div>
+    <div id="messages" role="log" aria-live="polite"></div>
+    <div id="attachment-preview" hidden></div>
+    <form id="composer">
+      <!-- While a colleague is still writing, force-scrolling the
+           transcript to the bottom on every new line (see app.js's
+           renderMessages/renderChannelMessages) would fight anyone
+           trying to scroll up and read something earlier mid-stream.
+           So that only happens while you're already at the bottom; otherwise this
+           button appears instead, same anchoring trick as
+           #mention-autocomplete just below (`bottom: 100%` off
+           #composer, whose own `position: relative` this already
+           relies on) so it always sits just above the composer
+           regardless of how tall it currently is. -->
+      <button id="scroll-to-bottom" type="button" hidden aria-label="Jump to latest messages">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/></svg>
+      </button>
+      <!-- Was a sibling of the form, not a descendant — #composer's own
+           `position: relative` (styles.css) had nothing to anchor
+           against then, so this `position: absolute` dropdown
+           positioned itself against the page's initial containing block
+           instead: pinned near the top of the viewport, nowhere near
+           the composer, effectively unusable no matter how correct the
+           suggestion logic underneath it was. Moved inside so
+           #composer actually is its containing block. -->
+      <ul id="mention-autocomplete" hidden></ul>
+      <!-- A real <button> rather than a <label for>. The label pointed at
+           an input carrying `hidden`, i.e. display:none — so neither the
+           label (labels are not focusable) nor the input it named was
+           ever a tab stop, and attaching an image was mouse-and-finger
+           only. app.js forwards the click to the file input instead. -->
+      <button id="attach-button" type="button" aria-label="Attach an image">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+      </button>
+      <input id="composer-file" type="file" accept="image/png,image/jpeg,image/gif,image/webp" hidden />
+      <textarea id="composer-input" rows="1" autocomplete="off" placeholder="Message…" disabled></textarea>
+      <button type="submit" disabled>Send</button>
+    </form>
+  </main>
+  <!-- Mobile only: a persistent bottom tab
+       bar, always there regardless of which of #sidebar-column/#pane
+       is currently showing (see styles.css's mobile-first section:
+       this sits in #app's own second grid row, not nested inside
+       either of them the way #mobile-back-button is inside #pane).
+       Also closes a real gap #mobile-back-button alone left open: the
+       diff/settings buttons live in #brand, inside #sidebar-column —
+       unreachable on mobile the moment a conversation is open and
+       #sidebar-column hides. Chats/Files/Settings map onto what this
+       app actually has (colleagues+channels, git changes, settings) —
+       not a copy of Teams' six tabs, which assume things
+       (Calendar, Calls) this app doesn't have at all. Desktop hides
+       this and shows #brand's own icon buttons instead (see the
+       min-width section) — one way to reach a modal, not two. -->
+  <nav id="mobile-tabbar" aria-label="Sections">
+    <button id="mobile-tab-chats" type="button" class="mobile-tab" aria-current="page">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4h16v12H8l-4 4V4z"/><line x1="8" y1="9" x2="16" y2="9"/><line x1="8" y1="13" x2="13" y2="13"/></svg>
+      <span>Chats</span>
+    </button>
+    <!-- Labelled "Changes", not "Files": a "Files" label and a
+         document icon would both promise a browser for the workforce's
+         documents; what opens is a git diff, titled "Changed files" in
+         its own dialog. "Changes" is short enough for the tab bar and
+         does not claim more than the feature delivers. -->
+    <button id="mobile-tab-changes" type="button" class="mobile-tab">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="2"/><line x1="7" y1="8" x2="9" y2="8"/><line x1="8" y1="7" x2="8" y2="9"/><line x1="11" y1="8" x2="16" y2="8"/><line x1="7" y1="14" x2="9" y2="14"/><line x1="11" y1="14" x2="16" y2="14"/></svg>
+      <span>Changes</span>
+    </button>
+    <button id="mobile-tab-settings" type="button" class="mobile-tab">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="5" y1="4" x2="5" y2="20"/><circle cx="5" cy="9" r="2"/><line x1="12" y1="4" x2="12" y2="20"/><circle cx="12" cy="15" r="2"/><line x1="19" y1="4" x2="19" y2="20"/><circle cx="19" cy="7" r="2"/></svg>
+      <span>Settings</span>
+    </button>
+  </nav>
+</div>
+<!-- tabindex so openImageLightbox has something to move focus to, and so
+     the shared Escape/Tab handler in app.js sees focus inside the dialog
+     rather than still out on the thumbnail behind it. -->
+<div id="image-lightbox" role="dialog" aria-modal="true" aria-label="Image, full size. Press Escape to close." tabindex="-1" hidden>
+  <img id="image-lightbox-img" alt="" />
+</div>
+<div id="diff-backdrop" hidden>
+  <div id="diff-modal" role="dialog" aria-modal="true" aria-label="Changed files">
+    <div id="diff-modal__header">
+      <h2>Changed files</h2>
+      <span id="diff-modal__cwd"></span>
+      <button id="diff-refresh" type="button" aria-label="Refresh changed files"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><polyline points="21 4 21 10 15 10"/></svg></button>
+      <button id="diff-close" type="button" data-dialog-close aria-label="Close changed files"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="5" y1="5" x2="19" y2="19"/><line x1="19" y1="5" x2="5" y2="19"/></svg></button>
+    </div>
+    <div id="diff-body">
+      <ul id="diff-file-list"></ul>
+      <div id="diff-content"></div>
+    </div>
+  </div>
+</div>
+<div id="settings-backdrop" hidden>
+  <div id="settings-modal" role="dialog" aria-modal="true" aria-label="Settings and usage">
+    <div id="settings-modal__header">
+      <h2>Settings &amp; usage</h2>
+      <button id="settings-close" type="button" data-dialog-close aria-label="Close settings"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="5" y1="5" x2="19" y2="19"/><line x1="19" y1="5" x2="5" y2="19"/></svg></button>
+    </div>
+    <!-- The workforce list lives in the sidebar header, not here, for
+         the reason in the switcher's own comment in the markup above:
+         buried in this dialog, a sidebar showing one workforce's
+         colleagues reads as "this is everyone", and the way to the rest
+         is a dialog nobody has a reason to open. -->
+    <section>
+      <h3>Usage</h3>
+      <div id="usage-summary"></div>
+      <div class="usage-table-scroll"><table id="usage-table"></table></div>
+    </section>
+    <section>
+      <h3>Claude plan limits</h3>
+      <div id="usage-limits"></div>
+    </section>
+    <section>
+      <h3>Auto mode</h3>
+      <ul id="auto-mode-list" class="settings-list"></ul>
+    </section>
+    <section>
+      <h3>Notifications</h3>
+      <div id="settings-notify-row"></div>
+    </section>
+    <section>
+      <h3>Branding</h3>
+      <div id="branding-row">
+        <img id="branding-logo-preview" alt="" width="40" height="40" />
+        <button id="branding-upload-button" type="button">Change logo…</button>
+        <input id="branding-logo-file" type="file" accept="image/png" hidden />
+      </div>
+      <div id="branding-error" role="alert" hidden></div>
+    </section>
+  </div>
+</div>
+<!-- Replaces the pane header's own Auto-mode checkbox and
+     Reset-context button (per conversation) with this dialog, opened
+     via the ⋮ button renderPaneHeader now builds instead. Separate from
+     #settings-backdrop above on purpose: that one is app-wide (usage,
+     branding, every conversation's auto mode at once); this one is
+     scoped to whichever colleague/channel is open right now. -->
+<div id="conv-settings-backdrop" hidden>
+  <div id="conv-settings-modal" role="dialog" aria-modal="true" aria-label="Conversation settings">
+    <div id="conv-settings-modal__header">
+      <h2 id="conv-settings-modal__title">Conversation settings</h2>
+      <button id="conv-settings-close" type="button" data-dialog-close aria-label="Close conversation settings"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="5" y1="5" x2="19" y2="19"/><line x1="19" y1="5" x2="5" y2="19"/></svg></button>
+    </div>
+    <section>
+      <h3>Auto mode</h3>
+      <div id="conv-settings-auto-mode"></div>
+    </section>
+    <!-- "New session" lives here alongside the other per-conversation
+         controls (Auto mode, Reset context), not in the sidebar (see
+         chat/README.md/app.js's newSessionFormEl). 1:1-only (a session is
+         always "another conversation with this colleague", channels
+         don't have the concept), so app.js's renderConvSettingsNewSession
+         hides this whole section for a channel. -->
+    <section id="conv-settings-new-session-section" hidden>
+      <h3>Sessions</h3>
+      <div id="conv-settings-new-session"></div>
+    </section>
+    <section>
+      <h3>Danger zone</h3>
+      <button id="conv-reset-context" type="button" class="secondary-button">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 2.64-6.36"/><polyline points="3 4 3 10 9 10"/></svg>
+        Reset context
+      </button>
+      <!-- Two-step, not a native confirm() — a blocking dialog is one
+           accidental Enter away from wiping a conversation, and this
+           app avoids window.confirm()/alert() elsewhere for the same
+           reason. Clicking once here just arms it (see app.js's
+           armClearChat), a second click on the now-relabeled button
+           actually sends clear_chat. -->
+      <button id="conv-clear-chat" type="button" class="danger-button">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+        <span id="conv-clear-chat-label">Clear chat</span>
+      </button>
+    </section>
+  </div>
+</div>
+<!-- The page is served from /<token>/ already (see server/index.js) —
+     every relative fetch and this WebSocket URL inherit that prefix
+     from the browser's own base-URL resolution, no token duplicated
+     into the markup by hand. -->
+<script src="app.js"></script>
+</body>
+</html>

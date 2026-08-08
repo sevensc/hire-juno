@@ -26,6 +26,7 @@ import { findCollisions, scaffold } from './scaffold.js';
 import { buildSubstitutions } from './substitute.js';
 import { findTool, TOOLS } from './tools.js';
 import { runWebSetup } from './web/server.js';
+import { addWorkforce } from '../shared/workforceRegistry.js';
 
 function today() {
   return new Date().toISOString().slice(0, 10);
@@ -115,6 +116,21 @@ export async function run() {
     substitutions,
   });
   writeSpinner.stop(t('Written {n} files.', { n: written.length }));
+
+  // A fresh install registers itself into
+  // ~/.hire-juno/known-workforces.json right here, the moment scaffold()
+  // has actually written the team/ or mitarbeiter/ folder that makes
+  // this a real workforce (see shared/workforceRegistry.js's own
+  // validation). Best-effort: a registry write failing here is
+  // unfortunate but shouldn't turn an otherwise-successful install into
+  // a reported failure — the chat server retries this same registration
+  // on its own first launch against this repo anyway (see
+  // runChatServer's own addWorkforce call).
+  try {
+    addWorkforce(resolvedTargetDir);
+  } catch (err) {
+    console.error(pc.yellow(`Could not register this workforce for hire-juno-chat's switcher: ${err.message}`));
+  }
 
   let gitInit;
   if (answers.gitInit) {
