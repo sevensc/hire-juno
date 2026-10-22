@@ -5608,6 +5608,34 @@
     return md.render(text2).replace(/>\n/g, ">");
   }
 
+  // chat/src/open-conversation.js
+  var STORAGE_KEY = "hire-juno-chat:open-conversation";
+  function rememberOpenConversation(value, storage = globalThis.localStorage) {
+    try {
+      storage.setItem(STORAGE_KEY, JSON.stringify(value));
+    } catch {
+    }
+  }
+  function recallOpenConversation(storage = globalThis.localStorage) {
+    try {
+      return JSON.parse(storage.getItem(STORAGE_KEY));
+    } catch {
+      return null;
+    }
+  }
+  function pickConversationToRestore(saved, { colleagueIds, channelIds, sessionIdsByColleague, defaultSessionId }) {
+    if (!saved || typeof saved !== "object") return null;
+    if (typeof saved.channelId === "string") {
+      return channelIds.includes(saved.channelId) ? { channelId: saved.channelId } : null;
+    }
+    if (typeof saved.colleagueId === "string" && colleagueIds.includes(saved.colleagueId)) {
+      const sessionId = typeof saved.sessionId === "string" ? saved.sessionId : defaultSessionId;
+      const known = sessionId === defaultSessionId || (sessionIdsByColleague[saved.colleagueId] ?? []).includes(sessionId);
+      return { colleagueId: saved.colleagueId, sessionId: known ? sessionId : defaultSessionId };
+    }
+    return null;
+  }
+
   // chat/src/app.js
   var paneEl = document.getElementById("pane");
   var paneHeaderEl = document.getElementById("pane-header");
@@ -5640,6 +5668,8 @@
   var convSettingsAutoModeEl = document.getElementById("conv-settings-auto-mode");
   var convSettingsNewSessionSectionEl = document.getElementById("conv-settings-new-session-section");
   var convSettingsNewSessionEl = document.getElementById("conv-settings-new-session");
+  var convSettingsModelSectionEl = document.getElementById("conv-settings-model-section");
+  var convSettingsModelEl = document.getElementById("conv-settings-model");
   var convSearchInputEl = document.getElementById("conv-search-input");
   var convSearchResultsEl = document.getElementById("conv-search-results");
   var convResetContextEl = document.getElementById("conv-reset-context");
@@ -5827,6 +5857,64 @@
         );
       }
     }
+  }
+  var modelPicker = null;
+  async function renderConvSettingsModel() {
+    convSettingsModelEl.innerHTML = "";
+    modelPicker = null;
+    if (!activeColleagueId || isSubagentThread(activeColleagueId)) {
+      convSettingsModelSectionEl.hidden = true;
+      return;
+    }
+    const colleagueId = activeColleagueId;
+    const sessionId = activeSessionId;
+    convSettingsModelSectionEl.hidden = false;
+    const loading = document.createElement("p");
+    loading.className = "model-picker__hint";
+    loading.textContent = "Loading models\u2026";
+    convSettingsModelEl.appendChild(loading);
+    let data;
+    try {
+      const res = await fetch(`api/models?colleagueId=${encodeURIComponent(colleagueId)}&sessionId=${encodeURIComponent(sessionId)}`);
+      data = await res.json();
+    } catch {
+      data = { supported: false };
+    }
+    if (convSettingsBackdropEl.hidden || colleagueId !== activeColleagueId || sessionId !== activeSessionId) return;
+    convSettingsModelEl.innerHTML = "";
+    if (!data.supported || !data.models?.length) {
+      convSettingsModelSectionEl.hidden = true;
+      return;
+    }
+    const select = document.createElement("select");
+    select.id = "conv-model-select";
+    select.setAttribute("aria-label", "Model");
+    for (const model of data.models) {
+      const option = document.createElement("option");
+      option.value = model.value;
+      option.textContent = model.displayName || model.value;
+      select.appendChild(option);
+    }
+    const confirmed = data.models.some((m3) => m3.value === data.choice) ? data.choice : "default";
+    select.value = data.models.some((m3) => m3.value === confirmed) ? confirmed : data.models[0].value;
+    const hint = document.createElement("p");
+    hint.className = "model-picker__hint";
+    const error2 = document.createElement("p");
+    error2.className = "model-picker__error";
+    error2.setAttribute("role", "alert");
+    error2.hidden = true;
+    const showDescription = () => {
+      hint.textContent = data.models.find((m3) => m3.value === select.value)?.description || "";
+    };
+    showDescription();
+    select.addEventListener("change", () => {
+      showDescription();
+      error2.hidden = true;
+      select.disabled = true;
+      socket.send(JSON.stringify({ type: "set_model", colleagueId, sessionId, model: select.value }));
+    });
+    convSettingsModelEl.append(select, hint, error2);
+    modelPicker = { colleagueId, sessionId, select, hint, error: error2, confirmed: select.value };
   }
   function renderConvSettingsNewSession() {
     if (!activeColleagueId || isSubagentThread(activeColleagueId)) {
@@ -6045,6 +6133,7 @@
     renderConvSettingsNewSession();
     disarmClearChat();
     openDialog(convSettingsBackdropEl, convSettingsModalEl);
+    renderConvSettingsModel();
   }
   function closeConvSettingsModal() {
     disarmClearChat();
@@ -6754,6 +6843,9 @@
   function isNearBottom() {
     return messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight <= SCROLL_TO_BOTTOM_THRESHOLD;
   }
+  function followThinkingTail() {
+    for (const box of messagesEl.querySelectorAll(".message--thinking > span")) box.scrollTop = box.scrollHeight;
+  }
   function scrollMessagesToBottom() {
     messagesEl.scrollTop = messagesEl.scrollHeight;
     scrollToBottomButtonEl.hidden = true;
@@ -6847,6 +6939,28 @@
       else autoModeKeys.delete(key2);
       if (key2 === activeConvKey()) renderPaneHeader();
       refreshSettingsModalIfOpen();
+      return;
+    }
+    if (update.type === "model_changed" || update.type === "model_change_failed") {
+      const picker = modelPicker;
+      const isThisPicker = picker && picker.colleagueId === update.colleagueId && picker.sessionId === update.sessionId;
+      if (update.type === "model_changed") {
+        const key2 = convKey(update.colleagueId, update.sessionId);
+        const stats = colleagueStats.get(key2) || {};
+        stats.model = update.resolvedModel || update.model || stats.model;
+        colleagueStats.set(key2, stats);
+        if (key2 === activeConvKey()) renderPaneHeader();
+        if (isThisPicker) {
+          picker.confirmed = picker.select.value;
+          picker.select.disabled = false;
+        }
+      } else if (isThisPicker) {
+        picker.select.value = picker.confirmed;
+        picker.select.disabled = false;
+        picker.hint.textContent = "";
+        picker.error.textContent = update.message || "Could not switch the model.";
+        picker.error.hidden = false;
+      }
       return;
     }
     if (update.type === "chat_cleared") {
@@ -7091,6 +7205,7 @@
         thinkingStreaming.delete(key);
         renderSidebar();
         const text2 = applyHiringModeMarkers(key, update.text);
+        for (const waiting of history.get(key)) delete waiting.pending;
         history.get(key).push({
           role: update.role,
           text: text2,
@@ -7245,7 +7360,7 @@
     return m2`
     <${S}>
       ${item.trail?.length ? m2`<${TrailBox} trail=${item.trail} onToggleEntry=${onToggleTrailEntry} />` : null}
-      <div class="message message--${role}">
+      <div class="message message--${role}${item.pending ? " message--pending" : ""}">
         ${avatarColleague ? m2`<${Avatar} colleague=${avatarColleague} />` : null}
         ${isToolUse ? m2`
               <span class="tool-use-line" onClick=${onToggle}>${toolText}</span>
@@ -7257,7 +7372,7 @@
                 ${(item.attachments || []).map(
       (attachment, i2) => m2`<img key=${i2} class="attachment-thumb" src=${attachment.dataUrl} alt=${attachment.name} role="button" tabindex="0" />`
     )}
-                ${time ? m2`<time class="message__time">${time}</time>` : null}
+                ${item.pending ? m2`<time class="message__time">Waiting, not read yet</time>` : time ? m2`<time class="message__time">${time}</time>` : null}
               </span>
             `}
       </div>
@@ -7304,26 +7419,25 @@
     const partialText = streaming.get(key);
     const permission = pendingPermission.get(key);
     const liveTrail = pendingTrail.get(key) || [];
+    const row = (item, i2) => m2`<${MessageRow}
+    key=${i2}
+    role=${item.role}
+    avatarColleague=${null}
+    nameTag=${null}
+    item=${item}
+    toolText=${item.text}
+    onToggle=${() => {
+      item.expanded = !item.expanded;
+      renderMessages();
+    }}
+    onToggleTrailEntry=${(entryIndex) => {
+      item.trail[entryIndex].expanded = !item.trail[entryIndex].expanded;
+      renderMessages();
+    }}
+  />`;
     R(
       m2`<${S}>
-      ${items.map(
-        (item, i2) => m2`<${MessageRow}
-          key=${i2}
-          role=${item.role}
-          avatarColleague=${null}
-          nameTag=${null}
-          item=${item}
-          toolText=${item.text}
-          onToggle=${() => {
-          item.expanded = !item.expanded;
-          renderMessages();
-        }}
-          onToggleTrailEntry=${(entryIndex) => {
-          item.trail[entryIndex].expanded = !item.trail[entryIndex].expanded;
-          renderMessages();
-        }}
-        />`
-      )}
+      ${items.map((item, i2) => item.pending ? null : row(item, i2))}
       ${thinkingText ? m2`<${StreamingRow} role="thinking" colleague=${null} text=${thinkingText} />` : null}
       ${partialText ? m2`<${StreamingRow} role="colleague" colleague=${null} text=${partialText} />` : null}
       ${liveTrail.length ? m2`<${TrailBox}
@@ -7334,6 +7448,7 @@
       }}
           />` : null}
       ${permission ? m2`<${PermissionCard} permission=${permission} colleagueId=${key} isChannel=${false} />` : null}
+      ${items.map((item, i2) => item.pending ? row(item, i2) : null)}
       ${!items.length && !thinkingText && !partialText && !permission ? m2`<${EmptyConversation}
             text=${`No messages with ${colleaguesById.get(activeColleagueId)?.name || "this colleague"} yet. Write the first one below.`}
           />` : null}
@@ -7341,6 +7456,7 @@
       messagesEl
     );
     refreshHiringModeStyling(key);
+    followThinkingTail();
     if (stickToBottom) scrollMessagesToBottom();
     else updateScrollToBottomButton();
   }
@@ -7424,6 +7540,7 @@
       messagesEl
     );
     refreshHiringModeStyling(activeChannelId);
+    followThinkingTail();
     if (stickToBottom) scrollMessagesToBottom();
     else updateScrollToBottomButton();
   }
@@ -7433,6 +7550,7 @@
     activeChannelId = channel.id;
     activeColleagueId = null;
     activeSessionId = null;
+    rememberOpenConversation({ channelId: channel.id });
     closeMentionAutocomplete();
     if (unreadConversations.delete(UNREAD_CHANNEL_PREFIX + channel.id)) refreshUnreadTitle();
     renderSidebar();
@@ -7464,6 +7582,7 @@
     activeColleagueId = colleague.id;
     activeSessionId = isSubagentThread(colleague.id) ? null : sessionId;
     if (activeSessionId !== null) lastSessionByColleague.set(colleague.id, activeSessionId);
+    if (activeSessionId !== null) rememberOpenConversation({ colleagueId: colleague.id, sessionId: activeSessionId });
     activeChannelId = null;
     closeMentionAutocomplete();
     if (unreadConversations.delete(activeConvKey())) refreshUnreadTitle();
@@ -7857,7 +7976,15 @@
       renderPaneHeader();
       return;
     }
-    if (colleaguesList.length > 0) selectColleague(colleaguesList[0]);
+    const restore = pickConversationToRestore(recallOpenConversation(), {
+      colleagueIds: colleaguesList.map((c2) => c2.id),
+      channelIds: [...channelsById.keys()],
+      sessionIdsByColleague: Object.fromEntries([...colleagueSessions].map(([id, sessions]) => [id, sessions.map((x2) => x2.id)])),
+      defaultSessionId: DEFAULT_SESSION_ID
+    });
+    if (restore?.channelId) selectChannel(channelsById.get(restore.channelId));
+    else if (restore) selectColleague(colleaguesById.get(restore.colleagueId), restore.sessionId);
+    else if (colleaguesList.length > 0) selectColleague(colleaguesList[0]);
   }
   notifyPermissionButtonEl.addEventListener("click", () => {
     Notification.requestPermission().then(refreshNotifyPermissionButton).catch(() => {
@@ -8029,7 +8156,7 @@
     const key = activeConvKey();
     if (!history.has(key)) history.set(key, []);
     const attachments = pendingAttachment ? [pendingAttachment] : [];
-    history.get(key).push({ role: "you", text: text2, attachments, createdAt: (/* @__PURE__ */ new Date()).toISOString() });
+    history.get(key).push({ role: "you", text: text2, attachments, createdAt: (/* @__PURE__ */ new Date()).toISOString(), pending: isTyping(key) });
     renderMessages({ forceScrollToBottom: true });
     if (activeSessionId === DEFAULT_SESSION_ID) {
       const rosterColleague = colleaguesById.get(activeColleagueId);

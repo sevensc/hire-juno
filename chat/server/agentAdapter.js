@@ -99,16 +99,19 @@ const CHAT_UI_SKILL = readFileSync(joinPath(dirname(fileURLToPath(import.meta.ur
 // actually carry that value — this checks for it anyway so the
 // adapter is ready the day that list grows, without this file needing
 // to change again.
+// `model`: the model chosen for this conversation in its settings (Claude
+// only; undefined = the SDK's default). Same reason as `resume` for not
+// forwarding it to CopilotAdapter: nothing there is wired to a model choice.
 // `resume`: the Claude adapter's own saved SDK session id (see
 // adapters/claude.js and store.js's adapter_sessions table) — Claude-only
 // for now. Not forwarded to CopilotAdapter: its ACP session's own resume
 // story hasn't been checked against this codebase, and passing an unused
 // option silently would be a claim about behavior nobody verified.
-export function createAdapter(colleague, { targetDir, resume }) {
+export function createAdapter(colleague, { targetDir, resume, model }) {
   const ownProfile = readProfileBody(targetDir, colleague.id) ?? `You are ${colleague.name}.`;
   const systemPrompt = `${ownProfile}\n\n${CHAT_UI_SKILL}`;
   const wantsCopilot = colleague.adapter.some((a) => a.toLowerCase().includes('copilot'));
   return wantsCopilot
     ? new CopilotAdapter(colleague, { cwd: targetDir })
-    : new ClaudeAdapter(colleague, { systemPrompt, cwd: targetDir, resume });
+    : new ClaudeAdapter(colleague, { systemPrompt, cwd: targetDir, resume, model });
 }

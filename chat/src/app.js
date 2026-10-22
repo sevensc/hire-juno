@@ -14,6 +14,7 @@ import { Fragment, render } from 'preact';
 import { html } from 'htm/preact';
 
 import { renderMarkdown } from './markdown.js';
+import { pickConversationToRestore, recallOpenConversation, rememberOpenConversation } from './open-conversation.js';
 
 const paneEl = document.getElementById('pane');
 const paneHeaderEl = document.getElementById('pane-header');
@@ -46,6 +47,8 @@ const convSettingsCloseEl = document.getElementById('conv-settings-close');
 const convSettingsAutoModeEl = document.getElementById('conv-settings-auto-mode');
 const convSettingsNewSessionSectionEl = document.getElementById('conv-settings-new-session-section');
 const convSettingsNewSessionEl = document.getElementById('conv-settings-new-session');
+const convSettingsModelSectionEl = document.getElementById('conv-settings-model-section');
+const convSettingsModelEl = document.getElementById('conv-settings-model');
 const convSearchInputEl = document.getElementById('conv-search-input');
 const convSearchResultsEl = document.getElementById('conv-search-results');
 const convResetContextEl = document.getElementById('conv-reset-context');
@@ -438,6 +441,79 @@ function renderConvSettingsAutoMode() {
   }
 }
 
+// The model picker for the open 1:1 conversation. The list comes from the
+// colleague's own session (what this account can actually use, as the
+// SDK reports it), so asking for it starts that session if it is not
+// running yet — a second or two, hence the "Loading…" line. A backend
+// without a model choice answers `supported: false` and the whole
+// section stays hidden. The choice is applied to the running session on
+// the server and remembered there (see set_model in server/index.js).
+let modelPicker = null; // { colleagueId, sessionId, select, hint, error, confirmed }
+async function renderConvSettingsModel() {
+  convSettingsModelEl.innerHTML = '';
+  modelPicker = null;
+  if (!activeColleagueId || isSubagentThread(activeColleagueId)) {
+    convSettingsModelSectionEl.hidden = true;
+    return;
+  }
+  const colleagueId = activeColleagueId;
+  const sessionId = activeSessionId;
+  convSettingsModelSectionEl.hidden = false;
+  const loading = document.createElement('p');
+  loading.className = 'model-picker__hint';
+  loading.textContent = 'Loading models…';
+  convSettingsModelEl.appendChild(loading);
+
+  let data;
+  try {
+    const res = await fetch(`api/models?colleagueId=${encodeURIComponent(colleagueId)}&sessionId=${encodeURIComponent(sessionId)}`);
+    data = await res.json();
+  } catch {
+    data = { supported: false };
+  }
+  // The dialog may have been closed or pointed at another conversation
+  // while the session was starting.
+  if (convSettingsBackdropEl.hidden || colleagueId !== activeColleagueId || sessionId !== activeSessionId) return;
+  convSettingsModelEl.innerHTML = '';
+  if (!data.supported || !data.models?.length) {
+    convSettingsModelSectionEl.hidden = true;
+    return;
+  }
+
+  const select = document.createElement('select');
+  select.id = 'conv-model-select';
+  select.setAttribute('aria-label', 'Model');
+  for (const model of data.models) {
+    const option = document.createElement('option');
+    option.value = model.value;
+    option.textContent = model.displayName || model.value;
+    select.appendChild(option);
+  }
+  const confirmed = data.models.some((m) => m.value === data.choice) ? data.choice : 'default';
+  select.value = data.models.some((m) => m.value === confirmed) ? confirmed : data.models[0].value;
+
+  const hint = document.createElement('p');
+  hint.className = 'model-picker__hint';
+  const error = document.createElement('p');
+  error.className = 'model-picker__error';
+  error.setAttribute('role', 'alert');
+  error.hidden = true;
+  const showDescription = () => {
+    hint.textContent = data.models.find((m) => m.value === select.value)?.description || '';
+  };
+  showDescription();
+
+  select.addEventListener('change', () => {
+    showDescription();
+    error.hidden = true;
+    select.disabled = true; // until the server confirms or refuses
+    socket.send(JSON.stringify({ type: 'set_model', colleagueId, sessionId, model: select.value }));
+  });
+
+  convSettingsModelEl.append(select, hint, error);
+  modelPicker = { colleagueId, sessionId, select, hint, error, confirmed: select.value };
+}
+
 // Sessions are managed in this same dialog, alongside starting a new
 // one. They are not listed in the sidebar (see renderSidebar), so this
 // section is where all of them live — her main conversation first,
@@ -742,6 +818,9 @@ function openConvSettingsModal() {
   renderConvSettingsNewSession();
   disarmClearChat();
   openDialog(convSettingsBackdropEl, convSettingsModalEl);
+  // After the dialog is open, not before: it fetches, and checks on its
+  // way back that the dialog is still the one that asked.
+  renderConvSettingsModel();
 }
 
 function closeConvSettingsModal() {
@@ -1842,6 +1921,12 @@ const SCROLL_TO_BOTTOM_THRESHOLD = 48;
 function isNearBottom() {
   return messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight <= SCROLL_TO_BOTTOM_THRESHOLD;
 }
+// A live "thinking" box is height-limited (see .message--thinking in
+// styles.css); while it fills up it should show its newest lines, not
+// stay on the first ones.
+function followThinkingTail() {
+  for (const box of messagesEl.querySelectorAll('.message--thinking > span')) box.scrollTop = box.scrollHeight;
+}
 function scrollMessagesToBottom() {
   messagesEl.scrollTop = messagesEl.scrollHeight;
   scrollToBottomButtonEl.hidden = true;
@@ -1990,6 +2075,31 @@ const handleSocketMessage = (event) => {
     else autoModeKeys.delete(key);
     if (key === activeConvKey()) renderPaneHeader();
     refreshSettingsModalIfOpen();
+    return;
+  }
+
+  if (update.type === 'model_changed' || update.type === 'model_change_failed') {
+    const picker = modelPicker;
+    const isThisPicker = picker && picker.colleagueId === update.colleagueId && picker.sessionId === update.sessionId;
+    if (update.type === 'model_changed') {
+      // Show the new model in the header right away; the next session
+      // start reports the model the SDK really ended up on and replaces it.
+      const key = convKey(update.colleagueId, update.sessionId);
+      const stats = colleagueStats.get(key) || {};
+      stats.model = update.resolvedModel || update.model || stats.model;
+      colleagueStats.set(key, stats);
+      if (key === activeConvKey()) renderPaneHeader();
+      if (isThisPicker) {
+        picker.confirmed = picker.select.value;
+        picker.select.disabled = false;
+      }
+    } else if (isThisPicker) {
+      picker.select.value = picker.confirmed; // back to what is really set
+      picker.select.disabled = false;
+      picker.hint.textContent = '';
+      picker.error.textContent = update.message || 'Could not switch the model.';
+      picker.error.hidden = false;
+    }
     return;
   }
 
@@ -2336,6 +2446,10 @@ const handleSocketMessage = (event) => {
       thinkingStreaming.delete(key);
       renderSidebar(); // she just stopped typing — clear the sidebar's indicator even if this isn't the open conversation
       const text = applyHiringModeMarkers(key, update.text);
+      // Her turn is over: whatever was written meanwhile counts as read
+      // now and takes its place in the transcript, above this reply
+      // (the order the server stored it in).
+      for (const waiting of history.get(key)) delete waiting.pending;
       history.get(key).push({
         role: update.role,
         text,
@@ -2610,7 +2724,7 @@ function MessageRow({ role, avatarColleague, nameTag, item, toolText, onToggle, 
   return html`
     <${Fragment}>
       ${item.trail?.length ? html`<${TrailBox} trail=${item.trail} onToggleEntry=${onToggleTrailEntry} />` : null}
-      <div class="message message--${role}">
+      <div class="message message--${role}${item.pending ? ' message--pending' : ''}">
         ${avatarColleague ? html`<${Avatar} colleague=${avatarColleague} />` : null}
         ${isToolUse
           ? html`
@@ -2624,7 +2738,9 @@ function MessageRow({ role, avatarColleague, nameTag, item, toolText, onToggle, 
                 ${(item.attachments || []).map(
                   (attachment, i) => html`<img key=${i} class="attachment-thumb" src=${attachment.dataUrl} alt=${attachment.name} role="button" tabindex="0" />`
                 )}
-                ${time ? html`<time class="message__time">${time}</time>` : null}
+                ${item.pending
+                  ? html`<time class="message__time">Waiting, not read yet</time>`
+                  : time ? html`<time class="message__time">${time}</time>` : null}
               </span>
             `}
       </div>
@@ -2715,26 +2831,30 @@ function renderMessages({ forceScrollToBottom = false } = {}) {
   // shown live in the same small box, right under the in-progress reply.
   const liveTrail = pendingTrail.get(key) || [];
 
+  // One bubble. A message sent while the colleague was mid-turn is
+  // `pending` (see the send handler) and is drawn below her live block
+  // instead of among the settled ones — otherwise it scrolls up out of
+  // sight above her still-growing thinking and tool lines.
+  const row = (item, i) => html`<${MessageRow}
+    key=${i}
+    role=${item.role}
+    avatarColleague=${null}
+    nameTag=${null}
+    item=${item}
+    toolText=${item.text}
+    onToggle=${() => {
+      item.expanded = !item.expanded;
+      renderMessages();
+    }}
+    onToggleTrailEntry=${(entryIndex) => {
+      item.trail[entryIndex].expanded = !item.trail[entryIndex].expanded;
+      renderMessages();
+    }}
+  />`;
+
   render(
     html`<${Fragment}>
-      ${items.map(
-        (item, i) => html`<${MessageRow}
-          key=${i}
-          role=${item.role}
-          avatarColleague=${null}
-          nameTag=${null}
-          item=${item}
-          toolText=${item.text}
-          onToggle=${() => {
-            item.expanded = !item.expanded;
-            renderMessages();
-          }}
-          onToggleTrailEntry=${(entryIndex) => {
-            item.trail[entryIndex].expanded = !item.trail[entryIndex].expanded;
-            renderMessages();
-          }}
-        />`
-      )}
+      ${items.map((item, i) => (item.pending ? null : row(item, i)))}
       ${thinkingText ? html`<${StreamingRow} role="thinking" colleague=${null} text=${thinkingText} />` : null}
       ${partialText ? html`<${StreamingRow} role="colleague" colleague=${null} text=${partialText} />` : null}
       ${liveTrail.length
@@ -2747,6 +2867,7 @@ function renderMessages({ forceScrollToBottom = false } = {}) {
           />`
         : null}
       ${permission ? html`<${PermissionCard} permission=${permission} colleagueId=${key} isChannel=${false} />` : null}
+      ${items.map((item, i) => (item.pending ? row(item, i) : null))}
       ${!items.length && !thinkingText && !partialText && !permission
         ? html`<${EmptyConversation}
             text=${`No messages with ${colleaguesById.get(activeColleagueId)?.name || 'this colleague'} yet. Write the first one below.`}
@@ -2757,6 +2878,7 @@ function renderMessages({ forceScrollToBottom = false } = {}) {
   );
 
   refreshHiringModeStyling(key);
+  followThinkingTail();
   if (stickToBottom) scrollMessagesToBottom();
   else updateScrollToBottomButton();
 }
@@ -2864,6 +2986,7 @@ function renderChannelMessages({ forceScrollToBottom = false } = {}) {
   );
 
   refreshHiringModeStyling(activeChannelId);
+  followThinkingTail();
   if (stickToBottom) scrollMessagesToBottom();
   else updateScrollToBottomButton();
 }
@@ -2874,6 +2997,7 @@ async function selectChannel(channel) {
   activeChannelId = channel.id;
   activeColleagueId = null;
   activeSessionId = null;
+  rememberOpenConversation({ channelId: channel.id });
   closeMentionAutocomplete();
   if (unreadConversations.delete(UNREAD_CHANNEL_PREFIX + channel.id)) refreshUnreadTitle();
   renderSidebar();
@@ -2925,6 +3049,7 @@ async function selectColleague(colleague, sessionId = DEFAULT_SESSION_ID) {
   activeColleagueId = colleague.id;
   activeSessionId = isSubagentThread(colleague.id) ? null : sessionId;
   if (activeSessionId !== null) lastSessionByColleague.set(colleague.id, activeSessionId);
+  if (activeSessionId !== null) rememberOpenConversation({ colleagueId: colleague.id, sessionId: activeSessionId });
   activeChannelId = null;
   closeMentionAutocomplete();
   if (unreadConversations.delete(activeConvKey())) refreshUnreadTitle();
@@ -3535,7 +3660,17 @@ async function loadRoster({ preserveSelection = false } = {}) {
     renderPaneHeader();
     return;
   }
-  if (colleaguesList.length > 0) selectColleague(colleaguesList[0]);
+  // A reload (or reopening the app) goes back to the conversation that
+  // was open, not to the first colleague.
+  const restore = pickConversationToRestore(recallOpenConversation(), {
+    colleagueIds: colleaguesList.map((c) => c.id),
+    channelIds: [...channelsById.keys()],
+    sessionIdsByColleague: Object.fromEntries([...colleagueSessions].map(([id, sessions]) => [id, sessions.map((x) => x.id)])),
+    defaultSessionId: DEFAULT_SESSION_ID,
+  });
+  if (restore?.channelId) selectChannel(channelsById.get(restore.channelId));
+  else if (restore) selectColleague(colleaguesById.get(restore.colleagueId), restore.sessionId);
+  else if (colleaguesList.length > 0) selectColleague(colleaguesList[0]);
 }
 
 notifyPermissionButtonEl.addEventListener('click', () => {
@@ -3801,7 +3936,9 @@ form.addEventListener('submit', (event) => {
   const key = activeConvKey();
   if (!history.has(key)) history.set(key, []);
   const attachments = pendingAttachment ? [pendingAttachment] : [];
-  history.get(key).push({ role: 'you', text, attachments, createdAt: new Date().toISOString() });
+  // Written while she is still mid-turn: it stays below her live block,
+  // marked as waiting, until her turn ends (see the 'message' update).
+  history.get(key).push({ role: 'you', text, attachments, createdAt: new Date().toISOString(), pending: isTyping(key) });
   // Forced — sending your own message should always land you at the
   // bottom, same as every other chat app, regardless of where you'd
   // scrolled to read something older first.

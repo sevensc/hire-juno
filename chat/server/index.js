@@ -29,6 +29,7 @@ import open from 'open';
 import { WebSocketServer } from 'ws';
 
 import { createAdapter } from './agentAdapter.js';
+import { validateModelChoice } from './modelChoice.js';
 import { decideRelevance } from './gatekeeper.js';
 import { extractMentions, extractVocativeAddresses } from './mentions.js';
 import { findLayout, readRoster, resolveAvatarPath } from './roster.js';
@@ -332,7 +333,9 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
         // onSessionId) — `undefined` for a first-ever conversation, which
         // createAdapter/ClaudeAdapter both already treat as "start fresh".
         const resume = store.getAdapterSession(colleagueId, sessionId) || undefined;
-        const adapter = createAdapter(colleague, { targetDir, resume });
+        // The model picked for this conversation in its settings, if any.
+        const model = store.getModelChoice(colleagueId, sessionId) || undefined;
+        const adapter = createAdapter(colleague, { targetDir, resume, model });
         // Set once here, not per-message like onUpdate/onPermissionRequest
         // below (bindAdapter) — this is bookkeeping, not delivery to a
         // particular browser tab.
@@ -564,6 +567,39 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
         if (req.method === 'GET' && route === 'api/colleague-stats') {
           res.writeHead(200, { 'Content-Type': 'application/json' }).end(
             JSON.stringify(Object.fromEntries(colleagueStats))
+          );
+          return;
+        }
+
+        if (req.method === 'GET' && route === 'api/models') {
+          // What the conversation's settings dialog offers. Asked of the
+          // colleague's own adapter, so opening the dialog starts her
+          // session if it isn't running yet — the same thing the first
+          // message would do. A backend without a model choice (Copilot)
+          // or a failing SDK call answers `supported: false` and the
+          // dialog simply leaves the section out.
+          const colleagueId = url.searchParams.get('colleagueId') || '';
+          const sessionId = url.searchParams.get('sessionId') || DEFAULT_SESSION_ID;
+          const adapter = adapterFor(colleagueId, sessionId);
+          let models = null;
+          if (adapter && typeof adapter.supportedModels === 'function') {
+            try {
+              models = await adapter.supportedModels();
+            } catch {
+              models = null;
+            }
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json' }).end(
+            JSON.stringify({
+              supported: Array.isArray(models),
+              models: (models || []).map((m) => ({
+                value: m.value,
+                displayName: m.displayName,
+                description: m.description,
+                resolvedModel: m.resolvedModel,
+              })),
+              choice: store.getModelChoice(colleagueId, sessionId),
+            })
           );
           return;
         }
@@ -1004,6 +1040,49 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
               colleagueId: payload.colleagueId,
               sessionId: payload.sessionId || DEFAULT_SESSION_ID,
               enabled: Boolean(payload.enabled),
+            });
+            return;
+          }
+
+          if (payload.type === 'set_model') {
+            // Applied to the running session right away (the replies that
+            // follow use it) and remembered, so a restart or a context
+            // reset keeps it. Only a value the SDK itself listed for this
+            // account gets through (see modelChoice.js).
+            const colleagueId = payload.colleagueId;
+            const sessionId = payload.sessionId || DEFAULT_SESSION_ID;
+            const fail = (message) => broadcast({ type: 'model_change_failed', colleagueId, sessionId, message });
+            const adapter = adapterFor(colleagueId, sessionId);
+            if (!adapter || typeof adapter.setModel !== 'function') {
+              fail('This colleague has no model choice.');
+              return;
+            }
+            let supported;
+            try {
+              supported = await adapter.supportedModels();
+            } catch (err) {
+              fail(`Could not read the available models: ${err.message}`);
+              return;
+            }
+            const checked = validateModelChoice(payload.model, supported);
+            if (!checked.ok) {
+              fail(checked.message);
+              return;
+            }
+            try {
+              await adapter.setModel(checked.model);
+            } catch (err) {
+              fail(`Could not switch the model: ${err.message}`);
+              return;
+            }
+            store.setModelChoice(colleagueId, sessionId, checked.model);
+            const shown = supported.find((m) => m.value === (checked.model ?? 'default'));
+            broadcast({
+              type: 'model_changed',
+              colleagueId,
+              sessionId,
+              model: checked.model,
+              resolvedModel: shown?.resolvedModel || checked.model || null,
             });
             return;
           }

@@ -102,6 +102,16 @@ Also real, added after the first working slice:
   returning to the one you were last in), and the pane header names the
   open session when it isn't her main conversation. Nested rows in the
   sidebar are for subagent exchanges only.
+- **Model choice** per conversation — a dropdown in the conversation
+  settings (⋮ in the pane header), 1:1 only. The list is what this
+  account can use, as the SDK reports it for that colleague's own
+  session, so opening the dialog starts that session if it isn't
+  running yet. The choice is applied to the running session, remembered
+  per colleague and session in the chat database, and survives a
+  server restart and a context reset. "Default" removes the choice.
+  A channel turn runs on each member's main-conversation session, so
+  its model is the one set in that session's dialog. Not available for
+  the Copilot adapter (the section hides itself).
 - **Auto mode** ("allow all") — a per-session toggle in the pane header
   that skips the permission-prompt round trip and auto-approves every
   tool call for that specific conversation, checked fresh on every
