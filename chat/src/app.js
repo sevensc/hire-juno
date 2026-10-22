@@ -13,6 +13,8 @@
 import { Fragment, render } from 'preact';
 import { html } from 'htm/preact';
 
+import { pickConversationToRestore, recallOpenConversation, rememberOpenConversation } from './open-conversation.js';
+
 const paneEl = document.getElementById('pane');
 const paneHeaderEl = document.getElementById('pane-header');
 const hiringModeBannerEl = document.getElementById('hiring-mode-banner');
@@ -2957,6 +2959,7 @@ async function selectChannel(channel) {
   activeChannelId = channel.id;
   activeColleagueId = null;
   activeSessionId = null;
+  rememberOpenConversation({ channelId: channel.id });
   closeMentionAutocomplete();
   if (unreadConversations.delete(UNREAD_CHANNEL_PREFIX + channel.id)) refreshUnreadTitle();
   renderSidebar();
@@ -3008,6 +3011,7 @@ async function selectColleague(colleague, sessionId = DEFAULT_SESSION_ID) {
   activeColleagueId = colleague.id;
   activeSessionId = isSubagentThread(colleague.id) ? null : sessionId;
   if (activeSessionId !== null) lastSessionByColleague.set(colleague.id, activeSessionId);
+  if (activeSessionId !== null) rememberOpenConversation({ colleagueId: colleague.id, sessionId: activeSessionId });
   activeChannelId = null;
   closeMentionAutocomplete();
   if (unreadConversations.delete(activeConvKey())) refreshUnreadTitle();
@@ -3618,7 +3622,17 @@ async function loadRoster({ preserveSelection = false } = {}) {
     renderPaneHeader();
     return;
   }
-  if (colleaguesList.length > 0) selectColleague(colleaguesList[0]);
+  // A reload (or reopening the app) goes back to the conversation that
+  // was open, not to the first colleague.
+  const restore = pickConversationToRestore(recallOpenConversation(), {
+    colleagueIds: colleaguesList.map((c) => c.id),
+    channelIds: [...channelsById.keys()],
+    sessionIdsByColleague: Object.fromEntries([...colleagueSessions].map(([id, sessions]) => [id, sessions.map((x) => x.id)])),
+    defaultSessionId: DEFAULT_SESSION_ID,
+  });
+  if (restore?.channelId) selectChannel(channelsById.get(restore.channelId));
+  else if (restore) selectColleague(colleaguesById.get(restore.colleagueId), restore.sessionId);
+  else if (colleaguesList.length > 0) selectColleague(colleaguesList[0]);
 }
 
 notifyPermissionButtonEl.addEventListener('click', () => {
