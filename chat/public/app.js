@@ -283,6 +283,34 @@
   // node_modules/htm/preact/index.module.js
   var m2 = htm_module_default.bind(k);
 
+  // chat/src/open-conversation.js
+  var STORAGE_KEY = "hire-juno-chat:open-conversation";
+  function rememberOpenConversation(value, storage = globalThis.localStorage) {
+    try {
+      storage.setItem(STORAGE_KEY, JSON.stringify(value));
+    } catch {
+    }
+  }
+  function recallOpenConversation(storage = globalThis.localStorage) {
+    try {
+      return JSON.parse(storage.getItem(STORAGE_KEY));
+    } catch {
+      return null;
+    }
+  }
+  function pickConversationToRestore(saved, { colleagueIds, channelIds, sessionIdsByColleague, defaultSessionId }) {
+    if (!saved || typeof saved !== "object") return null;
+    if (typeof saved.channelId === "string") {
+      return channelIds.includes(saved.channelId) ? { channelId: saved.channelId } : null;
+    }
+    if (typeof saved.colleagueId === "string" && colleagueIds.includes(saved.colleagueId)) {
+      const sessionId = typeof saved.sessionId === "string" ? saved.sessionId : defaultSessionId;
+      const known = sessionId === defaultSessionId || (sessionIdsByColleague[saved.colleagueId] ?? []).includes(sessionId);
+      return { colleagueId: saved.colleagueId, sessionId: known ? sessionId : defaultSessionId };
+    }
+    return null;
+  }
+
   // chat/src/app.js
   var paneEl = document.getElementById("pane");
   var paneHeaderEl = document.getElementById("pane-header");
@@ -2180,6 +2208,7 @@
     activeChannelId = channel.id;
     activeColleagueId = null;
     activeSessionId = null;
+    rememberOpenConversation({ channelId: channel.id });
     closeMentionAutocomplete();
     if (unreadConversations.delete(UNREAD_CHANNEL_PREFIX + channel.id)) refreshUnreadTitle();
     renderSidebar();
@@ -2211,6 +2240,7 @@
     activeColleagueId = colleague.id;
     activeSessionId = isSubagentThread(colleague.id) ? null : sessionId;
     if (activeSessionId !== null) lastSessionByColleague.set(colleague.id, activeSessionId);
+    if (activeSessionId !== null) rememberOpenConversation({ colleagueId: colleague.id, sessionId: activeSessionId });
     activeChannelId = null;
     closeMentionAutocomplete();
     if (unreadConversations.delete(activeConvKey())) refreshUnreadTitle();
@@ -2604,7 +2634,15 @@
       renderPaneHeader();
       return;
     }
-    if (colleaguesList.length > 0) selectColleague(colleaguesList[0]);
+    const restore = pickConversationToRestore(recallOpenConversation(), {
+      colleagueIds: colleaguesList.map((c2) => c2.id),
+      channelIds: [...channelsById.keys()],
+      sessionIdsByColleague: Object.fromEntries([...colleagueSessions].map(([id, sessions]) => [id, sessions.map((x2) => x2.id)])),
+      defaultSessionId: DEFAULT_SESSION_ID
+    });
+    if (restore?.channelId) selectChannel(channelsById.get(restore.channelId));
+    else if (restore) selectColleague(colleaguesById.get(restore.colleagueId), restore.sessionId);
+    else if (colleaguesList.length > 0) selectColleague(colleaguesList[0]);
   }
   notifyPermissionButtonEl.addEventListener("click", () => {
     Notification.requestPermission().then(refreshNotifyPermissionButton).catch(() => {
