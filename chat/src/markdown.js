@@ -1,135 +1,58 @@
-// A small, safe-by-construction markdown-lite renderer, so colleagues'
-// replies don't show literal "**bold**" markup. No dependency pulled in for this deliberately vanilla frontend
-// (see the file header): escape first, then apply a handful of block/
-// inline rules for what colleagues actually produce (bold, italic,
-// inline code, fenced code, links, headings, lists, pipe tables). Not
-// a full CommonMark implementation — edge cases (nested emphasis,
-// etc.) are expected to fall back to looking like plain text rather
-// than rendering wrong.
-export function escapeHtml(text) {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
+// Renders a colleague's reply (CommonMark plus GFM tables and
+// strikethrough) to HTML for a message bubble, using markdown-it.
+//
+// Safety rests on three settings, all deliberate:
+//   - `html: false` — raw HTML in a reply is shown as text, never
+//     interpreted. (The `commonmark` preset would switch it on, so this
+//     uses the default preset.)
+//   - markdown-it's own link check, which refuses javascript:, vbscript:,
+//     file: and data: targets (data: only for a few image types, and
+//     images are off, see next point).
+//   - `image` is disabled: an image tag in a reply would make the browser
+//     fetch an arbitrary address on its own. `![alt](url)` renders as a
+//     plain link instead, opened by a deliberate click.
+//
+// `breaks: true` keeps the chat behaviour of the earlier hand-written
+// renderer: a single line break inside a paragraph is a visible line
+// break, not a space.
+import MarkdownIt from 'markdown-it';
 
-export function renderInlineMarkdown(text) {
-  let html = escapeHtml(text);
-  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  html = html.replace(/__([^_]+)__/g, '<strong>$1</strong>');
-  html = html.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, '<em>$1</em>');
-  html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
-  return html;
-}
+const md = new MarkdownIt({ html: false, linkify: true, breaks: true });
+md.disable('image');
 
-// Pipe tables ("| a | b |" over "|---|---|"). A table needs a header
-// line, directly followed by a delimiter line with the same number of
-// cells — anything less stays a plain paragraph, which is also what the
-// old renderer did with every table.
-function splitTableRow(line) {
-  let row = line.trim();
-  if (row.startsWith('|')) row = row.slice(1);
-  if (row.endsWith('|') && !row.endsWith('\\|')) row = row.slice(0, -1);
-  return row.split(/(?<!\\)\|/).map((cell) => cell.replace(/\\\|/g, '|').trim());
-}
+// Links open in a new tab, never in the chat page itself.
+const defaultLinkOpen = md.renderer.rules.link_open
+  || ((tokens, idx, options, env, self) => self.renderToken(tokens, idx, options));
+md.renderer.rules.link_open = (tokens, idx, options, env, self) => {
+  tokens[idx].attrSet('target', '_blank');
+  tokens[idx].attrSet('rel', 'noopener noreferrer');
+  return defaultLinkOpen(tokens, idx, options, env, self);
+};
 
-function tableAlignments(delimiterLine) {
-  if (!delimiterLine.includes('|')) return null;
-  const cells = splitTableRow(delimiterLine);
-  if (!cells.every((cell) => /^:?-+:?$/.test(cell))) return null;
-  return cells.map((cell) => {
-    if (cell.startsWith(':') && cell.endsWith(':')) return 'center';
-    if (cell.endsWith(':')) return 'right';
-    return null;
-  });
+// "#" renders as <h3>, "######" stays <h6> — a full <h1> would dwarf a
+// chat bubble.
+function shiftedHeading(token) {
+  const level = Number(token.tag.slice(1));
+  return `h${Math.min(level + 2, 6)}`;
 }
+md.renderer.rules.heading_open = (tokens, idx, options, env, self) => {
+  tokens[idx].tag = shiftedHeading(tokens[idx]);
+  return self.renderToken(tokens, idx, options);
+};
+md.renderer.rules.heading_close = (tokens, idx, options, env, self) => {
+  tokens[idx].tag = shiftedHeading(tokens[idx]);
+  return self.renderToken(tokens, idx, options);
+};
 
-function isTableStart(lines, i) {
-  if (i + 1 >= lines.length || !lines[i].includes('|')) return false;
-  const alignments = tableAlignments(lines[i + 1]);
-  return alignments !== null && alignments.length === splitTableRow(lines[i]).length;
-}
+// A wide table scrolls inside the bubble instead of widening it.
+md.renderer.rules.table_open = () => '<div class="table-scroll"><table>\n';
+md.renderer.rules.table_close = () => '</table></div>\n';
 
-function renderTable(lines, i) {
-  const header = splitTableRow(lines[i]);
-  const alignments = tableAlignments(lines[i + 1]);
-  const cell = (tag, text, col) =>
-    `<${tag}${alignments[col] ? ` style="text-align:${alignments[col]}"` : ''}>${renderInlineMarkdown(text ?? '')}</${tag}>`;
-  let html = `<div class="table-scroll"><table><thead><tr>${header.map((text, col) => cell('th', text, col)).join('')}</tr></thead><tbody>`;
-  let next = i + 2;
-  while (next < lines.length && lines[next].trim() !== '' && lines[next].includes('|')) {
-    const row = splitTableRow(lines[next]);
-    html += `<tr>${header.map((_, col) => cell('td', row[col], col)).join('')}</tr>`;
-    next++;
-  }
-  html += '</tbody></table></div>';
-  return { html, next };
-}
-
+// markdown-it puts a newline after most tags. A message bubble keeps the
+// line breaks of its text (white-space: pre-wrap, see styles.css), so
+// those newlines would show up as blank lines between blocks. `>` never
+// appears raw inside text or code (it is escaped to &gt;), so a newline
+// right after one is always markup whitespace.
 export function renderMarkdown(text) {
-  const lines = text.split('\n');
-  let html = '';
-  let i = 0;
-  while (i < lines.length) {
-    const line = lines[i];
-    if (line.startsWith('```')) {
-      const codeLines = [];
-      i++;
-      while (i < lines.length && !lines[i].startsWith('```')) {
-        codeLines.push(lines[i]);
-        i++;
-      }
-      i++; // skip the closing fence, if there was one
-      html += `<pre><code>${escapeHtml(codeLines.join('\n'))}</code></pre>`;
-      continue;
-    }
-    if (isTableStart(lines, i)) {
-      const table = renderTable(lines, i);
-      html += table.html;
-      i = table.next;
-      continue;
-    }
-    const heading = line.match(/^(#{1,4})\s+(.*)$/);
-    if (heading) {
-      const level = Math.min(heading[1].length + 2, 6); // '#' -> h3 — a full h1 would dwarf a chat bubble
-      html += `<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`;
-      i++;
-      continue;
-    }
-    if (/^\s*[*-]\s+/.test(line)) {
-      const items = [];
-      while (i < lines.length && /^\s*[*-]\s+/.test(lines[i])) {
-        items.push(`<li>${renderInlineMarkdown(lines[i].replace(/^\s*[*-]\s+/, ''))}</li>`);
-        i++;
-      }
-      html += `<ul>${items.join('')}</ul>`;
-      continue;
-    }
-    if (/^\s*\d+\.\s+/.test(line)) {
-      const items = [];
-      while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) {
-        items.push(`<li>${renderInlineMarkdown(lines[i].replace(/^\s*\d+\.\s+/, ''))}</li>`);
-        i++;
-      }
-      html += `<ol>${items.join('')}</ol>`;
-      continue;
-    }
-    if (line.trim() === '') {
-      i++;
-      continue;
-    }
-    const paraLines = [];
-    while (
-      i < lines.length &&
-      lines[i].trim() !== '' &&
-      !lines[i].startsWith('```') &&
-      !/^(#{1,4})\s+/.test(lines[i]) &&
-      !/^\s*[*-]\s+/.test(lines[i]) &&
-      !/^\s*\d+\.\s+/.test(lines[i]) &&
-      !isTableStart(lines, i)
-    ) {
-      paraLines.push(renderInlineMarkdown(lines[i]));
-      i++;
-    }
-    html += `<p>${paraLines.join('<br>')}</p>`;
-  }
-  return html;
+  return md.render(text).replace(/>\n/g, '>');
 }

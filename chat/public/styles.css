@@ -2248,7 +2248,21 @@ button.session-list__row:active { background: var(--bg-message); }
 .message > span a { color: inherit; text-decoration: underline; }
 .message > span h2,
 .message > span h3,
-.message > span h4 { margin: 0.3em 0; font-size: 1em; font-weight: 700; }
+.message > span h4,
+.message > span h5,
+.message > span h6 { margin: 0.3em 0; font-size: 1em; font-weight: 700; }
+.message > span ul ul,
+.message > span ul ol,
+.message > span ol ul,
+.message > span ol ol { margin-top: 0; margin-bottom: 0; }
+.message > span li > p { margin: 0; }
+.message > span blockquote {
+  margin: 0.3em 0;
+  padding: 0.1em 0 0.1em 0.7em;
+  border-left: 3px solid var(--border);
+  color: var(--fg-muted);
+}
+.message > span hr { border: none; border-top: 1px solid var(--border); margin: 0.6em 0; }
 
 /* Pipe tables: scroll sideways inside the bubble instead of widening it
    (same reason as pre above), cells kept compact. */
