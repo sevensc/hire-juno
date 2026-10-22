@@ -1496,6 +1496,9 @@
   function isNearBottom() {
     return messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight <= SCROLL_TO_BOTTOM_THRESHOLD;
   }
+  function followThinkingTail() {
+    for (const box of messagesEl.querySelectorAll(".message--thinking > span")) box.scrollTop = box.scrollHeight;
+  }
   function scrollMessagesToBottom() {
     messagesEl.scrollTop = messagesEl.scrollHeight;
     scrollToBottomButtonEl.hidden = true;
@@ -2083,6 +2086,7 @@
       messagesEl
     );
     refreshHiringModeStyling(key);
+    followThinkingTail();
     if (stickToBottom) scrollMessagesToBottom();
     else updateScrollToBottomButton();
   }
@@ -2166,6 +2170,7 @@
       messagesEl
     );
     refreshHiringModeStyling(activeChannelId);
+    followThinkingTail();
     if (stickToBottom) scrollMessagesToBottom();
     else updateScrollToBottomButton();
   }
