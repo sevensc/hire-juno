@@ -2377,6 +2377,8 @@ button.session-list__row:active { background: var(--bg-message); }
   color: var(--fg-muted);
 }
 .trail-box__entry { margin-bottom: 0.25rem; }
+/* How a tool call was allowed when nobody was asked (see approvalLabel). */
+.trail-box__approval { font-size: 0.72rem; padding: 0 0.35em; border: 1px solid var(--border); border-radius: 0.3em; white-space: nowrap; }
 .trail-box__entry:last-child { margin-bottom: 0; }
 .trail-box__thinking { font-style: italic; white-space: pre-wrap; overflow-wrap: break-word; word-break: break-word; }
 
