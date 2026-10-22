@@ -337,6 +337,14 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
         // below (bindAdapter) — this is bookkeeping, not delivery to a
         // particular browser tab.
         adapter.onSessionId = (sdkSessionId) => store.saveAdapterSession(colleagueId, sessionId, sdkSessionId);
+        // The saved session id points at a conversation the CLI no longer
+        // has: forget it and drop this adapter, so the next message starts a
+        // fresh session instead of failing the same way every time.
+        adapter.onStaleResume = () => {
+          store.clearAdapterSession(colleagueId, sessionId);
+          adapter.close?.();
+          if (adapters.get(key) === adapter) adapters.delete(key);
+        };
         adapters.set(key, adapter);
       }
       return adapters.get(key);
