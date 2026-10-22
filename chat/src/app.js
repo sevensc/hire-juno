@@ -46,6 +46,8 @@ const convSettingsCloseEl = document.getElementById('conv-settings-close');
 const convSettingsAutoModeEl = document.getElementById('conv-settings-auto-mode');
 const convSettingsNewSessionSectionEl = document.getElementById('conv-settings-new-session-section');
 const convSettingsNewSessionEl = document.getElementById('conv-settings-new-session');
+const convSettingsModelSectionEl = document.getElementById('conv-settings-model-section');
+const convSettingsModelEl = document.getElementById('conv-settings-model');
 const convSearchInputEl = document.getElementById('conv-search-input');
 const convSearchResultsEl = document.getElementById('conv-search-results');
 const convResetContextEl = document.getElementById('conv-reset-context');
@@ -438,6 +440,79 @@ function renderConvSettingsAutoMode() {
   }
 }
 
+// The model picker for the open 1:1 conversation. The list comes from the
+// colleague's own session (what this account can actually use, as the
+// SDK reports it), so asking for it starts that session if it is not
+// running yet — a second or two, hence the "Loading…" line. A backend
+// without a model choice answers `supported: false` and the whole
+// section stays hidden. The choice is applied to the running session on
+// the server and remembered there (see set_model in server/index.js).
+let modelPicker = null; // { colleagueId, sessionId, select, hint, error, confirmed }
+async function renderConvSettingsModel() {
+  convSettingsModelEl.innerHTML = '';
+  modelPicker = null;
+  if (!activeColleagueId || isSubagentThread(activeColleagueId)) {
+    convSettingsModelSectionEl.hidden = true;
+    return;
+  }
+  const colleagueId = activeColleagueId;
+  const sessionId = activeSessionId;
+  convSettingsModelSectionEl.hidden = false;
+  const loading = document.createElement('p');
+  loading.className = 'model-picker__hint';
+  loading.textContent = 'Loading models…';
+  convSettingsModelEl.appendChild(loading);
+
+  let data;
+  try {
+    const res = await fetch(`api/models?colleagueId=${encodeURIComponent(colleagueId)}&sessionId=${encodeURIComponent(sessionId)}`);
+    data = await res.json();
+  } catch {
+    data = { supported: false };
+  }
+  // The dialog may have been closed or pointed at another conversation
+  // while the session was starting.
+  if (convSettingsBackdropEl.hidden || colleagueId !== activeColleagueId || sessionId !== activeSessionId) return;
+  convSettingsModelEl.innerHTML = '';
+  if (!data.supported || !data.models?.length) {
+    convSettingsModelSectionEl.hidden = true;
+    return;
+  }
+
+  const select = document.createElement('select');
+  select.id = 'conv-model-select';
+  select.setAttribute('aria-label', 'Model');
+  for (const model of data.models) {
+    const option = document.createElement('option');
+    option.value = model.value;
+    option.textContent = model.displayName || model.value;
+    select.appendChild(option);
+  }
+  const confirmed = data.models.some((m) => m.value === data.choice) ? data.choice : 'default';
+  select.value = data.models.some((m) => m.value === confirmed) ? confirmed : data.models[0].value;
+
+  const hint = document.createElement('p');
+  hint.className = 'model-picker__hint';
+  const error = document.createElement('p');
+  error.className = 'model-picker__error';
+  error.setAttribute('role', 'alert');
+  error.hidden = true;
+  const showDescription = () => {
+    hint.textContent = data.models.find((m) => m.value === select.value)?.description || '';
+  };
+  showDescription();
+
+  select.addEventListener('change', () => {
+    showDescription();
+    error.hidden = true;
+    select.disabled = true; // until the server confirms or refuses
+    socket.send(JSON.stringify({ type: 'set_model', colleagueId, sessionId, model: select.value }));
+  });
+
+  convSettingsModelEl.append(select, hint, error);
+  modelPicker = { colleagueId, sessionId, select, hint, error, confirmed: select.value };
+}
+
 // Sessions are managed in this same dialog, alongside starting a new
 // one. They are not listed in the sidebar (see renderSidebar), so this
 // section is where all of them live — her main conversation first,
@@ -742,6 +817,9 @@ function openConvSettingsModal() {
   renderConvSettingsNewSession();
   disarmClearChat();
   openDialog(convSettingsBackdropEl, convSettingsModalEl);
+  // After the dialog is open, not before: it fetches, and checks on its
+  // way back that the dialog is still the one that asked.
+  renderConvSettingsModel();
 }
 
 function closeConvSettingsModal() {
@@ -2081,6 +2159,31 @@ const handleSocketMessage = (event) => {
     else autoModeKeys.delete(key);
     if (key === activeConvKey()) renderPaneHeader();
     refreshSettingsModalIfOpen();
+    return;
+  }
+
+  if (update.type === 'model_changed' || update.type === 'model_change_failed') {
+    const picker = modelPicker;
+    const isThisPicker = picker && picker.colleagueId === update.colleagueId && picker.sessionId === update.sessionId;
+    if (update.type === 'model_changed') {
+      // Show the new model in the header right away; the next session
+      // start reports the model the SDK really ended up on and replaces it.
+      const key = convKey(update.colleagueId, update.sessionId);
+      const stats = colleagueStats.get(key) || {};
+      stats.model = update.resolvedModel || update.model || stats.model;
+      colleagueStats.set(key, stats);
+      if (key === activeConvKey()) renderPaneHeader();
+      if (isThisPicker) {
+        picker.confirmed = picker.select.value;
+        picker.select.disabled = false;
+      }
+    } else if (isThisPicker) {
+      picker.select.value = picker.confirmed; // back to what is really set
+      picker.select.disabled = false;
+      picker.hint.textContent = '';
+      picker.error.textContent = update.message || 'Could not switch the model.';
+      picker.error.hidden = false;
+    }
     return;
   }
 

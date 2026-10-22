@@ -75,7 +75,7 @@ export class ClaudeAdapter {
   // query()'s own `resume` option (sdk.d.ts: "Session ID to resume. Loads
   // the conversation history from the specified session," no companion
   // option required). Omitted entirely for a first-ever conversation.
-  constructor(colleague, { systemPrompt, cwd, resume }) {
+  constructor(colleague, { systemPrompt, cwd, resume, model }) {
     this.colleague = colleague;
     // Set by whoever owns this adapter (server/index.js) right after
     // creating it, and re-bound on every subsequent message so a
@@ -122,6 +122,10 @@ export class ClaudeAdapter {
         thinking: { type: 'adaptive', display: 'summarized' },
         canUseTool: (toolName, input, opts) => this._handlePermission(toolName, input, opts),
         ...(resume ? { resume } : {}),
+        // The model picked in the conversation's settings, if any — an
+        // option of its own in the SDK (sdk.d.ts: "Claude model to use.
+        // Defaults to the CLI default model."), left out entirely otherwise.
+        ...(model ? { model } : {}),
       },
     });
 
@@ -349,6 +353,20 @@ export class ClaudeAdapter {
     } catch {
       return null;
     }
+  }
+
+  // The models this account can pick from, as the SDK reports them
+  // (`value` is what setModel()/the `model` option take). Answers before
+  // the first message has been sent.
+  async supportedModels() {
+    return this._session.supportedModels();
+  }
+
+  // Switches the model for the replies that follow, in the running
+  // session (sdk.d.ts: Query.setModel, streaming input mode only — which
+  // is the only mode this adapter uses). undefined goes back to the default.
+  async setModel(model) {
+    await this._session.setModel(model || undefined);
   }
 
   // Terminates the underlying `claude` subprocess. Found the hard way:

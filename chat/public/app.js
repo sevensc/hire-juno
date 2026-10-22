@@ -343,6 +343,8 @@
   var convSettingsAutoModeEl = document.getElementById("conv-settings-auto-mode");
   var convSettingsNewSessionSectionEl = document.getElementById("conv-settings-new-session-section");
   var convSettingsNewSessionEl = document.getElementById("conv-settings-new-session");
+  var convSettingsModelSectionEl = document.getElementById("conv-settings-model-section");
+  var convSettingsModelEl = document.getElementById("conv-settings-model");
   var convSearchInputEl = document.getElementById("conv-search-input");
   var convSearchResultsEl = document.getElementById("conv-search-results");
   var convResetContextEl = document.getElementById("conv-reset-context");
@@ -530,6 +532,64 @@
         );
       }
     }
+  }
+  var modelPicker = null;
+  async function renderConvSettingsModel() {
+    convSettingsModelEl.innerHTML = "";
+    modelPicker = null;
+    if (!activeColleagueId || isSubagentThread(activeColleagueId)) {
+      convSettingsModelSectionEl.hidden = true;
+      return;
+    }
+    const colleagueId = activeColleagueId;
+    const sessionId = activeSessionId;
+    convSettingsModelSectionEl.hidden = false;
+    const loading = document.createElement("p");
+    loading.className = "model-picker__hint";
+    loading.textContent = "Loading models\u2026";
+    convSettingsModelEl.appendChild(loading);
+    let data;
+    try {
+      const res = await fetch(`api/models?colleagueId=${encodeURIComponent(colleagueId)}&sessionId=${encodeURIComponent(sessionId)}`);
+      data = await res.json();
+    } catch {
+      data = { supported: false };
+    }
+    if (convSettingsBackdropEl.hidden || colleagueId !== activeColleagueId || sessionId !== activeSessionId) return;
+    convSettingsModelEl.innerHTML = "";
+    if (!data.supported || !data.models?.length) {
+      convSettingsModelSectionEl.hidden = true;
+      return;
+    }
+    const select = document.createElement("select");
+    select.id = "conv-model-select";
+    select.setAttribute("aria-label", "Model");
+    for (const model of data.models) {
+      const option = document.createElement("option");
+      option.value = model.value;
+      option.textContent = model.displayName || model.value;
+      select.appendChild(option);
+    }
+    const confirmed = data.models.some((m3) => m3.value === data.choice) ? data.choice : "default";
+    select.value = data.models.some((m3) => m3.value === confirmed) ? confirmed : data.models[0].value;
+    const hint = document.createElement("p");
+    hint.className = "model-picker__hint";
+    const error = document.createElement("p");
+    error.className = "model-picker__error";
+    error.setAttribute("role", "alert");
+    error.hidden = true;
+    const showDescription = () => {
+      hint.textContent = data.models.find((m3) => m3.value === select.value)?.description || "";
+    };
+    showDescription();
+    select.addEventListener("change", () => {
+      showDescription();
+      error.hidden = true;
+      select.disabled = true;
+      socket.send(JSON.stringify({ type: "set_model", colleagueId, sessionId, model: select.value }));
+    });
+    convSettingsModelEl.append(select, hint, error);
+    modelPicker = { colleagueId, sessionId, select, hint, error, confirmed: select.value };
   }
   function renderConvSettingsNewSession() {
     if (!activeColleagueId || isSubagentThread(activeColleagueId)) {
@@ -748,6 +808,7 @@
     renderConvSettingsNewSession();
     disarmClearChat();
     openDialog(convSettingsBackdropEl, convSettingsModalEl);
+    renderConvSettingsModel();
   }
   function closeConvSettingsModal() {
     disarmClearChat();
@@ -1620,6 +1681,28 @@
       else autoModeKeys.delete(key2);
       if (key2 === activeConvKey()) renderPaneHeader();
       refreshSettingsModalIfOpen();
+      return;
+    }
+    if (update.type === "model_changed" || update.type === "model_change_failed") {
+      const picker = modelPicker;
+      const isThisPicker = picker && picker.colleagueId === update.colleagueId && picker.sessionId === update.sessionId;
+      if (update.type === "model_changed") {
+        const key2 = convKey(update.colleagueId, update.sessionId);
+        const stats = colleagueStats.get(key2) || {};
+        stats.model = update.resolvedModel || update.model || stats.model;
+        colleagueStats.set(key2, stats);
+        if (key2 === activeConvKey()) renderPaneHeader();
+        if (isThisPicker) {
+          picker.confirmed = picker.select.value;
+          picker.select.disabled = false;
+        }
+      } else if (isThisPicker) {
+        picker.select.value = picker.confirmed;
+        picker.select.disabled = false;
+        picker.hint.textContent = "";
+        picker.error.textContent = update.message || "Could not switch the model.";
+        picker.error.hidden = false;
+      }
       return;
     }
     if (update.type === "chat_cleared") {

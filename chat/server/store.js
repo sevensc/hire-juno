@@ -86,6 +86,18 @@ const SCHEMA = `
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     PRIMARY KEY (colleague_id, session_id)
   );
+
+  -- The model picked for one conversation in its settings dialog (the
+  -- SDK's own model value, e.g. 'sonnet'). A row only exists while a
+  -- choice is set — no row means "the default". Deliberately not removed
+  -- by a context reset: that clears what a colleague remembers, not how
+  -- she was set up.
+  CREATE TABLE IF NOT EXISTS model_choices (
+    colleague_id TEXT NOT NULL,
+    session_id TEXT NOT NULL DEFAULT 'default',
+    model TEXT NOT NULL,
+    PRIMARY KEY (colleague_id, session_id)
+  );
 `;
 
 // No workforce ID (CONSTITUTION.md missing or still carrying its
@@ -164,6 +176,12 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
   const getAdapterSessionStmt = db.prepare(
     'SELECT sdk_session_id FROM adapter_sessions WHERE colleague_id = ? AND session_id = ?'
   );
+  const getModelChoiceStmt = db.prepare('SELECT model FROM model_choices WHERE colleague_id = ? AND session_id = ?');
+  const setModelChoiceStmt = db.prepare(
+    `INSERT INTO model_choices (colleague_id, session_id, model) VALUES (?, ?, ?)
+     ON CONFLICT(colleague_id, session_id) DO UPDATE SET model = excluded.model`
+  );
+  const deleteModelChoiceStmt = db.prepare('DELETE FROM model_choices WHERE colleague_id = ? AND session_id = ?');
   const deleteMessagesStmt = db.prepare('DELETE FROM messages WHERE colleague_id = ? AND session_id = ?');
   const deleteAdapterSessionStmt = db.prepare(
     'DELETE FROM adapter_sessions WHERE colleague_id = ? AND session_id = ?'
@@ -254,6 +272,16 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
     },
     // See the adapter_sessions table comment above — the SDK's own
     // resumable session id for one (colleague, our session) adapter.
+    // The model chosen for this conversation, or null for "the default".
+    getModelChoice(colleagueId, sessionId) {
+      return getModelChoiceStmt.get(colleagueId, sessionId || DEFAULT_SESSION_ID)?.model ?? null;
+    },
+    // null/empty clears the choice.
+    setModelChoice(colleagueId, sessionId, model) {
+      const sid = sessionId || DEFAULT_SESSION_ID;
+      if (model) setModelChoiceStmt.run(colleagueId, sid, model);
+      else deleteModelChoiceStmt.run(colleagueId, sid);
+    },
     saveAdapterSession(colleagueId, sessionId, sdkSessionId) {
       saveAdapterSessionStmt.run(colleagueId, sessionId || DEFAULT_SESSION_ID, sdkSessionId);
     },

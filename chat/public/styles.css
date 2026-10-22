@@ -733,6 +733,23 @@ button.workforce-row__pick:disabled { cursor: default; opacity: 0.55; }
   margin: 0 0 0.4rem;
 }
 
+#conv-model-select {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 2.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.4rem;
+  background: var(--bg);
+  color: var(--fg);
+  padding: 0.4rem 0.6rem;
+  /* 1rem for the same reason as #conv-search-input below: a phone
+     browser zooms in on a focused control with text under 16px. */
+  font-size: 1rem;
+}
+#conv-model-select:disabled { opacity: 0.6; }
+.model-picker__hint { margin: 0.4rem 0 0; font-size: 0.85rem; color: var(--fg-muted); }
+.model-picker__error { margin: 0.4rem 0 0; font-size: 0.85rem; color: #d64545; }
+
 #conv-search-input {
   width: 100%;
   box-sizing: border-box;
