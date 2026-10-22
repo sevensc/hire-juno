@@ -288,6 +288,15 @@
       <h3>Auto mode</h3>
       <div id="conv-settings-auto-mode"></div>
     </section>
+    <!-- Model choice, 1:1 only for now (a channel turn runs on each
+         member's own main-conversation session, whose model is set in
+         that session's own dialog). app.js's renderConvSettingsModel
+         fills it in, or hides it again when the colleague's backend has
+         no model choice. -->
+    <section id="conv-settings-model-section" hidden>
+      <h3>Model</h3>
+      <div id="conv-settings-model"></div>
+    </section>
     <!-- "New session" lives here alongside the other per-conversation
          controls (Auto mode, Reset context), not in the sidebar (see
          chat/README.md/app.js's newSessionFormEl). 1:1-only (a session is
