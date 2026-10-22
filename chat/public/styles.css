@@ -2250,6 +2250,27 @@ button.session-list__row:active { background: var(--bg-message); }
 .message > span h3,
 .message > span h4 { margin: 0.3em 0; font-size: 1em; font-weight: 700; }
 
+/* Pipe tables: scroll sideways inside the bubble instead of widening it
+   (same reason as pre above), cells kept compact. */
+.message > span .table-scroll {
+  overflow-x: auto;
+  margin: 0.3em 0;
+  overscroll-behavior: contain;
+}
+.message > span table { border-collapse: collapse; font-size: 0.92em; }
+.message > span th,
+.message > span td {
+  border: 1px solid var(--border);
+  padding: 0.25em 0.55em;
+  text-align: left;
+  vertical-align: top;
+  /* The bubble breaks words anywhere (see .message > span above); inside a
+     table that squeezes short columns down to single letters. */
+  word-break: normal;
+  overflow-wrap: normal;
+}
+.message > span th { font-weight: 700; background: rgba(127, 127, 127, 0.12); }
+
 /* A tool-use line ("Edit: /path/to/file") — click to expand the
    actual change instead of only ever seeing the one-line summary. */
 .tool-use-line {

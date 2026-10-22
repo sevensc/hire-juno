@@ -283,6 +283,116 @@
   // node_modules/htm/preact/index.module.js
   var m2 = htm_module_default.bind(k);
 
+  // chat/src/markdown.js
+  function escapeHtml(text) {
+    return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+  function renderInlineMarkdown(text) {
+    let html = escapeHtml(text);
+    html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
+    html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    html = html.replace(/__([^_]+)__/g, "<strong>$1</strong>");
+    html = html.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, "<em>$1</em>");
+    html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+    return html;
+  }
+  function splitTableRow(line) {
+    let row = line.trim();
+    if (row.startsWith("|")) row = row.slice(1);
+    if (row.endsWith("|") && !row.endsWith("\\|")) row = row.slice(0, -1);
+    return row.split(/(?<!\\)\|/).map((cell) => cell.replace(/\\\|/g, "|").trim());
+  }
+  function tableAlignments(delimiterLine) {
+    if (!delimiterLine.includes("|")) return null;
+    const cells = splitTableRow(delimiterLine);
+    if (!cells.every((cell) => /^:?-+:?$/.test(cell))) return null;
+    return cells.map((cell) => {
+      if (cell.startsWith(":") && cell.endsWith(":")) return "center";
+      if (cell.endsWith(":")) return "right";
+      return null;
+    });
+  }
+  function isTableStart(lines, i2) {
+    if (i2 + 1 >= lines.length || !lines[i2].includes("|")) return false;
+    const alignments = tableAlignments(lines[i2 + 1]);
+    return alignments !== null && alignments.length === splitTableRow(lines[i2]).length;
+  }
+  function renderTable(lines, i2) {
+    const header = splitTableRow(lines[i2]);
+    const alignments = tableAlignments(lines[i2 + 1]);
+    const cell = (tag, text, col) => `<${tag}${alignments[col] ? ` style="text-align:${alignments[col]}"` : ""}>${renderInlineMarkdown(text ?? "")}</${tag}>`;
+    let html = `<div class="table-scroll"><table><thead><tr>${header.map((text, col) => cell("th", text, col)).join("")}</tr></thead><tbody>`;
+    let next = i2 + 2;
+    while (next < lines.length && lines[next].trim() !== "" && lines[next].includes("|")) {
+      const row = splitTableRow(lines[next]);
+      html += `<tr>${header.map((_2, col) => cell("td", row[col], col)).join("")}</tr>`;
+      next++;
+    }
+    html += "</tbody></table></div>";
+    return { html, next };
+  }
+  function renderMarkdown(text) {
+    const lines = text.split("\n");
+    let html = "";
+    let i2 = 0;
+    while (i2 < lines.length) {
+      const line = lines[i2];
+      if (line.startsWith("```")) {
+        const codeLines = [];
+        i2++;
+        while (i2 < lines.length && !lines[i2].startsWith("```")) {
+          codeLines.push(lines[i2]);
+          i2++;
+        }
+        i2++;
+        html += `<pre><code>${escapeHtml(codeLines.join("\n"))}</code></pre>`;
+        continue;
+      }
+      if (isTableStart(lines, i2)) {
+        const table = renderTable(lines, i2);
+        html += table.html;
+        i2 = table.next;
+        continue;
+      }
+      const heading = line.match(/^(#{1,4})\s+(.*)$/);
+      if (heading) {
+        const level = Math.min(heading[1].length + 2, 6);
+        html += `<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`;
+        i2++;
+        continue;
+      }
+      if (/^\s*[*-]\s+/.test(line)) {
+        const items = [];
+        while (i2 < lines.length && /^\s*[*-]\s+/.test(lines[i2])) {
+          items.push(`<li>${renderInlineMarkdown(lines[i2].replace(/^\s*[*-]\s+/, ""))}</li>`);
+          i2++;
+        }
+        html += `<ul>${items.join("")}</ul>`;
+        continue;
+      }
+      if (/^\s*\d+\.\s+/.test(line)) {
+        const items = [];
+        while (i2 < lines.length && /^\s*\d+\.\s+/.test(lines[i2])) {
+          items.push(`<li>${renderInlineMarkdown(lines[i2].replace(/^\s*\d+\.\s+/, ""))}</li>`);
+          i2++;
+        }
+        html += `<ol>${items.join("")}</ol>`;
+        continue;
+      }
+      if (line.trim() === "") {
+        i2++;
+        continue;
+      }
+      const paraLines = [];
+      while (i2 < lines.length && lines[i2].trim() !== "" && !lines[i2].startsWith("```") && !/^(#{1,4})\s+/.test(lines[i2]) && !/^\s*[*-]\s+/.test(lines[i2]) && !/^\s*\d+\.\s+/.test(lines[i2]) && !isTableStart(lines, i2)) {
+        paraLines.push(renderInlineMarkdown(lines[i2]));
+        i2++;
+      }
+      html += `<p>${paraLines.join("<br>")}</p>`;
+    }
+    return html;
+  }
+
   // chat/src/app.js
   var paneEl = document.getElementById("pane");
   var paneHeaderEl = document.getElementById("pane-header");
@@ -856,73 +966,6 @@
     );
   }
   var pendingPermission = /* @__PURE__ */ new Map();
-  function escapeHtml(text) {
-    return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  }
-  function renderInlineMarkdown(text) {
-    let html = escapeHtml(text);
-    html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
-    html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-    html = html.replace(/__([^_]+)__/g, "<strong>$1</strong>");
-    html = html.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, "<em>$1</em>");
-    html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
-    return html;
-  }
-  function renderMarkdown(text) {
-    const lines = text.split("\n");
-    let html = "";
-    let i2 = 0;
-    while (i2 < lines.length) {
-      const line = lines[i2];
-      if (line.startsWith("```")) {
-        const codeLines = [];
-        i2++;
-        while (i2 < lines.length && !lines[i2].startsWith("```")) {
-          codeLines.push(lines[i2]);
-          i2++;
-        }
-        i2++;
-        html += `<pre><code>${escapeHtml(codeLines.join("\n"))}</code></pre>`;
-        continue;
-      }
-      const heading = line.match(/^(#{1,4})\s+(.*)$/);
-      if (heading) {
-        const level = Math.min(heading[1].length + 2, 6);
-        html += `<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`;
-        i2++;
-        continue;
-      }
-      if (/^\s*[*-]\s+/.test(line)) {
-        const items = [];
-        while (i2 < lines.length && /^\s*[*-]\s+/.test(lines[i2])) {
-          items.push(`<li>${renderInlineMarkdown(lines[i2].replace(/^\s*[*-]\s+/, ""))}</li>`);
-          i2++;
-        }
-        html += `<ul>${items.join("")}</ul>`;
-        continue;
-      }
-      if (/^\s*\d+\.\s+/.test(line)) {
-        const items = [];
-        while (i2 < lines.length && /^\s*\d+\.\s+/.test(lines[i2])) {
-          items.push(`<li>${renderInlineMarkdown(lines[i2].replace(/^\s*\d+\.\s+/, ""))}</li>`);
-          i2++;
-        }
-        html += `<ol>${items.join("")}</ol>`;
-        continue;
-      }
-      if (line.trim() === "") {
-        i2++;
-        continue;
-      }
-      const paraLines = [];
-      while (i2 < lines.length && lines[i2].trim() !== "" && !lines[i2].startsWith("```") && !/^(#{1,4})\s+/.test(lines[i2]) && !/^\s*[*-]\s+/.test(lines[i2]) && !/^\s*\d+\.\s+/.test(lines[i2])) {
-        paraLines.push(renderInlineMarkdown(lines[i2]));
-        i2++;
-      }
-      html += `<p>${paraLines.join("<br>")}</p>`;
-    }
-    return html;
-  }
   var HIRING_MODE_START = /^:::mode hiring-process:start\s*$/m;
   var HIRING_MODE_END = /^:::mode hiring-process:end\s*$/m;
   var hiringModeConversations = /* @__PURE__ */ new Set();

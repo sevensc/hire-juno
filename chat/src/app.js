@@ -13,6 +13,8 @@
 import { Fragment, render } from 'preact';
 import { html } from 'htm/preact';
 
+import { renderMarkdown } from './markdown.js';
+
 const paneEl = document.getElementById('pane');
 const paneHeaderEl = document.getElementById('pane-header');
 const hiringModeBannerEl = document.getElementById('hiring-mode-banner');
@@ -998,91 +1000,6 @@ function reconstructTrail(trail) {
   );
 }
 const pendingPermission = new Map(); // colleagueId -> {requestId, toolName, title, displayName, description, input}
-
-// A small, safe-by-construction markdown-lite renderer, so colleagues'
-// replies don't show literal "**bold**" markup. No dependency pulled in for this deliberately vanilla frontend
-// (see the file header): escape first, then apply a handful of block/
-// inline rules for what colleagues actually produce (bold, italic,
-// inline code, fenced code, links, headings, lists). Not a full
-// CommonMark implementation — edge cases (nested emphasis, tables,
-// etc.) are expected to fall back to looking like plain text rather
-// than rendering wrong.
-function escapeHtml(text) {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
-function renderInlineMarkdown(text) {
-  let html = escapeHtml(text);
-  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  html = html.replace(/__([^_]+)__/g, '<strong>$1</strong>');
-  html = html.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, '<em>$1</em>');
-  html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
-  return html;
-}
-
-function renderMarkdown(text) {
-  const lines = text.split('\n');
-  let html = '';
-  let i = 0;
-  while (i < lines.length) {
-    const line = lines[i];
-    if (line.startsWith('```')) {
-      const codeLines = [];
-      i++;
-      while (i < lines.length && !lines[i].startsWith('```')) {
-        codeLines.push(lines[i]);
-        i++;
-      }
-      i++; // skip the closing fence, if there was one
-      html += `<pre><code>${escapeHtml(codeLines.join('\n'))}</code></pre>`;
-      continue;
-    }
-    const heading = line.match(/^(#{1,4})\s+(.*)$/);
-    if (heading) {
-      const level = Math.min(heading[1].length + 2, 6); // '#' -> h3 — a full h1 would dwarf a chat bubble
-      html += `<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`;
-      i++;
-      continue;
-    }
-    if (/^\s*[*-]\s+/.test(line)) {
-      const items = [];
-      while (i < lines.length && /^\s*[*-]\s+/.test(lines[i])) {
-        items.push(`<li>${renderInlineMarkdown(lines[i].replace(/^\s*[*-]\s+/, ''))}</li>`);
-        i++;
-      }
-      html += `<ul>${items.join('')}</ul>`;
-      continue;
-    }
-    if (/^\s*\d+\.\s+/.test(line)) {
-      const items = [];
-      while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) {
-        items.push(`<li>${renderInlineMarkdown(lines[i].replace(/^\s*\d+\.\s+/, ''))}</li>`);
-        i++;
-      }
-      html += `<ol>${items.join('')}</ol>`;
-      continue;
-    }
-    if (line.trim() === '') {
-      i++;
-      continue;
-    }
-    const paraLines = [];
-    while (
-      i < lines.length &&
-      lines[i].trim() !== '' &&
-      !lines[i].startsWith('```') &&
-      !/^(#{1,4})\s+/.test(lines[i]) &&
-      !/^\s*[*-]\s+/.test(lines[i]) &&
-      !/^\s*\d+\.\s+/.test(lines[i])
-    ) {
-      paraLines.push(renderInlineMarkdown(lines[i]));
-      i++;
-    }
-    html += `<p>${paraLines.join('<br>')}</p>`;
-  }
-  return html;
-}
 
 // --- "Einstellungsprozess-Modus" ---------------------------------
 // When a colleague starts a hiring process, the chat
