@@ -1648,6 +1648,8 @@ button.workforce-row__pick:disabled { cursor: default; opacity: 0.55; }
   border: 1px dashed var(--border);
 }
 .message--streaming > span { opacity: 0.85; }
+/* Written while the colleague was still mid-turn: dimmed until she has read it. */
+.message--pending > span { opacity: 0.65; }
 
 /* Momentary flash for "Jump" in the conversation-settings search (see
    jumpToMessage in app.js) — the scrollIntoView alone can land a match

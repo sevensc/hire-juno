@@ -1833,6 +1833,7 @@
         thinkingStreaming.delete(key);
         renderSidebar();
         const text = applyHiringModeMarkers(key, update.text);
+        for (const waiting of history.get(key)) delete waiting.pending;
         history.get(key).push({
           role: update.role,
           text,
@@ -1987,7 +1988,7 @@
     return m2`
     <${S}>
       ${item.trail?.length ? m2`<${TrailBox} trail=${item.trail} onToggleEntry=${onToggleTrailEntry} />` : null}
-      <div class="message message--${role}">
+      <div class="message message--${role}${item.pending ? " message--pending" : ""}">
         ${avatarColleague ? m2`<${Avatar} colleague=${avatarColleague} />` : null}
         ${isToolUse ? m2`
               <span class="tool-use-line" onClick=${onToggle}>${toolText}</span>
@@ -1999,7 +2000,7 @@
                 ${(item.attachments || []).map(
       (attachment, i2) => m2`<img key=${i2} class="attachment-thumb" src=${attachment.dataUrl} alt=${attachment.name} role="button" tabindex="0" />`
     )}
-                ${time ? m2`<time class="message__time">${time}</time>` : null}
+                ${item.pending ? m2`<time class="message__time">Waiting, not read yet</time>` : time ? m2`<time class="message__time">${time}</time>` : null}
               </span>
             `}
       </div>
@@ -2046,26 +2047,25 @@
     const partialText = streaming.get(key);
     const permission = pendingPermission.get(key);
     const liveTrail = pendingTrail.get(key) || [];
+    const row = (item, i2) => m2`<${MessageRow}
+    key=${i2}
+    role=${item.role}
+    avatarColleague=${null}
+    nameTag=${null}
+    item=${item}
+    toolText=${item.text}
+    onToggle=${() => {
+      item.expanded = !item.expanded;
+      renderMessages();
+    }}
+    onToggleTrailEntry=${(entryIndex) => {
+      item.trail[entryIndex].expanded = !item.trail[entryIndex].expanded;
+      renderMessages();
+    }}
+  />`;
     R(
       m2`<${S}>
-      ${items.map(
-        (item, i2) => m2`<${MessageRow}
-          key=${i2}
-          role=${item.role}
-          avatarColleague=${null}
-          nameTag=${null}
-          item=${item}
-          toolText=${item.text}
-          onToggle=${() => {
-          item.expanded = !item.expanded;
-          renderMessages();
-        }}
-          onToggleTrailEntry=${(entryIndex) => {
-          item.trail[entryIndex].expanded = !item.trail[entryIndex].expanded;
-          renderMessages();
-        }}
-        />`
-      )}
+      ${items.map((item, i2) => item.pending ? null : row(item, i2))}
       ${thinkingText ? m2`<${StreamingRow} role="thinking" colleague=${null} text=${thinkingText} />` : null}
       ${partialText ? m2`<${StreamingRow} role="colleague" colleague=${null} text=${partialText} />` : null}
       ${liveTrail.length ? m2`<${TrailBox}
@@ -2076,6 +2076,7 @@
       }}
           />` : null}
       ${permission ? m2`<${PermissionCard} permission=${permission} colleagueId=${key} isChannel=${false} />` : null}
+      ${items.map((item, i2) => item.pending ? row(item, i2) : null)}
       ${!items.length && !thinkingText && !partialText && !permission ? m2`<${EmptyConversation}
             text=${`No messages with ${colleaguesById.get(activeColleagueId)?.name || "this colleague"} yet. Write the first one below.`}
           />` : null}
@@ -2771,7 +2772,7 @@
     const key = activeConvKey();
     if (!history.has(key)) history.set(key, []);
     const attachments = pendingAttachment ? [pendingAttachment] : [];
-    history.get(key).push({ role: "you", text, attachments, createdAt: (/* @__PURE__ */ new Date()).toISOString() });
+    history.get(key).push({ role: "you", text, attachments, createdAt: (/* @__PURE__ */ new Date()).toISOString(), pending: isTyping(key) });
     renderMessages({ forceScrollToBottom: true });
     if (activeSessionId === DEFAULT_SESSION_ID) {
       const rosterColleague = colleaguesById.get(activeColleagueId);
