@@ -1036,6 +1036,31 @@ const pendingTrail = new Map();
 // the socket handler's delta/thinking_delta/tool_use cases below, which
 // call renderSidebar() only on the false→true transition instead of on
 // every token.
+// A message written while the colleague was mid-turn (`pending`) is read by
+// her only after the turn that was running: when that turn is over, the
+// message takes its place behind everything she has said meanwhile.
+function settleWaiting(list) {
+  const waiting = list.filter((m) => m.pending);
+  if (!waiting.length) return;
+  const rest = list.filter((m) => !m.pending);
+  for (const m of waiting) delete m.pending;
+  list.length = 0;
+  list.push(...rest, ...waiting);
+}
+
+function isChannelBusy(channelId) {
+  for (const typingIn of channelTyping.values()) if (typingIn === channelId) return true;
+  return false;
+}
+
+// Nobody is writing in this channel any more: whatever was written in the
+// meantime is read from now on.
+function settleChannelIfIdle(channelId) {
+  if (isChannelBusy(channelId)) return;
+  const list = channelMessages.get(channelId);
+  if (list) settleWaiting(list);
+}
+
 function isTyping(key) {
   return streaming.has(key) || thinkingStreaming.has(key) || pendingTrail.has(key);
 }
@@ -2236,6 +2261,9 @@ const handleSocketMessage = (event) => {
       attachments,
       createdAt: new Date().toISOString(),
       trail: trail.length ? trail : undefined,
+      // Written while somebody in the channel is still mid-turn: stays
+      // below the live rows, marked as waiting, until the channel is idle.
+      pending: update.senderId === 'you' && isChannelBusy(update.channelId),
     });
     // Clears whatever in-progress state her turn left behind, in case a
     // channel_typing(active:false) got here first, last, or not at all —
@@ -2244,6 +2272,7 @@ const handleSocketMessage = (event) => {
     channelStreaming.delete(update.senderId);
     channelThinkingStreaming.delete(update.senderId);
     channelTyping.delete(update.senderId);
+    settleChannelIfIdle(update.channelId);
     const isColleagueMessage = update.senderId !== 'you' && update.senderId !== 'system';
     if (isColleagueMessage && !(document.hasFocus() && update.channelId === activeChannelId)) {
       const channel = channelsById.get(update.channelId);
@@ -2307,6 +2336,7 @@ const handleSocketMessage = (event) => {
       case 'channel_typing':
         if (update.active) channelTyping.set(colleagueId, channelId);
         else channelTyping.delete(colleagueId);
+        if (!update.active) settleChannelIfIdle(channelId);
         renderSidebar(); // channel row's typing indicator — needed even when this channel isn't the open one
         break;
       case 'delta':
@@ -2446,10 +2476,6 @@ const handleSocketMessage = (event) => {
       thinkingStreaming.delete(key);
       renderSidebar(); // she just stopped typing — clear the sidebar's indicator even if this isn't the open conversation
       const text = applyHiringModeMarkers(key, update.text);
-      // Her turn is over: whatever was written meanwhile counts as read
-      // now and takes its place in the transcript, above this reply
-      // (the order the server stored it in).
-      for (const waiting of history.get(key)) delete waiting.pending;
       history.get(key).push({
         role: update.role,
         text,
@@ -2464,6 +2490,9 @@ const handleSocketMessage = (event) => {
         // doesn't have.
         trail: reconstructTrail(update.trail),
       });
+      // Her turn is over: whatever was written meanwhile counts as read
+      // now and stands behind this reply, not in front of it.
+      settleWaiting(history.get(key));
       // Sidebar preview mirrors what the server's getLastMessages()
       // would now report (main thread only — see its own comment) —
       // updated locally instead of re-fetching the whole roster on
@@ -2922,30 +2951,34 @@ function renderChannelMessages({ forceScrollToBottom = false } = {}) {
   // above), not something worth picking apart here.
   const permissionEntries = [...channelPendingPermission.values()].filter((p) => p.channelId === activeChannelId);
 
+  // One bubble. A `pending` message (written while somebody was mid-turn)
+  // is drawn below the live rows instead of among the settled ones.
+  const row = (item, i) => {
+    const isYou = item.senderId === 'you';
+    const isSystem = item.senderId === 'system';
+    const sender = isYou || isSystem ? null : colleaguesById.get(item.senderId);
+    const role = isYou ? 'you' : isSystem ? 'system' : 'colleague';
+    return html`<${MessageRow}
+      key=${i}
+      role=${role}
+      avatarColleague=${sender}
+      nameTag=${sender?.name || null}
+      item=${item}
+      toolText=${item.text}
+      onToggle=${() => {
+        item.expanded = !item.expanded;
+        renderChannelMessages();
+      }}
+      onToggleTrailEntry=${(entryIndex) => {
+        item.trail[entryIndex].expanded = !item.trail[entryIndex].expanded;
+        renderChannelMessages();
+      }}
+    />`;
+  };
+
   render(
     html`<${Fragment}>
-      ${items.map((item, i) => {
-        const isYou = item.senderId === 'you';
-        const isSystem = item.senderId === 'system';
-        const sender = isYou || isSystem ? null : colleaguesById.get(item.senderId);
-        const role = isYou ? 'you' : isSystem ? 'system' : 'colleague';
-        return html`<${MessageRow}
-          key=${i}
-          role=${role}
-          avatarColleague=${sender}
-          nameTag=${sender?.name || null}
-          item=${item}
-          toolText=${item.text}
-          onToggle=${() => {
-            item.expanded = !item.expanded;
-            renderChannelMessages();
-          }}
-          onToggleTrailEntry=${(entryIndex) => {
-            item.trail[entryIndex].expanded = !item.trail[entryIndex].expanded;
-            renderChannelMessages();
-          }}
-        />`;
-      })}
+      ${items.map((item, i) => (item.pending ? null : row(item, i)))}
       ${typingEntries.map(
         ({ colleagueId, colleague, thinkingText, liveText, liveTrail }) => html`
           <${Fragment} key=${colleagueId}>
@@ -2976,6 +3009,7 @@ function renderChannelMessages({ forceScrollToBottom = false } = {}) {
           isChannel=${true}
         />`
       )}
+      ${items.map((item, i) => (item.pending ? row(item, i) : null))}
       ${!items.length && !typingEntries.length
         ? html`<${EmptyConversation}
             text=${`Nothing in #${channelsById.get(activeChannelId)?.name || 'this channel'} yet. Write the first message, or @name someone to bring them in.`}

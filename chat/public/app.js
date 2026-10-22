@@ -6250,6 +6250,23 @@
   var streaming = /* @__PURE__ */ new Map();
   var thinkingStreaming = /* @__PURE__ */ new Map();
   var pendingTrail = /* @__PURE__ */ new Map();
+  function settleWaiting(list2) {
+    const waiting = list2.filter((m3) => m3.pending);
+    if (!waiting.length) return;
+    const rest = list2.filter((m3) => !m3.pending);
+    for (const m3 of waiting) delete m3.pending;
+    list2.length = 0;
+    list2.push(...rest, ...waiting);
+  }
+  function isChannelBusy(channelId) {
+    for (const typingIn of channelTyping.values()) if (typingIn === channelId) return true;
+    return false;
+  }
+  function settleChannelIfIdle(channelId) {
+    if (isChannelBusy(channelId)) return;
+    const list2 = channelMessages.get(channelId);
+    if (list2) settleWaiting(list2);
+  }
   function isTyping(key) {
     return streaming.has(key) || thinkingStreaming.has(key) || pendingTrail.has(key);
   }
@@ -7050,11 +7067,15 @@
         text: text2,
         attachments,
         createdAt: (/* @__PURE__ */ new Date()).toISOString(),
-        trail: trail.length ? trail : void 0
+        trail: trail.length ? trail : void 0,
+        // Written while somebody in the channel is still mid-turn: stays
+        // below the live rows, marked as waiting, until the channel is idle.
+        pending: update.senderId === "you" && isChannelBusy(update.channelId)
       });
       channelStreaming.delete(update.senderId);
       channelThinkingStreaming.delete(update.senderId);
       channelTyping.delete(update.senderId);
+      settleChannelIfIdle(update.channelId);
       const isColleagueMessage = update.senderId !== "you" && update.senderId !== "system";
       if (isColleagueMessage && !(document.hasFocus() && update.channelId === activeChannelId)) {
         const channel = channelsById.get(update.channelId);
@@ -7095,6 +7116,7 @@
         case "channel_typing":
           if (update.active) channelTyping.set(colleagueId2, channelId);
           else channelTyping.delete(colleagueId2);
+          if (!update.active) settleChannelIfIdle(channelId);
           renderSidebar();
           break;
         case "delta":
@@ -7205,7 +7227,6 @@
         thinkingStreaming.delete(key);
         renderSidebar();
         const text2 = applyHiringModeMarkers(key, update.text);
-        for (const waiting of history.get(key)) delete waiting.pending;
         history.get(key).push({
           role: update.role,
           text: text2,
@@ -7220,6 +7241,7 @@
           // doesn't have.
           trail: reconstructTrail(update.trail)
         });
+        settleWaiting(history.get(key));
         if (sessionId === DEFAULT_SESSION_ID && key === convKey(colleagueId, sessionId)) {
           const rosterColleague = colleaguesById.get(colleagueId);
           if (rosterColleague) rosterColleague.lastMessage = { role: update.role, text: text2 };
@@ -7481,30 +7503,31 @@
       });
     }
     const permissionEntries = [...channelPendingPermission.values()].filter((p2) => p2.channelId === activeChannelId);
+    const row = (item, i2) => {
+      const isYou = item.senderId === "you";
+      const isSystem = item.senderId === "system";
+      const sender = isYou || isSystem ? null : colleaguesById.get(item.senderId);
+      const role = isYou ? "you" : isSystem ? "system" : "colleague";
+      return m2`<${MessageRow}
+      key=${i2}
+      role=${role}
+      avatarColleague=${sender}
+      nameTag=${sender?.name || null}
+      item=${item}
+      toolText=${item.text}
+      onToggle=${() => {
+        item.expanded = !item.expanded;
+        renderChannelMessages();
+      }}
+      onToggleTrailEntry=${(entryIndex) => {
+        item.trail[entryIndex].expanded = !item.trail[entryIndex].expanded;
+        renderChannelMessages();
+      }}
+    />`;
+    };
     R(
       m2`<${S}>
-      ${items.map((item, i2) => {
-        const isYou = item.senderId === "you";
-        const isSystem = item.senderId === "system";
-        const sender = isYou || isSystem ? null : colleaguesById.get(item.senderId);
-        const role = isYou ? "you" : isSystem ? "system" : "colleague";
-        return m2`<${MessageRow}
-          key=${i2}
-          role=${role}
-          avatarColleague=${sender}
-          nameTag=${sender?.name || null}
-          item=${item}
-          toolText=${item.text}
-          onToggle=${() => {
-          item.expanded = !item.expanded;
-          renderChannelMessages();
-        }}
-          onToggleTrailEntry=${(entryIndex) => {
-          item.trail[entryIndex].expanded = !item.trail[entryIndex].expanded;
-          renderChannelMessages();
-        }}
-        />`;
-      })}
+      ${items.map((item, i2) => item.pending ? null : row(item, i2))}
       ${typingEntries.map(
         ({ colleagueId, colleague, thinkingText, liveText, liveTrail }) => m2`
           <${S} key=${colleagueId}>
@@ -7533,6 +7556,7 @@
           isChannel=${true}
         />`
       )}
+      ${items.map((item, i2) => item.pending ? row(item, i2) : null)}
       ${!items.length && !typingEntries.length ? m2`<${EmptyConversation}
             text=${`Nothing in #${channelsById.get(activeChannelId)?.name || "this channel"} yet. Write the first message, or @name someone to bring them in.`}
           />` : null}
