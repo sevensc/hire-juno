@@ -118,10 +118,13 @@ Also real, added after the first working slice:
   request so flipping it mid-conversation takes effect immediately.
   Scoped to 1:1 sessions only for now — a channel turn always still
   prompts.
-- **Markdown rendering** in message bubbles (bold/italic/code/fenced
-  code/links/headings/lists) — a small hand-rolled, escape-first
-  renderer, not a dependency, since the frontend stays intentionally
-  vanilla (see below).
+- **Markdown rendering** in message bubbles — CommonMark plus tables
+  and strikethrough, via markdown-it (a dev dependency, bundled into
+  `chat/public/app.js` like Preact; see `chat/src/markdown.js`). Raw
+  HTML in a reply is shown as text, links that could run script are not
+  turned into links, and images are not rendered (an image tag would
+  make the browser fetch an address on its own); they stay a plain
+  link. Task-list checkboxes are not rendered, `- [x]` stays text.
 - **Desktop notifications** when a message arrives for a conversation
   that isn't the one on screen, or while the tab isn't focused at all.
   Best-effort permission request on load plus an explicit
