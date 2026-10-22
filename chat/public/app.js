@@ -6266,7 +6266,7 @@
   function reconstructTrail(trail) {
     if (!trail?.length) return void 0;
     return trail.map(
-      (entry) => entry.kind === "tool_use" ? { kind: "tool_use", text: toolUseLine(entry.name, entry.input), toolName: entry.name, toolInput: entry.input } : entry
+      (entry) => entry.kind === "tool_use" ? { kind: "tool_use", text: toolUseLine(entry.name, entry.input), toolName: entry.name, toolInput: entry.input, approval: entry.approval } : entry
     );
   }
   var pendingPermission = /* @__PURE__ */ new Map();
@@ -7113,15 +7113,22 @@
           if (!channelPendingTrail.has(colleagueId2)) channelPendingTrail.set(colleagueId2, []);
           channelPendingTrail.get(colleagueId2).push({
             kind: "tool_use",
+            id: update.id,
             text: toolUseLine(update.name, update.input),
             toolName: update.name,
             toolInput: update.input
           });
           break;
         }
+        case "tool_done": {
+          const entry = (channelPendingTrail.get(colleagueId2) || []).find((e2) => e2.id && e2.id === update.id);
+          if (entry) entry.approval = update.approval;
+          break;
+        }
         case "permission_request":
           if (isAlwaysAllowed(channelKey(colleagueId2, channelId), update.toolName)) {
-            socket.send(JSON.stringify({ type: "permission_response", requestId: update.requestId, allow: true }));
+            const via = alwaysAllowedTools.get(channelKey(colleagueId2, channelId))?.has("*") ? "autopilot" : "allow always";
+            socket.send(JSON.stringify({ type: "permission_response", requestId: update.requestId, allow: true, via }));
             break;
           }
           channelPendingPermission.set(channelKey(colleagueId2, channelId), { channelId, ...update });
@@ -7192,11 +7199,17 @@
         if (!pendingTrail.has(key)) pendingTrail.set(key, []);
         pendingTrail.get(key).push({
           kind: "tool_use",
+          id: update.id,
           text: toolUseLine(update.name, update.input),
           toolName: update.name,
           toolInput: update.input
         });
         if (!wasTyping) renderSidebar();
+        break;
+      }
+      case "tool_done": {
+        const entry = (pendingTrail.get(key) || []).find((e2) => e2.id && e2.id === update.id);
+        if (entry) entry.approval = update.approval;
         break;
       }
       case "message": {
@@ -7237,7 +7250,8 @@
       }
       case "permission_request":
         if (isAlwaysAllowed(key, update.toolName)) {
-          socket.send(JSON.stringify({ type: "permission_response", requestId: update.requestId, allow: true }));
+          const via = alwaysAllowedTools.get(key)?.has("*") ? "autopilot" : "allow always";
+          socket.send(JSON.stringify({ type: "permission_response", requestId: update.requestId, allow: true, via }));
           return;
         }
         pendingPermission.set(key, update);
@@ -7340,6 +7354,12 @@
     }
     return m2`<div class="tool-detail"><pre>${typeof input2.content === "string" ? input2.content : JSON.stringify(input2, null, 2)}</pre></div>`;
   }
+  var NO_APPROVAL_TOOLS = /* @__PURE__ */ new Set(["Read", "Grep", "Glob"]);
+  function approvalLabel(entry) {
+    if (!entry.approval || entry.approval === "asked") return null;
+    if (entry.approval === "not asked" && NO_APPROVAL_TOOLS.has(entry.toolName)) return null;
+    return entry.approval === "not asked" ? "ran without asking" : entry.approval;
+  }
   function TrailBox({ trail, onToggleEntry }) {
     return m2`
     <div class="trail-box">
@@ -7347,6 +7367,7 @@
       (entry, i2) => m2`<div key=${i2} class="trail-box__entry">
             ${entry.kind === "tool_use" ? m2`
                   <span class="tool-use-line" onClick=${() => onToggleEntry(i2)}>${entry.text}</span>
+                  ${approvalLabel(entry) ? m2` <span class="trail-box__approval">${approvalLabel(entry)}</span>` : null}
                   ${entry.expanded ? m2`<${ToolDetailBox} input=${entry.toolInput} />` : null}
                 ` : m2`<span class="trail-box__thinking">${entry.text}</span>`}
           </div>`

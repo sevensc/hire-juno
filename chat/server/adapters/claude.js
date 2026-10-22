@@ -103,6 +103,12 @@ export class ClaudeAdapter {
     // announced to the frontend, so the second message in doesn't
     // re-announce it.
     this._openSubagents = new Set();
+    // How each tool call of this session got its go-ahead, by tool-use id:
+    // 'asked' (the human answered a prompt) or whatever `via` the owner's
+    // permission callback reported (e.g. 'auto mode'). A call that never
+    // reached the callback was allowed by a settings rule or needed no
+    // approval at all — see the 'tool_done' update below.
+    this._approvals = new Map();
 
     this._session = query({
       prompt: this._inputStream(),
@@ -242,7 +248,7 @@ export class ClaudeAdapter {
         // not visibility.
         for (const block of message.message?.content ?? []) {
           if (block.type === 'tool_use') {
-            this.onUpdate?.({ type: 'tool_use', name: block.name, input: block.input });
+            this.onUpdate?.({ type: 'tool_use', id: block.id, name: block.name, input: block.input });
           }
         }
         return;
@@ -264,6 +270,14 @@ export class ClaudeAdapter {
         // fallback for whatever shape doesn't match.
         const blocks = message.message?.content;
         if (Array.isArray(blocks)) {
+          // A tool call has run once its result is back: say how it was
+          // allowed, so the chat can show the ones nobody was asked about.
+          for (const block of blocks) {
+            if (block.type !== 'tool_result' || this._openSubagents.has(block.tool_use_id)) continue;
+            const approval = this._approvals.get(block.tool_use_id) || 'not asked';
+            this._approvals.delete(block.tool_use_id);
+            this.onUpdate?.({ type: 'tool_done', id: block.tool_use_id, approval });
+          }
           for (const block of blocks) {
             if (block.type === 'tool_result' && this._openSubagents.has(block.tool_use_id)) {
               this._openSubagents.delete(block.tool_use_id);
@@ -328,6 +342,7 @@ export class ClaudeAdapter {
       displayName: opts.displayName,
       description: opts.description,
     });
+    if (opts.toolUseID) this._approvals.set(opts.toolUseID, decision.via || 'asked');
     return decision.allow
       ? { behavior: 'allow' }
       : { behavior: 'deny', message: decision.message || 'Denied.' };

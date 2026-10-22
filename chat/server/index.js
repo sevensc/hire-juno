@@ -752,7 +752,12 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
             let trail;
             if (update.type === 'tool_use') {
               if (!pendingTrails.has(key)) pendingTrails.set(key, []);
-              pendingTrails.get(key).push({ kind: 'tool_use', name: update.name, input: update.input });
+              pendingTrails.get(key).push({ kind: 'tool_use', id: update.id, name: update.name, input: update.input });
+            } else if (update.type === 'tool_done') {
+              // How the call was allowed, kept with the trail so it is still
+              // shown after a reload.
+              const entry = (pendingTrails.get(key) || []).find((e) => e.id && e.id === update.id);
+              if (entry) entry.approval = update.approval;
             } else if (update.type === 'thinking_delta') {
               pendingThinking.set(key, (pendingThinking.get(key) || '') + update.text);
             } else if (update.type === 'message') {
@@ -773,7 +778,7 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
             // Checked fresh on every request (not captured once at bind
             // time) so toggling it mid-conversation takes effect on the
             // very next tool call, not just the next message.
-            if (autoModeSessions.has(key)) return Promise.resolve({ allow: true });
+            if (autoModeSessions.has(key)) return Promise.resolve({ allow: true, via: 'auto mode' });
             return new Promise((resolve) => {
               const requestId = randomUUID();
               pendingPermissions.set(requestId, { resolve });
@@ -975,7 +980,11 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
             const pending = pendingPermissions.get(payload.requestId);
             if (!pending) return; // late answer to a request nobody is waiting on anymore
             pendingPermissions.delete(payload.requestId);
-            pending.resolve({ allow: Boolean(payload.allow), message: payload.message });
+            // `via`: set by the browser when it answered on its own (an
+            // earlier "Allow always" or the channel autopilot), so the
+            // trail can say so. Only these two values are taken over.
+            const via = ['allow always', 'autopilot'].includes(payload.via) ? payload.via : undefined;
+            pending.resolve({ allow: Boolean(payload.allow), message: payload.message, via });
             // The request itself went out to every open tab (see
             // bindAdapter/relayChannelMessage's own broadcast calls); now
             // that one tab has answered it, every other tab still
