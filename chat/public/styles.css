@@ -733,6 +733,23 @@ button.workforce-row__pick:disabled { cursor: default; opacity: 0.55; }
   margin: 0 0 0.4rem;
 }
 
+#conv-model-select {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 2.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.4rem;
+  background: var(--bg);
+  color: var(--fg);
+  padding: 0.4rem 0.6rem;
+  /* 1rem for the same reason as #conv-search-input below: a phone
+     browser zooms in on a focused control with text under 16px. */
+  font-size: 1rem;
+}
+#conv-model-select:disabled { opacity: 0.6; }
+.model-picker__hint { margin: 0.4rem 0 0; font-size: 0.85rem; color: var(--fg-muted); }
+.model-picker__error { margin: 0.4rem 0 0; font-size: 0.85rem; color: #d64545; }
+
 #conv-search-input {
   width: 100%;
   box-sizing: border-box;
@@ -1646,8 +1663,16 @@ button.workforce-row__pick:disabled { cursor: default; opacity: 0.55; }
   font-size: 0.85rem;
   background: transparent;
   border: 1px dashed var(--border);
+  /* A long chain of thought used to grow the box to the height of the whole
+     pane. Same idea as .trail-box for a finished reply: a small scrollable
+     box; app.js keeps it scrolled to the newest text while it streams. */
+  max-height: 8rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .message--streaming > span { opacity: 0.85; }
+/* Written while the colleague was still mid-turn: dimmed until she has read it. */
+.message--pending > span { opacity: 0.65; }
 
 /* Momentary flash for "Jump" in the conversation-settings search (see
    jumpToMessage in app.js) — the scrollIntoView alone can land a match
@@ -1892,6 +1917,12 @@ button.workforce-row__pick:disabled { cursor: default; opacity: 0.55; }
   max-height: min(12rem, 45dvh);
 }
 
+/* The button is toggled with the `hidden` attribute (see
+   updateScrollToBottomButton in app.js). A bare `display: flex` here beat
+   the browser's `[hidden] { display: none }` on specificity, so the arrow
+   stayed visible at the bottom of the conversation — `display` therefore
+   lives on the `:not([hidden])` rule below, same pattern as the dialogs
+   above. */
 #scroll-to-bottom {
   position: absolute;
   left: 50%;
@@ -1900,7 +1931,6 @@ button.workforce-row__pick:disabled { cursor: default; opacity: 0.55; }
   margin: 0 0 0.75rem;
   width: 2.5rem;
   height: 2.5rem;
-  display: flex;
   align-items: center;
   justify-content: center;
   padding: 0;
@@ -1911,6 +1941,7 @@ button.workforce-row__pick:disabled { cursor: default; opacity: 0.55; }
   cursor: pointer;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
 }
+#scroll-to-bottom:not([hidden]) { display: flex; }
 @media (hover: hover) { #scroll-to-bottom:hover { background: var(--bg-message-you); } }
 
 #mention-autocomplete {
@@ -2248,7 +2279,42 @@ button.session-list__row:active { background: var(--bg-message); }
 .message > span a { color: inherit; text-decoration: underline; }
 .message > span h2,
 .message > span h3,
-.message > span h4 { margin: 0.3em 0; font-size: 1em; font-weight: 700; }
+.message > span h4,
+.message > span h5,
+.message > span h6 { margin: 0.3em 0; font-size: 1em; font-weight: 700; }
+.message > span ul ul,
+.message > span ul ol,
+.message > span ol ul,
+.message > span ol ol { margin-top: 0; margin-bottom: 0; }
+.message > span li > p { margin: 0; }
+.message > span blockquote {
+  margin: 0.3em 0;
+  padding: 0.1em 0 0.1em 0.7em;
+  border-left: 3px solid var(--border);
+  color: var(--fg-muted);
+}
+.message > span hr { border: none; border-top: 1px solid var(--border); margin: 0.6em 0; }
+
+/* Pipe tables: scroll sideways inside the bubble instead of widening it
+   (same reason as pre above), cells kept compact. */
+.message > span .table-scroll {
+  overflow-x: auto;
+  margin: 0.3em 0;
+  overscroll-behavior: contain;
+}
+.message > span table { border-collapse: collapse; font-size: 0.92em; }
+.message > span th,
+.message > span td {
+  border: 1px solid var(--border);
+  padding: 0.25em 0.55em;
+  text-align: left;
+  vertical-align: top;
+  /* The bubble breaks words anywhere (see .message > span above); inside a
+     table that squeezes short columns down to single letters. */
+  word-break: normal;
+  overflow-wrap: normal;
+}
+.message > span th { font-weight: 700; background: rgba(127, 127, 127, 0.12); }
 
 /* A tool-use line ("Edit: /path/to/file") — click to expand the
    actual change instead of only ever seeing the one-line summary. */
