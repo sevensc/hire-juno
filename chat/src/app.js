@@ -1925,6 +1925,12 @@ const SCROLL_TO_BOTTOM_THRESHOLD = 48;
 function isNearBottom() {
   return messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight <= SCROLL_TO_BOTTOM_THRESHOLD;
 }
+// A live "thinking" box is height-limited (see .message--thinking in
+// styles.css); while it fills up it should show its newest lines, not
+// stay on the first ones.
+function followThinkingTail() {
+  for (const box of messagesEl.querySelectorAll('.message--thinking > span')) box.scrollTop = box.scrollHeight;
+}
 function scrollMessagesToBottom() {
   messagesEl.scrollTop = messagesEl.scrollHeight;
   scrollToBottomButtonEl.hidden = true;
@@ -2840,6 +2846,7 @@ function renderMessages({ forceScrollToBottom = false } = {}) {
   );
 
   refreshHiringModeStyling(key);
+  followThinkingTail();
   if (stickToBottom) scrollMessagesToBottom();
   else updateScrollToBottomButton();
 }
@@ -2947,6 +2954,7 @@ function renderChannelMessages({ forceScrollToBottom = false } = {}) {
   );
 
   refreshHiringModeStyling(activeChannelId);
+  followThinkingTail();
   if (stickToBottom) scrollMessagesToBottom();
   else updateScrollToBottomButton();
 }

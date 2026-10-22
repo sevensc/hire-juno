@@ -1646,6 +1646,12 @@ button.workforce-row__pick:disabled { cursor: default; opacity: 0.55; }
   font-size: 0.85rem;
   background: transparent;
   border: 1px dashed var(--border);
+  /* A long chain of thought used to grow the box to the height of the whole
+     pane. Same idea as .trail-box for a finished reply: a small scrollable
+     box; app.js keeps it scrolled to the newest text while it streams. */
+  max-height: 8rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .message--streaming > span { opacity: 0.85; }
 
