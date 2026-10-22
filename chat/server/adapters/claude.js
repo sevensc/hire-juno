@@ -28,6 +28,8 @@
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
 
+import { isStaleResumeError, STALE_RESUME_MESSAGE } from './staleResume.js';
+
 // A tool_result's `content` (ToolResultBlockParam, per @anthropic-ai/sdk)
 // is either a plain string or an array of content blocks — normalizes
 // both to text, keeping only the text blocks (a Task/Agent result is
@@ -89,6 +91,11 @@ export class ClaudeAdapter {
     // every time the 'init' system message names it, which today is once
     // per adapter lifetime, but nothing here assumes that stays true.
     this.onSessionId = null;
+    // Called once when the CLI reports that the session id this adapter was
+    // asked to resume has no transcript anymore (see staleResume.js), so
+    // whoever owns the saved pointer can clear it and drop this adapter.
+    this.onStaleResume = null;
+    this._staleResumeHandled = false;
     this._queue = [];
     this._notifyQueued = null;
     this._pendingResolve = null; // resolves the in-flight sendMessage() call, if any
@@ -133,6 +140,10 @@ export class ClaudeAdapter {
     // which is the point — the session (and canUseTool) stay alive
     // between messages, and so does update delivery.
     this._readLoop().catch((err) => {
+      if (isStaleResumeError(err.message)) {
+        this._handleStaleResume();
+        return;
+      }
       this.onUpdate?.({ type: 'message', role: 'system', text: `Session error: ${err.message}` });
       this._pendingResolve?.();
       this._pendingResolve = null;
@@ -269,6 +280,9 @@ export class ClaudeAdapter {
       case 'result': {
         if (message.subtype === 'success') {
           this.onUpdate?.({ type: 'message', role: 'colleague', text: message.result });
+        } else if (isStaleResumeError((message.errors || []).join(' '))) {
+          this._handleStaleResume();
+          return;
         } else {
           this.onUpdate?.({
             type: 'message',
@@ -289,6 +303,17 @@ export class ClaudeAdapter {
         // swallowed silently as an error.
         return;
     }
+  }
+
+  // The CLI answers a resume of a vanished session twice (an error result,
+  // then an error from the stream); only the first one acts.
+  _handleStaleResume() {
+    if (this._staleResumeHandled) return;
+    this._staleResumeHandled = true;
+    this.onUpdate?.({ type: 'message', role: 'system', text: STALE_RESUME_MESSAGE });
+    this._pendingResolve?.();
+    this._pendingResolve = null;
+    this.onStaleResume?.();
   }
 
   async _handlePermission(toolName, input, opts) {
