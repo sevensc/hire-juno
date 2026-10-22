@@ -23,14 +23,21 @@
     "scaffolding"
   ],
   "bin": {
-    "hire-juno": "./bin/cli.js"
+    "hire-juno": "./bin/cli.js",
+    "hire-juno-chat": "./chat/bin/chat.js"
   },
   "scripts": {
-    "test": "node --test"
+    "test": "node --test",
+    "build:chat": "esbuild chat/src/app.js --bundle --outfile=chat/public/app.js --format=iife",
+    "prepublishOnly": "npm run build:chat"
   },
   "files": [
     "bin",
     "src",
+    "shared",
+    "chat/bin",
+    "chat/server",
+    "chat/public",
     "CONSTITUTION.md",
     "hr",
     "team/juno",
@@ -44,11 +51,18 @@
     "node": ">=22"
   },
   "dependencies": {
+    "@agentclientprotocol/sdk": "^1.4.0",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.241",
     "@clack/prompts": "^1.7.0",
+    "better-sqlite3": "^13.0.3",
     "open": "^11.0.0",
-    "picocolors": "^1.1.1"
+    "picocolors": "^1.1.1",
+    "ws": "^8.18.0"
   },
   "devDependencies": {
-    "pngjs": "^7.0.0"
+    "esbuild": "^0.28.2",
+    "htm": "^3.1.1",
+    "pngjs": "^7.0.0",
+    "preact": "^10.29.8"
   }
 }

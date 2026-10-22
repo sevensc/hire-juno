@@ -58,7 +58,8 @@ CODE_OF_CONDUCT.md            Contributor Covenant 2.1
 parking-lot.md                Ideas deferred here, with the dates they were parked
 team/juno/juno.mp4            Her intro clip, played by the browser wizard only
 bin/, src/                    The npx installer that writes the list above
-test/                         Its tests
+chat/                         hire-juno-chat: a local chat UI for an already-installed team/ (see chat/README.md)
+test/                         Tests for the installer and for chat/
 docs/diagrams/                Sources and rendered SVGs for the two flow diagrams
 scripts/                      One-off tooling for Juno's terminal animation
 .github/workflows/            CI and release automation

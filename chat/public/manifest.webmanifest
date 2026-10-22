@@ -1,0 +1,12 @@
+{
+  "name": "__TEAM_NAME__ chat",
+  "short_name": "__TEAM_NAME__",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#3358d6",
+  "icons": [
+    { "src": "logo.png", "sizes": "any", "type": "image/png", "purpose": "any" }
+  ]
+}

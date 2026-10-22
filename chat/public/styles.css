@@ -1,0 +1,2405 @@
+:root {
+  color-scheme: light dark;
+  --bg: light-dark(#ffffff, #16171a);
+  --bg-sidebar: light-dark(#f3f3f5, #1e1f23);
+  --bg-message: light-dark(#f0f0f2, #23242a);
+  --bg-message-you: light-dark(#dbe6ff, #2a3a5c);
+  --fg: light-dark(#1b1b1f, #e8e8ec);
+  --fg-muted: light-dark(#6b6b74, #8b8b96);
+  --accent: light-dark(#3358d6, #7a9bff);
+  --border: light-dark(#e2e2e6, #2c2d33);
+  --auto-mode-bg: light-dark(#fff3d6, #3a2f14);
+  --auto-mode-border: light-dark(#e0b34d, #6b5220);
+  --hiring-mode-bg: light-dark(#eee6ff, #2c2445);
+  --hiring-mode-border: light-dark(#8a63d2, #8a63d2);
+
+  /* The device's own notch/home-indicator insets, named once here
+     instead of spelled as a bare env() at each use site. Two reasons,
+     both practical rather than cosmetic: every place that needs an
+     inset gets the same fallback (`0px`, for the desktop browser and
+     any context where the UA reports nothing) without repeating it,
+     and a test/inspection pass can override these two custom
+     properties to see the notch-device layout on a machine that has no
+     notch — an env() cannot be overridden that way, which is exactly
+     why the missing inset on #pane below went unnoticed. */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+* { box-sizing: border-box; }
+
+/* Both html and body — iOS Safari's page-wide horizontal scroll/zoom-
+   out is driven by html's own
+   scrollable area, not just body's; setting this on body alone doesn't
+   reliably stop it in every WebKit version. */
+html { overflow-x: hidden; }
+
+/* The whole document, both axes. `none` (not `contain`) because this
+   turns off two separate things at once, and both are wanted here:
+   scroll chaining out of a scroller into the page, and the browser's
+   own default overscroll behaviour — the rubber-band bounce and the
+   pull-down-to-reload gesture. Nothing in this app scrolls the
+   document itself (#app is exactly 100dvh and every scrolling region
+   is an element inside it), so on a phone the only thing a drag at
+   the top or bottom edge could ever produce was that bounce: the
+   whole UI peeling away from the status bar with the page background
+   behind it, which is precisely the "it feels like a browser, not an
+   app" tell — a native screen's content does not detach from its own
+   chrome.
+
+   Also stops the horizontal counterpart, the two-finger/edge swipe a
+   browser reads as back/forward navigation. In a single-page app with
+   a half-typed message in the composer, navigating away is never what
+   that gesture meant. */
+html,
+body { overscroll-behavior: none; }
+
+/* Every other scrolling region in the app, gathered here on purpose:
+   this is one cause with many sites, not a list of separate fixes, and
+   splitting it across eleven rule blocks would have made it a list
+   someone has to remember to extend. Each of these can be scrolled to
+   its own end while something scrollable sits behind or around it — a
+   modal over the page, the mention dropdown over the composer, the
+   composer's own grown-tall textarea, a wide code block inside a
+   message — and without `contain` the leftover part of that gesture
+   went to the thing behind, which reads as the finger having moved two
+   layers at once. #sidebar and #messages get the same treatment at
+   their own rules below, where their sizing already lives.
+   `.usage-table-scroll` is the one deliberately horizontal scroller in
+   the app; both axes are covered here so a sideways swipe across that
+   table also stays inside it. */
+#settings-modal,
+#conv-settings-modal,
+#diff-file-list,
+#diff-content,
+.usage-table-scroll,
+.channel-form__members,
+#mention-autocomplete,
+#composer-input,
+.message > span pre,
+.tool-detail,
+.trail-box { overscroll-behavior: contain; }
+
+/* One focus indicator for the whole app. Before this the stylesheet
+   carried exactly one focus rule (#sidebar-search, further down) and
+   everything else fell back to the user agent's own ring — which is not
+   dependable on a control with no border and no background of its own
+   (.mobile-tab, .pane-header__menu, .colleague), and which sits tight
+   against the text on a filled button instead of around it.
+
+   `:focus-visible` rather than `:focus`: a mouse or a finger on a
+   button should not leave a ring behind, only keyboard traversal
+   should. Drawn as an outline with an offset, so it is a real perimeter
+   around the control rather than a border swap that shifts layout.
+   --accent against --bg-sidebar measures 5.40:1 light and 6.24:1 dark
+   (recorded in DESIGN.md), over the 3:1 in that file's threshold table
+   for a state indicator. */
+:where(
+  button,
+  a[href],
+  input,
+  textarea,
+  select,
+  summary,
+  [tabindex]:not([tabindex="-1"])
+):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+/* The two full-bleed bars have nothing outside them to draw an offset
+   ring into, so theirs goes inside. */
+.mobile-tab:focus-visible,
+#mobile-back-button:focus-visible { outline-offset: -3px; }
+
+/* Pull to refresh (see app.js's attachPullToRefresh). Sitting here with
+   the rest of the gesture work on purpose: the rule above takes the
+   browser's own overscroll away, and this is what an app puts in its
+   place — a pull that means "get me current" instead of a reach for a
+   reload button that a standalone PWA window doesn't even show.
+
+   The indicator is `position: fixed` and gets placed from JS at the top
+   edge of whichever scroller was pulled. Deliberately neither a child of
+   that scroller (#messages' children belong to Preact and are replaced
+   wholesale on every render, #sidebar's are rebuilt by renderSidebar)
+   nor of its parent (that would mean giving #pane/#sidebar-column a
+   positioning context they don't have today, which is a change with a
+   blast radius well past this feature).
+
+   It's a full-width band, not a floating circle. A circle hovering over
+   the middle of a message bubble reads as something stuck on top of the
+   text; a band growing down from the scroller's top edge, opaque in that
+   surface's own colour, reads as the list being pushed out of the way —
+   which is what the gesture means. The list genuinely doesn't move (see
+   above), so the band is what stands in for it.
+
+   Two custom properties carry the gesture: --pull is the travel in px,
+   --pull-progress the same thing as 0..1 against the trigger distance,
+   so height, opacity and the arc's rotation all read the pull directly
+   instead of JS setting several properties that then have to agree.
+   --pull-surface is set per scroller, because #messages and #sidebar sit
+   on different backgrounds and the band has to be opaque against its
+   own. */
+.pull-refresh {
+  --pull: 0px;
+  --pull-progress: 0;
+  --pull-surface: var(--bg);
+  position: fixed;
+  z-index: 40;
+  display: none;
+  align-items: flex-end;
+  justify-content: center;
+  height: var(--pull);
+  overflow: hidden;
+  background: var(--pull-surface);
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.35rem;
+  box-sizing: border-box;
+  opacity: var(--pull-progress);
+  /* Never eats a tap: this sits over the list. */
+  pointer-events: none;
+}
+.pull-refresh--visible { display: flex; }
+/* Only while settling back (or into) place — during the drag itself the
+   indicator must track the finger frame for frame, and a transition
+   there is exactly the lag that reads as "web page". */
+.pull-refresh--settling { transition: height 0.25s ease, opacity 0.25s ease; }
+
+.pull-refresh__spinner {
+  width: 1.05rem;
+  height: 1.05rem;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  /* Winds up as you pull — the arc turning is the "keep going" signal
+     before the threshold, so there's no second state to explain. */
+  transform: rotate(calc(var(--pull-progress) * 270deg));
+}
+/* Armed: past the trigger distance, letting go now refreshes. Half the
+   ring in the accent colour, not just a quarter — a change of amount,
+   readable without colour vision and without a label. */
+.pull-refresh--armed .pull-refresh__spinner { border-right-color: var(--accent); }
+.pull-refresh--busy .pull-refresh__spinner { animation: pull-refresh-spin 0.7s linear infinite; }
+@keyframes pull-refresh-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .pull-refresh--settling { transition: none; }
+  /* Not removed outright: this ring is the only sign that the refresh is
+     still running. Stepped and slow instead of smooth and fast. */
+  .pull-refresh--busy .pull-refresh__spinner { animation: pull-refresh-spin 2s steps(8) infinite; }
+}
+
+/* Everything meant to be tapped. Two separate things, both about the
+   gap between how a browser and an app answer a finger:
+
+   `touch-action: manipulation` keeps panning and pinch-zoom and drops
+   only double-tap-to-zoom — which, on a control, was never the
+   gesture anyone intended, and whose mere possibility is why a touch
+   browser holds a tap back before it commits to being a click. Taps
+   land immediately instead of a beat late, which is most of what
+   "responds like an app" actually is.
+
+   `user-select: none` stops a press-and-hold on a control from
+   starting a text selection with the magnifier over it. Deliberately
+   only on controls: message text, code blocks and the composer stay
+   selectable, because copying out of a conversation is a real thing
+   people do here. */
+button,
+.mobile-tab,
+.colleague {
+  touch-action: manipulation;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Every :hover rule in this file is wrapped in `@media (hover: hover)`.
+   A touch screen reports `hover: none` for its primary input
+   (developer.mozilla.org/en-US/docs/Web/CSS/@media/hover), and without that gate a phone browser leaves the hover
+   style on whatever was tapped last — a channel row sat there looking
+   grey-selected long after the tap, beside the row that was actually
+   open. The pressed
+   state below is what carries touch feedback instead. */
+
+/* A pressed state for every button that hasn't got a more specific one
+   of its own (.colleague and .mobile-tab do, below). Same reason as
+   theirs: with the system tap flash gone, this is what confirms the
+   press. Deliberately a filter rather than a colour — it works on the
+   filled Send button, the bordered secondary buttons and the bare icon
+   buttons alike, without a rule per variant. */
+button:active:not(:disabled):not(.colleague):not(.mobile-tab) {
+  filter: brightness(0.92);
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+  /* Stops the mobile text-inflation algorithm from resizing text on
+     its own — this layout is already built for the device width
+     (see the mobile-first section below), so the only thing inflation
+     can do here is disagree with the sizes set on purpose, most
+     visibly when the phone is rotated. Both spellings: the prefixed
+     one is what WebKit implements. */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  /* The grey flash a touch browser paints over whatever was tapped.
+     Inherited, so this one declaration covers every control in the
+     app — but only safe to remove because each of those controls now
+     has a real :active state of its own (see .colleague, .mobile-tab
+     and the button rules below). Removing the highlight without
+     replacing the feedback would leave a tap looking like it did
+     nothing at all, which is worse than the browser-ish flash. */
+  -webkit-tap-highlight-color: transparent;
+  /* Safety net, not the fix itself — the actual fix is letting long
+     unbroken text (a path, a URL) wrap instead of forcing something
+     wider than the viewport in the first place (see .message > span,
+     .tool-use-line, .pane-header__entry). This just makes sure that if
+     something still manages to overflow anyway — a case not
+     covered above, content this stylesheet has no way to know about ahead of
+     time — the whole page doesn't zoom out/scroll sideways over it. None of this app's own scrolling is
+     horizontal (#messages, #sidebar, both modals all scroll
+     vertically), so this costs nothing real anywhere legitimate. */
+  overflow-x: hidden;
+}
+
+/* Mobile-first from here down — these
+   are the phone-width rules with no @media guard at all, i.e. the
+   actual default; a `@media (min-width: 721px)` section at the very
+   end of this file is where desktop gets layered on top, not the other
+   way around. A narrow screen can't fit sidebar and pane side by side,
+   so only one is ever visible at a time — #app's own "pane-active"
+   class (set in app.js's selectColleague/selectChannel, cleared by
+   #mobile-back-button) decides which. Second grid row is #mobile-tabbar
+   — a sibling of both, not nested inside either,
+   since it needs to stay visible no matter which of the two is showing. */
+#app {
+  display: grid;
+  /* minmax(0, 1fr), not a bare 1fr — a CSS grid track's own automatic
+     minimum size is its content's min-content width unless told
+     otherwise, the exact same trap as a flex item's default
+     `min-width: auto` (the same trap as on .pane-header__entry).
+     A single long word deep inside #messages (a path, a URL — the same
+     content that motivated .message > span's own overflow-wrap) could
+     inflate this track wider than the viewport, and everything below it
+     — including bubbles that WOULD otherwise wrap — then had that
+     extra width to render into instead of actually wrapping. That is why
+     the overflow-wrap fix alone is not sufficient: it stops a single word from being unbreakable,
+     but doesn't stop the grid track itself from growing to fit it. */
+  grid-template-columns: minmax(0, 1fr);
+  /* Same fix, same reason, the other axis. A bare `1fr` row has the same
+     "won't shrink below content's own min size" default as the column
+     above; #messages' own content (now correctly wrapping into more,
+     shorter lines instead of a few long unwrapped ones — the column fix
+     working as intended) pushed that min-content height up enough to
+     force #app taller than the viewport, showing up as the composer/
+     session-bar area sitting far below the visible messages with a gap
+     between, not actually clipped to 100dvh the way #app's own height
+     rule says it should be. */
+  grid-template-rows: minmax(0, 1fr) auto;
+  height: 100vh;
+  height: 100dvh; /* dvh accounts for iOS Safari's address bar/keyboard; vh above is the fallback for browsers that don't know dvh, not overridden by it */
+}
+
+#sidebar-column {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  grid-row: 1;
+  min-width: 0; /* belt-and-braces alongside #app's minmax(0, 1fr) above */
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--border);
+  min-height: 0;
+  /* The notch sits above #brand's own row — real inset on a device
+     that has one, 0 everywhere else (see index.html's
+     viewport-fit=cover, without which this env() always reads 0). */
+  padding-top: var(--safe-top);
+}
+#app.pane-active #sidebar-column { display: none; }
+
+#pane {
+  display: none;
+  width: 100%;
+  grid-row: 1;
+  min-width: 0; /* belt-and-braces alongside #app's minmax(0, 1fr) above */
+}
+#app.pane-active #pane { display: flex; }
+
+/* Mobile only. grid-row: 2 — #app's own
+   second row, below whichever of #sidebar-column/#pane (both row 1) is
+   currently showing; see #app's own comment above for why this isn't
+   nested inside either of them. Replaces #brand's diff/settings icon
+   buttons on mobile (those live inside #sidebar-column, so they'd be
+   unreachable the moment a conversation hides it) — desktop hides this
+   bar and shows those instead (see the min-width section), never both
+   at once for the same two destinations. */
+#mobile-tabbar {
+  display: flex;
+  grid-row: 2;
+  border-top: 1px solid var(--border);
+  background: var(--bg-sidebar);
+  padding-bottom: var(--safe-bottom);
+}
+/* Hidden
+   the moment a conversation is actually open, not just while browsing
+   the list; #app's grid-row for it (`auto`) collapses to 0 height along
+   with it, so the conversation/composer get that space back instead of
+   sharing the screen with a bar that is not in use anyway right when the
+   keyboard is already eating most of it. Reachable again the same way
+   it always was: tap back to the list, then Files/Settings from there. */
+#app.pane-active #mobile-tabbar { display: none; }
+.mobile-tab {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.15rem;
+  padding: 0.5rem 0 0.4rem;
+  border: none;
+  background: none;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: 0.68rem;
+  cursor: pointer;
+  min-height: 2.75rem; /* same touch-target floor as the icon buttons elsewhere */
+}
+.mobile-tab .icon { width: 1.3rem; height: 1.3rem; }
+.mobile-tab[aria-current="page"] { color: var(--accent); }
+/* Same reason as .colleague:active — a bottom tab bar with no press
+   feedback is the single most obvious "this is a web page" tell,
+   because the native bars it is modelled on all have one. */
+.mobile-tab:active { background: light-dark(rgba(0, 0, 0, 0.1), rgba(255, 255, 255, 0.12)); }
+
+#brand {
+  display: flex;
+  align-items: center;
+  /* 0.35rem, not the 0.5rem the rest of the app uses between siblings:
+     four things share a 220px row here (logo, workforce name, two icon
+     buttons) and every gap comes straight off the name's own width —
+     the only one of the four that carries text. */
+  gap: 0.35rem;
+  padding: 0.75rem 0.75rem 0.5rem;
+  font-weight: 700;
+  flex-shrink: 0;
+  /* The anchor the workforce menu positions itself against — it hangs
+     off this row, not off the sidebar column. */
+  position: relative;
+}
+
+#brand img { border-radius: 6px; }
+/* The name is a button now (the workforce switcher), so the sizing that
+   used to sit on the bare <span> sits here: this is #brand's flex child,
+   the span inside it is not. `min-width: 0` for the same reason as ever
+   — `flex: 1` alone leaves the flex default `min-width: auto`, so the
+   name refuses to shrink below its own text width and pushes the two
+   icon buttons past the sidebar's 220px edge into the conversation
+   (#settings-button ended at x=238.3 against a
+   column ending at 220). At 220px there is genuinely not room for the
+   logo, a long name, a chevron and two 44px buttons, so the name gives
+   way — one line, ellipsis, full name on the element's title. */
+#workforce-switcher {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  /* Inherits rather than re-states: this is the brand row's own text,
+     only now clickable, and a button's UA defaults (its own font,
+     13.33px, centered) would otherwise quietly restyle a header that
+     was right before. */
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  padding: 0.15rem 0.25rem;
+  margin: -0.15rem -0.25rem; /* keeps the row's own alignment despite the padding above */
+  cursor: pointer;
+}
+@media (hover: hover) { #workforce-switcher:hover { background: var(--bg-message); } }
+#workforce-switcher[aria-expanded="true"] { background: var(--bg-message); }
+/* Smaller than the row's icons on purpose: it's an affordance on a
+   label, not one of the two actions beside it, and at icon size it read
+   as a third button. */
+.icon--chevron { width: 0.9rem; height: 0.9rem; flex-shrink: 0; color: var(--fg-muted); }
+#brand span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* `#id:not([hidden])` rather than a bare `#workforce-menu { display: … }`
+   — an id selector beats `[hidden] { display: none }` on specificity, so
+   the bare form would leave this menu permanently open no matter what
+   the attribute says. Same shape as #settings-backdrop and the lightbox
+   above, and for the same reason. */
+#workforce-menu:not([hidden]) {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  /* Floats over the roster rather than pushing it down the column: a
+     menu that shoves the list you are about to compare it against out
+     of view is a worse version of the dialog it replaced. Also lets it
+     be wider than the 220px sidebar — a workforce path needs more than
+     that and there is nothing to the right of it but the conversation,
+     which is not going anywhere while a menu is open. */
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 0.25rem);
+  left: 0.5rem;
+  width: max-content;
+  min-width: 13rem;
+  max-width: min(22rem, calc(100vw - 1.5rem));
+  padding: 0.6rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px light-dark(rgba(0, 0, 0, 0.18), rgba(0, 0, 0, 0.5));
+  /* The list is the one part that can grow without bound (every
+     workforce ever registered) — it scrolls, the "Add" form below it
+     stays put and reachable. */
+  max-height: min(60vh, 24rem);
+  overflow: hidden;
+}
+#workforce-menu__header {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-muted);
+}
+#workforce-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+}
+.workforce-row { display: flex; align-items: stretch; gap: 0.25rem; }
+.workforce-row__pick {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  padding: 0.4rem 0.5rem;
+}
+/* The current one is a <div>, not a button — no pointer, no hover. */
+button.workforce-row__pick { cursor: pointer; }
+@media (hover: hover) { button.workforce-row__pick:hover:not(:disabled) { background: var(--bg-message); } }
+button.workforce-row__pick:active:not(:disabled) { background: var(--bg-message); }
+button.workforce-row__pick:disabled { cursor: default; opacity: 0.55; }
+.workforce-row__name {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workforce-row__tag {
+  font-size: 0.65rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+.workforce-row__path {
+  font-size: 0.75rem;
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The square icon button the dialog's own `.settings-list button` used
+   to supply — stated here now that these rows don't borrow that class.
+   2.75rem both ways is the touch target, not a look. */
+.workforce-row__remove {
+  flex-shrink: 0;
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2.2rem;
+  min-height: 2.2rem;
+  padding: 0;
+  color: var(--fg-muted);
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+@media (hover: hover) { .workforce-row__remove:hover { background: var(--bg-message); color: var(--fg); } }
+/* The add form and the error line keep the rules they already had
+   further down this file — including the one that matters most here and
+   is easy to lose by restating it: #workforce-add-input's `font-size:
+   1rem`, which is what stops iOS zooming the whole page in when the
+   field takes focus. Nothing above re-declares either of them. */
+
+/* Every icon in this app is plain inline SVG (currentColor
+   stroke, sized off the containing element's own font-size), never an
+   emoji glyph, so it looks the same everywhere instead of depending on
+   whatever emoji font the OS/browser happens to render. */
+.icon {
+  width: 1.1em;
+  height: 1.1em;
+  vertical-align: -0.15em;
+  flex-shrink: 0;
+}
+
+/* Hidden on mobile — #mobile-tabbar's Files/Settings tabs are the way
+   there now (see its own comment above); restored on desktop, where
+   #mobile-tabbar itself is what's hidden instead (min-width section).
+   min-width/height 2.75rem (44px) once visible — Apple's own minimum
+   comfortable touch target, not just eyeballed; the old 0.2rem padding
+   alone left this closer to 24px, fine with a mouse cursor, not a
+   fingertip. */
+#settings-button, #diff-button {
+  display: none;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 1rem;
+  padding: 0.2rem;
+  /* Height keeps the full 2.75rem. The width does not:
+     these two are desktop-only (the rule above this one hides them on
+     mobile, where #mobile-tabbar carries Files/Settings instead), so the
+     fingertip the 44px minimum is for never reaches them — and the 220px
+     sidebar they sit in now also has to fit the workforce name, which is
+     the one thing in this row someone actually reads. At 2.75rem wide
+     the name was down to "hi…" (measured: 33px of usable width for a
+     71px word). */
+  min-width: 2.25rem;
+  min-height: 2.75rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.4rem;
+  line-height: 1;
+}
+@media (hover: hover) { #settings-button:hover, #diff-button:hover { background: var(--bg-message); } }
+
+#settings-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+}
+/* Specificity note (found the hard way once already on a similar modal):
+   `[hidden] { display: none }` alone loses to a bare `display: flex`
+   rule on this same id, so the backdrop would stay visible and eat
+   clicks even while "hidden". `:not([hidden])` wins the specificity
+   fight instead of fighting over rule order. */
+#settings-backdrop:not([hidden]) { display: flex; }
+
+#settings-modal {
+  background: var(--bg);
+  color: var(--fg);
+  border-radius: 0.75rem;
+  padding: 1rem 1.25rem;
+  width: min(40rem, 90vw);
+  max-height: min(80vh, 80dvh);
+  overflow-y: auto;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.25);
+}
+
+#settings-modal__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
+}
+#settings-modal__header h2 { margin: 0; font-size: 1.05rem; }
+/* A <button> is an inline-block: forcing `min-height` grows the content
+   box downwards and leaves the glyph sitting at the top of the 44px box,
+   visibly higher than the <h2> beside it. The header's own
+   `align-items: center` centres the button, not its contents — that
+   needs the button to be a flex container itself. Same fix on the other
+   two close buttons and on #diff-modal__header's pair. */
+#settings-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  font-size: 1rem;
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+}
+
+#settings-modal section {
+  margin: 1.1rem 0;
+  padding-top: 1.1rem;
+  border-top: 1px solid var(--border);
+}
+#settings-modal section:first-of-type { padding-top: 0; border-top: none; }
+#settings-modal h3 {
+  margin: 0 0 0.5rem;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-muted);
+}
+
+/* #conv-settings-modal — the per-conversation counterpart to
+   #settings-modal above (see its own comment in index.html on why it's
+   a separate dialog rather than another #settings-modal section).
+   Same backdrop/modal/header/section shape and the same
+   [hidden]-vs-bare-display fix, on its own id pair rather than sharing
+   #settings-modal's — two independent dialogs, only one of which is
+   ever open at a time in practice, but nothing here enforces that, so
+   they'd better not collide if it ever isn't. */
+#conv-settings-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+}
+#conv-settings-backdrop:not([hidden]) { display: flex; }
+
+#conv-settings-modal {
+  background: var(--bg);
+  color: var(--fg);
+  border-radius: 0.75rem;
+  padding: 1rem 1.25rem;
+  width: min(32rem, 90vw);
+  max-height: min(80vh, 80dvh);
+  overflow-y: auto;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.25);
+}
+#conv-settings-modal__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
+  gap: 0.75rem;
+}
+#conv-settings-modal__header h2 {
+  margin: 0;
+  font-size: 1.05rem;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#conv-settings-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  font-size: 1rem;
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+  flex-shrink: 0;
+}
+#conv-settings-modal section {
+  margin: 1.1rem 0;
+  padding-top: 1.1rem;
+  border-top: 1px solid var(--border);
+}
+#conv-settings-modal section:first-of-type { padding-top: 0; border-top: none; }
+#conv-settings-modal h3 {
+  margin: 0 0 0.5rem;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-muted);
+}
+/* .auto-mode-toggle's own `margin-left: auto` (styles.css further down)
+   was for pushing a single toggle to the far right of the flex
+   #pane-header row it used to live in — meaningless in this modal's
+   plain block-flow section, and multiple per-member rows (a channel)
+   need one full-width line each, not inline-flex's default shrink-to-
+   content sitting side by side. */
+#conv-settings-auto-mode .auto-mode-toggle {
+  display: flex;
+  margin: 0 0 0.4rem;
+}
+
+#conv-search-input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--border);
+  border-radius: 0.4rem;
+  background: none;
+  color: var(--fg);
+  padding: 0.4rem 0.6rem;
+  /* 1rem, not 0.85: a phone browser zooms the whole page in when it
+     focuses an input whose text is under 16px, and this app has no way
+     back out of that zoom — the document itself never scrolls. */
+  font-size: 1rem;
+  margin-bottom: 0.5rem;
+}
+
+/* Same [hidden]-vs-display specificity fight as #settings-backdrop
+   above (see that rule's own comment) — solved the same way. */
+#diff-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+}
+#diff-backdrop:not([hidden]) { display: flex; }
+
+#diff-modal {
+  background: var(--bg);
+  color: var(--fg);
+  border-radius: 0.75rem;
+  padding: 1rem 1.25rem;
+  width: min(70rem, 95vw);
+  height: min(42rem, 85vh, 85dvh);
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.25);
+}
+#diff-modal__header { display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.75rem; }
+#diff-modal__header h2 { margin: 0; font-size: 1.05rem; }
+#diff-modal__cwd {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.75rem;
+  color: var(--fg-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+#diff-modal__header button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  font-size: 1rem;
+  padding: 0.2rem 0.4rem;
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+}
+@media (hover: hover) { #diff-modal__header button:hover { color: var(--fg); } }
+
+/* Mobile-first, like the rest of this file: below the breakpoint the
+   file list sits *above* the diff, not beside it. The row layout that
+   used to live here unconditionally gave a 320px phone a 256px file
+   tree next to what was left of the diff text — the desktop block at
+   the end of the file has always reset `flex-direction: row`,
+   `max-height: none` and `border-bottom: none`, resets that only make
+   sense against a column base like this one. */
+#diff-body { flex: 1; display: flex; flex-direction: column; gap: 1rem; min-height: 0; }
+#diff-file-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0.5rem;
+  width: auto;
+  max-height: 9rem;
+  flex-shrink: 0;
+  overflow-y: auto;
+  border-bottom: 1px solid var(--border);
+}
+.diff-file {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  min-height: 2.75rem;
+  padding: 0.35rem 0.5rem;
+  margin-bottom: 0.25rem;
+  border: none;
+  border-radius: 0.4rem;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  font-size: 0.8rem;
+}
+@media (hover: hover) { .diff-file:hover { background: var(--bg-message); } }
+.diff-file--active { background: var(--accent); color: #fff; }
+.diff-file__status {
+  flex-shrink: 0;
+  width: 1.4rem;
+  text-align: center;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 700;
+  font-size: 0.7rem;
+  color: var(--fg-muted);
+}
+.diff-file--active .diff-file__status { color: rgba(255, 255, 255, 0.85); }
+.diff-file__status--new, .diff-file__status--added { color: #3fb950; }
+.diff-file__status--deleted { color: #d9534f; }
+.diff-file__status--renamed { color: #d0a030; }
+.diff-file__path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* The file tree's folder rows (see buildDiffFileTree/renderDiffTreeInto
+   in app.js) — plain labels, not buttons: a folder here only exists to
+   place the files under it, same as VS Code's changed-files tree never
+   makes a directory itself clickable. */
+.diff-tree__group { list-style: none; margin: 0; padding: 0; }
+.diff-tree__folder {
+  display: flex;
+  align-items: center;
+  padding: 0.3rem 0.5rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#diff-content {
+  flex: 1;
+  overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8rem;
+  background: var(--bg-message);
+  border-radius: 0.5rem;
+  padding: 0.5rem;
+}
+.diff-line { white-space: pre; padding: 0 0.25rem; }
+.diff-line--add { background: rgba(63, 185, 80, 0.15); color: #3fb950; }
+.diff-line--del { background: rgba(217, 83, 79, 0.15); color: #d9534f; }
+.diff-line--hunk { color: var(--fg-muted); font-style: italic; }
+.diff-line--meta { color: var(--fg-muted); }
+
+/* The headline number above the row-by-row breakdown — see
+   renderUsageTable()'s comment for why this exists at all. */
+#usage-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  margin-bottom: 0.6rem;
+  font-size: 0.85rem;
+  color: var(--fg-muted);
+}
+.usage-summary__figure { font-size: 1.3rem; font-weight: 700; color: var(--fg); }
+
+/* The one deliberately horizontal scroller in the app — and until now
+   nothing said so. A touch browser hides its overlay scrollbar, so at
+   320px the table simply ended at the edge with 146px of columns still
+   to the right of it and no sign of them.
+   The gradient is painted in the scroller's own coordinate space
+   (`background-attachment: local` for the two white "cover" layers,
+   `scroll` for the two shadow layers), so each shadow shows only while
+   there is content past that edge and fades out on arrival. */
+.usage-table-scroll {
+  overflow-x: auto;
+  background:
+    linear-gradient(to right, var(--bg) 30%, rgba(0, 0, 0, 0)) left center,
+    linear-gradient(to left, var(--bg) 30%, rgba(0, 0, 0, 0)) right center,
+    linear-gradient(to right, light-dark(rgba(0, 0, 0, 0.18), rgba(0, 0, 0, 0.5)), rgba(0, 0, 0, 0)) left center,
+    linear-gradient(to left, light-dark(rgba(0, 0, 0, 0.18), rgba(0, 0, 0, 0.5)), rgba(0, 0, 0, 0)) right center;
+  background-repeat: no-repeat;
+  background-size: 2.5rem 100%, 2.5rem 100%, 0.9rem 100%, 0.9rem 100%;
+  background-attachment: local, local, scroll, scroll;
+}
+#usage-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+#usage-table th, #usage-table td {
+  text-align: left;
+  padding: 0.4rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+#usage-table tbody tr:nth-child(odd) { background: var(--bg-message); }
+#usage-table tr.usage-table__total td { font-weight: 700; border-top: 1px solid var(--border); }
+#usage-table .usage-table__who { display: flex; align-items: center; gap: 0.5rem; }
+#usage-table .usage-table__who .avatar,
+#usage-table .usage-table__who .avatar--initial { width: 1.4rem; height: 1.4rem; font-size: 0.7rem; }
+#usage-table .usage-table__model { color: var(--fg-muted); }
+#usage-table .usage-table__number { text-align: right; font-variant-numeric: tabular-nums; }
+
+.settings-list { list-style: none; margin: 0; padding: 0; font-size: 0.85rem; }
+/* Wraps rather than pushing its buttons out of the dialog. At 320px a
+   workforce row is a filesystem path plus Switch plus a remove button,
+   and the remove button was hanging half outside the modal's right edge
+   (310..344 against a 320px viewport). */
+.settings-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.4rem 0;
+}
+.settings-list li .avatar,
+.settings-list li .avatar--initial { width: 1.6rem; height: 1.6rem; font-size: 0.75rem; flex-shrink: 0; }
+/* `flex: 1` alone leaves the flex default `min-width: auto`, so a long
+   path — or a search-result excerpt, which is arbitrary message text —
+   refuses to shrink and shoves the buttons beside it out of the dialog.
+   `100%` as the basis makes it take a line of its own as soon as the
+   row has to wrap. */
+.settings-list__label { flex: 1 1 100%; min-width: 0; overflow-wrap: anywhere; }
+.settings-list button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.75rem;
+  padding: 0.25rem 0.7rem;
+  border-radius: 0.4rem;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg);
+  cursor: pointer;
+  font-size: 0.8rem;
+  /* Square minimum too, not just the height — the remove button is a
+     single glyph and came out 34px wide. */
+  min-width: 2.75rem;
+  flex-shrink: 0;
+}
+@media (hover: hover) { .settings-list button:hover { background: var(--bg-message); } }
+.settings-list .empty-note { color: var(--fg-muted); font-style: italic; }
+.empty-note { color: var(--fg-muted); font-style: italic; font-size: 0.85rem; }
+
+/* The conversation's own empty state (app.js's EmptyConversation).
+   Centred in what is otherwise a blank pane, not tucked into the corner
+   where the first bubble would go — there is nothing above or below it
+   to anchor against. */
+.conversation-empty {
+  /* #messages is a block container, not flex — so this centres on the
+     horizontal axis and sits at the top on the vertical one. That is
+     the right place anyway: the composer is directly below, and the
+     line is a pointer at it. */
+  margin: 2rem auto 0;
+  max-width: 28ch;
+  padding: 1rem;
+  text-align: center;
+  color: var(--fg-muted);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+/* Mobile-first, and the phone case is a wrap: label and figure on one
+   line, the bar on its own beneath them.
+
+   In a single row the bar is the only part that can give way — the
+   label had a 9rem basis and the detail is `nowrap` — so it lost all of
+   it. Measured with the real detail string
+   ("23% · resets So. 16:00"): the bar came out 3px wide at a 390px
+   viewport and 0px at 320px, against 292px at 1440px. A meter that is
+   three pixels wide is not a meter; the number beside it was carrying
+   the whole message on its own.
+
+   The desktop block at the end of the file puts all three back on one
+   line, where there is room for it. */
+.usage-limit-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.6rem;
+  font-size: 0.85rem;
+  padding: 0.3rem 0;
+}
+.usage-limit-row__label { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; color: var(--fg-muted); }
+.usage-limit-row__bar {
+  flex: 1 1 100%;
+  order: 3;
+  height: 0.5rem;
+  border-radius: 0.25rem;
+  background: var(--bg-message);
+  overflow: hidden;
+}
+.usage-limit-row__bar-fill { height: 100%; background: var(--accent); }
+.usage-limit-row__bar-fill--critical { background: #d9534f; }
+.usage-limit-row__detail {
+  flex: 0 0 auto;
+  order: 2;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+.usage-limits__footnote {
+  margin-top: 0.5rem;
+  font-size: 0.75rem;
+  color: var(--fg-muted);
+  font-style: italic;
+}
+
+#settings-notify-row { font-size: 0.85rem; color: var(--fg-muted); }
+
+/* An in-app
+   upload instead of only "drop a logo.png into the repo yourself" (see
+   resolveCustomLogo in server/index.js, which both paths write to the
+   exact same place). */
+#branding-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+#branding-logo-preview { border-radius: 6px; object-fit: cover; }
+#branding-upload-button {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem;
+  padding: 0.4rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 0.4rem;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+@media (hover: hover) { #branding-upload-button:hover { background: var(--bg-message); } }
+#branding-error:not([hidden]) {
+  margin-top: 0.5rem;
+  font-size: 0.8rem;
+  color: #d9534f;
+}
+
+#workforce-add-form {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+#workforce-add-input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 0.4rem;
+  background: none;
+  color: var(--fg);
+  padding: 0.4rem 0.6rem;
+  font-size: 1rem; /* see #sidebar-search-input: under 16px triggers a zoom on focus */
+}
+#workforce-error:not([hidden]) {
+  margin-top: 0.5rem;
+  font-size: 0.8rem;
+  color: #d9534f;
+}
+.settings-list__current {
+  font-weight: 600;
+  color: var(--fg);
+}
+.settings-list__current-tag {
+  font-size: 0.7rem;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  padding: 0.05rem 0.35rem;
+  margin-left: 0.4rem;
+}
+
+/* Search across everything — sits
+   between #brand and #sidebar, same padding rhythm as the rest of
+   #sidebar-column. */
+#sidebar-search {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0.5rem 0.25rem;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  color: var(--fg-muted);
+}
+#sidebar-search-input {
+  flex: 1;
+  border: none;
+  background: none;
+  color: var(--fg);
+  /* 1rem, not 0.85: a phone browser zooms the whole page in when it
+     focuses an input whose text is under 16px, and this app has no way
+     back out of that zoom — the document itself never scrolls. */
+  font-size: 1rem;
+  min-width: 0;
+}
+/* The input's own outline is suppressed because the visible control
+   here is the wrapper around it, not the bare field — an outline drawn
+   tight around the text would sit inside the rounded border and read as
+   a second, misaligned box. The focus indicator moves to that wrapper
+   instead (below), which is the shape a person actually sees. It was
+   the suppression alone, with no replacement, that left this field with
+   no visible focus at all. */
+#sidebar-search-input:focus { outline: none; }
+#sidebar-search:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+/* The native search-clear "x" some browsers draw inside a
+   type="search" field — themed instead of left at its default (often
+   invisible against a dark background). */
+#sidebar-search-input::-webkit-search-cancel-button { filter: invert(0.4); }
+
+/* `contain` rather than the document's `none`: inside this list the
+   bounce at its own top and bottom edge is the right feedback — it is
+   how a touch UI says "that was the end of the list". What it must not
+   do is hand the leftover gesture on to anything outside itself. On
+   the phone layout that ancestor is the document, already held by the
+   html/body rule; but the two are not redundant, because scroll
+   chaining is resolved per scroller, and this is the one that also
+   holds on the desktop layout, where sidebar and pane sit side by side
+   and reaching the end of one should never start moving the other. */
+#sidebar {
+  flex: 1;
+  /* Explicit, not inherited from html/body's safety net: nothing in the
+     roster scrolls sideways, and leaving the axis at its default let a
+     single overlong row turn the whole list into a horizontal scroller
+     on the phone. */
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0.5rem;
+  /* Names in this list are targets to tap, not prose to select — a
+     long press here was starting a text selection with the magnifier
+     over a row that was about to be tapped. Message text stays
+     selectable (see .message > span), which is where copying actually
+     makes sense. */
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* `width: 100%` alone did not hold this row: with a long enough role
+   tag or an unbreakable name the row grew past it, #sidebar gained a
+   horizontal scroll axis, and the text ran off the right edge of the
+   phone instead of truncating (reproduced at 320 and 390px:
+   20px of horizontal scroll inside #sidebar, with `docOverX` still
+   reading 0 because html/body clip it). `max-width` is the cap that
+   actually binds; `min-width: 0` lets the flex children below give way
+   rather than pushing outward. */
+.colleague {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  padding: 0.65rem 0.75rem;
+  margin-bottom: 0.25rem;
+  border: none;
+  border-radius: 0.5rem;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+/* :not(.colleague--active) is the whole point of this selector, not a
+   refinement of it. `.colleague:hover` is two compound parts and
+   `.colleague--active` only one, so the hover background used to win
+   over the accent fill of the row you are actually in — the open
+   conversation lost its selected colour the moment the pointer touched
+   it. On a phone that is not a passing moment: a touch browser leaves
+   the hover state on whatever was last tapped, so after tapping into a
+   conversation and coming back, the row you were just in sat there
+   looking unselected. */
+@media (hover: hover) { .colleague:hover:not(.colleague--active) { background: var(--bg-message); } }
+/* The pressed state, which this app had nowhere at all before: on a
+   touch screen :hover is not a state a finger can be in, so with the
+   grey system tap flash switched off (see body's own
+   -webkit-tap-highlight-color) a tap would otherwise show nothing
+   between the finger landing and the conversation opening. Slightly
+   stronger than the hover background so the press is distinguishable
+   from the pointer merely resting on the row.
+
+   An inset shadow rather than a background: --border and --bg-message
+   both sit so close to the sidebar's own background that the press was
+   barely visible under a finger, and setting `background` at all would
+   have replaced the selected row's accent fill instead of darkening it
+   — pressing the row you are already in would have made it look
+   deselected. A shadow layers on top of whatever fill is there and
+   follows the row's border-radius. */
+.colleague:active {
+  box-shadow: inset 0 0 0 999px light-dark(rgba(0, 0, 0, 0.14), rgba(255, 255, 255, 0.16));
+}
+.colleague--active { background: var(--accent); color: #fff; }
+
+/* In-app hint that something new has landed while you were looking
+   elsewhere (a desktop notification is OS-gated and absent once you're
+   back in the app). A plain dot, not a count: which
+   conversation has something new is the useful signal here, not how
+   many messages piled up in it. */
+.unread-badge {
+  flex-shrink: 0;
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  background: var(--accent);
+  margin-left: auto;
+}
+.colleague--active .unread-badge { background: #fff; }
+
+.draft-badge {
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  color: var(--fg-muted);
+  margin-left: auto;
+}
+/* When both badges are on the same row, the draft pencil sits right of
+   the unread dot — only the first of the two gets `margin-left: auto`
+   pushing the pair to the edge, the second just follows right after. */
+.unread-badge + .draft-badge, .draft-badge + .unread-badge { margin-left: 0.3rem; }
+.colleague--active .draft-badge { color: rgba(255, 255, 255, 0.8); }
+
+.colleague--nested {
+  margin-left: 1.25rem;
+  padding: 0.35rem 0.6rem;
+  opacity: 0.55;
+}
+@media (hover: hover) { .colleague--nested:hover { opacity: 0.85; } }
+.colleague--nested .avatar { width: 1.5rem; height: 1.5rem; }
+.colleague--nested-done { opacity: 0.35; }
+@media (hover: hover) { .colleague--nested-done:hover { opacity: 0.7; } }
+.colleague--nested .colleague__name { font-weight: 500; font-size: 0.9rem; }
+
+/* Wraps a finished subagent panel's row (see renderSidebar) so it can
+   carry a manual delete button beside it without nesting a <button>
+   inside another one. The indent/spacing `.colleague--nested` normally
+   carries on its own move up here instead, since the row — not the
+   button alone — is now the thing being indented and spaced. */
+.colleague-row { display: flex; align-items: center; gap: 0.25rem; margin-left: 1.25rem; margin-bottom: 0.25rem; }
+.colleague-row .colleague-row__button { margin-left: 0; margin-bottom: 0; flex: 1; min-width: 0; }
+.colleague-row__remove {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  padding: 0;
+  border: none;
+  border-radius: 0.4rem;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.colleague-row__remove .icon { width: 0.9rem; height: 0.9rem; }
+@media (hover: hover) { .colleague-row__remove:hover { background: var(--bg-message); color: var(--fg); } }
+
+.colleague__text { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; max-width: 100%; overflow: hidden; }
+/* One row holding name + role-tag together (see sidebarNameHtml in
+   app.js for why this wrapper exists at all: a bare sibling span here
+   would become its own stacked row under .colleague__text's own
+   flex-direction:column, exactly the "role wraps onto its own line"
+   failure). `min-width: 0` + the child's own
+   ellipsis rule (below) is what lets *only* the role truncate instead
+   of the whole row wrapping when it's too long to fit. */
+.colleague__name-line { display: flex; align-items: baseline; gap: 0.35rem; max-width: 100%; min-width: 0; }
+/* Was `flex-shrink: 0`, which meant a long enough name simply grew the
+   row past the 220px sidebar and turned #sidebar's `overflow-y: auto`
+   into a horizontal scrollbar as well. The role tag next to it still
+   gives way first (it has `flex: 1`), so on ordinary names nothing
+   changes; this only decides what happens once there is nothing left
+   to take from the tag. */
+.colleague__name {
+  font-weight: 600;
+  min-width: 0;
+  /* `.colleague__text` is a column flexbox with `align-items:
+     flex-start`, so its children are sized to their own content, not to
+     the column. In a colleague row that is harmless — the name sits
+     inside `.colleague__name-line`, which carries the cap. A channel row
+     has no such wrapper: the name is a direct child, took its full text
+     width (354px inside a 301px column) and the
+     ellipsis below never had a box narrow enough to trigger. The
+     sibling `.colleague__role` has carried this cap all along; the name
+     was the one that did not. */
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Role sits inline right after the name, in parens, rather than owning
+   the whole line below it (see colleague__role, now a message preview
+   instead). Kept short on purpose — the full role still shows once the
+   conversation is open (paneHeaderEl). Truncates with an ellipsis
+   instead of wrapping — `flex: 1` is what lets it actually shrink below its own text
+   width inside the flex row above, `min-width: 0` overrides a flex
+   item's default `min-width: auto` that would otherwise block that.  */
+.colleague__role-tag {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 400;
+  font-size: 0.8rem;
+  color: var(--fg-muted);
+}
+.colleague--active .colleague__role-tag { color: rgba(255, 255, 255, 0.8); }
+.colleague__role {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--fg-muted);
+  /* `max-width: 100%` is not enough on a flex child, whose default
+     `min-width: auto` refuses to go below its content width — an
+     unbroken path in a preview pushed the whole row out from here. */
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.colleague--active .colleague__role { color: rgba(255, 255, 255, 0.8); }
+
+/* Shows in the sidebar itself when a colleague (or a channel
+   member) is currently writing, not only once that conversation is
+   open. */
+.colleague__role--typing {
+  color: var(--accent);
+  font-style: italic;
+  animation: typing-pulse 1.4s ease-in-out infinite;
+}
+.colleague--active .colleague__role--typing { color: #fff; }
+@keyframes typing-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.avatar {
+  width: 2rem;
+  height: 2rem;
+  border-radius: 50%;
+  flex-shrink: 0;
+  object-fit: cover;
+}
+
+/* Bigger only for a top-level sidebar row (not nested sessions/subagent
+   panels, which keep their own smaller override above, and not message
+   avatars elsewhere, which reuse the same .avatar class) — matches the
+   taller row so the avatar doesn't look lost in it. */
+.colleague:not(.colleague--nested) .avatar,
+.colleague:not(.colleague--nested) .avatar--initial {
+  width: 3rem;
+  height: 3rem;
+  font-size: 1.1rem;
+}
+
+.avatar--initial {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.empty { color: var(--fg-muted); padding: 0.75rem; }
+
+/* `display` and `width` live in the mobile-first block near the top of
+   this file (the pane-active toggle needs to own `display` alone, not
+   split across two rule blocks that could end up fighting each other on
+   source order) — this one just adds the rest. No explicit height: as
+   a grid item of #app (itself 100vh/100dvh), stretch is the default. */
+#pane {
+  flex-direction: column;
+  min-height: 0;
+}
+
+#pane-header {
+  padding: 0.4rem 1rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.75rem;
+  color: var(--fg-muted);
+  align-items: center; /* the 1:1 view's own avatar (see renderPaneHeader) sits here now, wants to line up with the text next to it, not stretch */
+  /* Deliberately NOT wrapping: its three children are avatar, the
+     entries wrapper and the ⋮ button, and the button has to stay on
+     this line. The wrapping happens one level down, inside
+     .pane-header__entries. */
+  flex-wrap: nowrap;
+  gap: 1rem;
+  flex-shrink: 0;
+}
+/* Everything that can wrap. `min-width: 0` so it gives way instead of
+   pushing the ⋮ button off the right edge. */
+.pane-header__entries {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 1rem;
+  flex: 1;
+  min-width: 0;
+}
+/* Same size as the sidebar's own top-level row avatar (see the
+   .colleague:not(.colleague--nested) .avatar rule) — this one sits
+   directly in #pane-header, not inside a .colleague row, so that rule
+   never reached it. */
+#pane-header .avatar,
+#pane-header .avatar--initial {
+  width: 3rem;
+  height: 3rem;
+}
+/* Same specificity trap as #notify-permission-button/#no-persistence-
+   banner/#hiring-mode-banner further down — a bare
+   `#pane-header { display: flex }` outranks `[hidden]`'s `display:
+   none`, so `paneHeaderEl.hidden = true` (see renderPaneHeader in
+   app.js) was setting an attribute with no visible effect. Whether that
+   ever actually surfaced depends on how often a real conversation had
+   nothing to show there. */
+#pane-header:not([hidden]) { display: flex; }
+
+/* The Session (5h) readout, now a compact entry in #pane-header beside
+   the model/token/cost line (see renderPaneHeader). It used to be a
+   strip of its own directly above the composer; that put a permanent
+   account-wide figure in the scarcest part of a phone screen, and made
+   it appear mid-work — shifting the layout — the first time a colleague
+   replied. Same widget as Settings' own usage-limit-row, sized down.
+
+   Explicitly `nowrap` and `order: 0`: the base rule wraps and reorders
+   for the narrow full-width case in Settings, and neither applies to a
+   single short entry sitting inline in a header. */
+.usage-limit-row--compact {
+  flex-wrap: nowrap;
+  font-size: 0.7rem;
+  gap: 0.4rem;
+  padding: 0;
+  /* It is one item among several in a wrapping header — it must not be
+     the one that forces a line break mid-widget. */
+  flex-shrink: 0;
+}
+.usage-limit-row--compact .usage-limit-row__label { flex: 0 0 auto; }
+.usage-limit-row--compact .usage-limit-row__bar { flex: 0 0 4rem; order: 0; height: 0.35rem; }
+.usage-limit-row--compact .usage-limit-row__detail { order: 0; }
+
+/* min-width: 0 — a flex item's default min-width is `auto`, which
+   effectively means "never shrink narrower than your content's own
+   natural width". A channel's per-member entry here (name + model +
+   tokens + cost + the Autopilot toggle, all inline/inline-flex, none
+   of it individually huge but the sum easily wider than a phone
+   screen) hit exactly that: #pane-header's own `flex-wrap: wrap` only
+   wraps whole entries onto new lines, it can't shrink one entry that's
+   already wider than the viewport by itself — this is what let it. */
+.pane-header__entry { min-width: 0; }
+.pane-header__entry strong { color: var(--fg); font-weight: 600; }
+
+/* The header's fixed right-hand corner: search toggle + ⋮, grouped so
+   `margin-left: auto` only has to sit on the group once, not once per
+   button — before this a lone right-aligned button was pushed onto its
+   own line as soon as .pane-header__entries filled the first one
+   (the group generalises the fix for ⋮ alone now that
+   there are two). */
+.pane-header__actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.15rem;
+  flex-shrink: 0;
+}
+.pane-header__search-toggle,
+.pane-header__menu {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  border-radius: 0.4rem;
+  color: var(--fg-muted);
+  padding: 0;
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+  cursor: pointer;
+}
+.pane-header__search-toggle .icon { width: 1.2rem; height: 1.2rem; }
+/* Was sized in font-size/line-height to fit the text glyph "⋮"; now an
+   SVG (see renderPaneHeader), so it gets an explicit box like the
+   search toggle next to it instead of depending on font metrics that
+   no longer apply. */
+.pane-header__menu .icon { width: 1.3rem; height: 1.3rem; }
+@media (hover: hover) {
+  .pane-header__search-toggle:hover,
+  .pane-header__menu:hover { color: var(--fg); }
+}
+.pane-header__search-toggle[aria-expanded="true"] { color: var(--accent); background: var(--bg-message); }
+
+/* Generic small outlined button for a modal section — same look
+   .pane-header__reset had when Reset context still lived in the pane
+   header, just under a name that doesn't claim a location it no longer
+   has. */
+.secondary-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.75rem;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 0.4rem;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 0.3rem 0.9rem;
+  cursor: pointer;
+}
+@media (hover: hover) { .secondary-button:hover { color: var(--fg); border-color: var(--fg-muted); } }
+
+/* #conv-clear-chat — a real delete, so it reads as one even before the
+   two-step confirm (see index.html's own comment on this button and
+   app.js's armClearChat/disarmClearChat): red outline from the start,
+   filled solid red only once armed, so the "this is now one click from
+   happening" state is unmistakable rather than just a label change. */
+.danger-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  min-height: 2.75rem;
+  background: none;
+  border: 1px solid var(--danger, #d64545);
+  border-radius: 0.4rem;
+  color: var(--danger, #d64545);
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 0.3rem 0.9rem;
+  cursor: pointer;
+  /* Wider than the 0.5rem it had: the button next to it is the harmless
+     one, this one deletes the conversation, and 12px of measured
+     separation is not a gap a thumb respects. */
+  margin-left: 1rem;
+}
+@media (hover: hover) { .danger-button:hover { background: rgba(214, 69, 69, 0.1); } }
+.danger-button--armed {
+  background: var(--danger, #d64545);
+  color: #fff;
+}
+@media (hover: hover) { .danger-button--armed:hover { background: var(--danger, #d64545); } }
+
+/* Per-member "Autopilot" checkbox in a channel's pane-header (see
+   renderPaneHeader) — same .auto-mode-toggle as the 1:1 branch above,
+   just without its `margin-left: auto` (that was for the single,
+   right-pushed 1:1 toggle; several inline per-member toggles here
+   would each fight over the same push). */
+/* Combined selector, not just `.auto-mode-toggle--inline` alone — this
+   rule sits earlier in the file than the base `.auto-mode-toggle` rule
+   below, and two single-class selectors of equal specificity would let
+   source order (not intent) decide which margin-left wins. */
+.auto-mode-toggle.auto-mode-toggle--inline { margin-left: 0.5rem; }
+
+#messages {
+  flex: 1;
+  min-height: 0; /* same flex trap as #pane-header__entry earlier — without it this grows to fit every message instead of scrolling its own overflow */
+  overflow-y: auto;
+  /* Same reasoning as #sidebar's: keep the bounce that belongs to this
+     transcript, stop the leftover gesture from travelling outward.
+     This is the one that mattered most on the phone — a flick upward
+     in a conversation already scrolled to the top used to carry on
+     into the page and peel the whole screen down. */
+  overscroll-behavior: contain;
+  padding: 1rem;
+}
+
+.message {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  /* Bubbles need visible space to the opposite edge — 60ch alone doesn't guarantee that on a phone-width
+     screen (#messages, minus its own padding, can be narrower than
+     60ch to begin with, or exactly wide enough that a bubble reaches
+     edge to edge and colleague/you become hard to tell apart at a
+     glance). The 80% cap is what actually reserves the gap; 60ch still
+     caps it on a wide desktop window where 80% alone would be an
+     unreasonably wide bubble. */
+  max-width: min(60ch, 90%);
+  margin-bottom: 0.5rem;
+}
+
+.message > span {
+  /* Slightly roomier padding and a touch larger text
+     than the 1rem browser default, since this file is mobile-first
+     (no @media guard = the phone rule). Reset to the original,
+     tighter size for desktop below (`@media (min-width: 721px)`),
+     where screen space isn't the constraint touch legibility is on
+     a phone. */
+  padding: 0.6rem 0.85rem;
+  font-size: 1.05rem;
+  border-radius: 0.75rem;
+  background: var(--bg-message);
+  white-space: pre-wrap;
+  /* pre-wrap alone still
+     refuses to break a single long token with no spaces in it at all
+     (a file path, a URL) — exactly the kind of text a colleague's
+     Bash/Read/Edit-line and replies both carry all the time. Without
+     this, one such token forces the bubble — and everything up to
+     #app itself, nothing between here and there was constraining
+     width either — wider than the viewport, which is what actually
+     reads as "the whole page is too wide" on a phone. */
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+.message--you {
+  margin-left: auto;
+  flex-direction: row-reverse;
+}
+
+.message--you > span { background: var(--bg-message-you); }
+.message--system > span { color: var(--fg-muted); font-style: italic; background: transparent; }
+.message--thinking > span {
+  color: var(--fg-muted);
+  font-style: italic;
+  font-size: 0.85rem;
+  background: transparent;
+  border: 1px dashed var(--border);
+}
+.message--streaming > span { opacity: 0.85; }
+
+/* Momentary flash for "Jump" in the conversation-settings search (see
+   jumpToMessage in app.js) — the scrollIntoView alone can land a match
+   dead center without making obvious *which* bubble it was among
+   several nearby ones of the same role/color. Transitions back out on
+   its own; app.js removes the class after the animation's done. */
+.message--highlight > span { animation: message-highlight-flash 1.6s ease-out; }
+@keyframes message-highlight-flash {
+  0% { box-shadow: 0 0 0 2px var(--accent); }
+  100% { box-shadow: 0 0 0 2px transparent; }
+}
+
+.message__sender {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--fg-muted);
+  font-weight: 600;
+}
+
+.message__time {
+  display: block;
+  margin-top: 0.2rem;
+  font-size: 0.68rem;
+  color: var(--fg-muted);
+  text-align: right;
+}
+
+.sidebar-section-header {
+  margin: 0.75rem 0 0.25rem;
+  padding: 0 0.75rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-muted);
+}
+
+.new-channel-button {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  min-height: 2.75rem;
+  padding: 0.5rem 0.75rem;
+  margin-bottom: 0.25rem;
+  border: 1px dashed var(--border);
+  border-radius: 0.5rem;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  text-align: left;
+  font-size: 0.85rem;
+}
+
+@media (hover: hover) { .new-channel-button:hover { background: var(--bg-message); } }
+
+#channel-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+#channel-form input[type="text"] {
+  padding: 0.4rem 0.5rem;
+  border-radius: 0.4rem;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.channel-form__hint {
+  margin: 0.5rem 0 0.25rem;
+  font-size: 0.75rem;
+  color: var(--fg-muted);
+}
+#channel-form button[type="submit"]:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.channel-form__members {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.85rem;
+  /* Whole 2.75rem rows: at the old 8rem cap the raised rows showed
+     three of four colleagues and cut the fourth in half. */
+  max-height: 11rem;
+  overflow-y: auto;
+}
+
+/* ~20px rows 3.2px apart before this, with a 13px checkbox as the only
+   thing to aim at — and picking the wrong colleague into a channel is
+   not a mistake the form lets you see afterwards. */
+.channel-form__members label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 2.75rem;
+  padding: 0 0.25rem;
+  border-radius: 0.4rem;
+  cursor: pointer;
+}
+@media (hover: hover) { .channel-form__members label:hover { background: var(--bg-message); } }
+.channel-form__members input[type="checkbox"] { width: 1.15rem; height: 1.15rem; flex-shrink: 0; }
+
+#channel-form button[type="submit"] {
+  min-height: 2.75rem;
+  padding: 0.4rem 0.75rem;
+  border-radius: 0.4rem;
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+}
+
+.permission-card {
+  max-width: 60ch;
+  padding: 0.75rem 1rem;
+  border-radius: 0.75rem;
+  border: 1px solid var(--accent);
+  background: var(--bg-message);
+  margin-bottom: 0.5rem;
+}
+
+.permission-card p { margin: 0 0 0.5rem; }
+.permission-card__description { color: var(--fg-muted); font-size: 0.9rem; }
+
+/* This is the highest-cost mistap in the app — Allow next to Deny. The
+   gap and the target height are both part of that, not just the height. */
+.permission-card__actions { display: flex; flex-wrap: wrap; gap: 0.75rem; }
+
+.permission-card__actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.75rem;
+  padding: 0.4rem 0.9rem;
+  border-radius: 0.5rem;
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.permission-card__deny { background: transparent !important; border: 1px solid var(--border) !important; color: var(--fg) !important; }
+
+/* A step down from the main "Allow" — still one click, but visually
+   secondary so it doesn't compete with the primary action. */
+.permission-card__allow-always {
+  background: transparent !important;
+  border: 1px solid var(--accent) !important;
+  color: var(--accent) !important;
+}
+
+/* Ties visually into the auto-mode header toggle's own color (see
+   .pane-header--auto-mode) — same "unattended from here on" idea. */
+.permission-card__autopilot { background: var(--auto-mode-border) !important; color: #1b1b1f !important; }
+
+/* `max-width: 16rem` alone is wider than the bubble at phone widths
+   (bubble is min(60ch, 80%)), and html/body's overflow-x: hidden turned
+   that into a silent crop rather than a scrollbar. */
+.attachment-thumb {
+  display: block;
+  max-width: min(16rem, 100%);
+  max-height: 12rem;
+  border-radius: 0.5rem;
+  margin-top: 0.4rem;
+  cursor: zoom-in;
+}
+
+/* Same [hidden]-vs-display specificity fight as #settings-backdrop
+   above (see that rule's own comment) — solved the same way. */
+#image-lightbox {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.75);
+  align-items: center;
+  justify-content: center;
+  z-index: 20;
+  cursor: zoom-out;
+  padding: 2rem;
+}
+#image-lightbox:not([hidden]) { display: flex; }
+#image-lightbox img {
+  max-width: 100%;
+  max-height: 100%;
+  border-radius: 0.5rem;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+}
+
+#attachment-preview {
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border-top: 1px solid var(--border);
+}
+/* Same specificity trap as #pane-header above */
+#attachment-preview:not([hidden]) { display: flex; }
+
+#attachment-preview img {
+  max-height: 3rem;
+  border-radius: 0.4rem;
+}
+
+#attachment-preview button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+  border: none;
+  border-radius: 0.4rem;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  font-size: 1rem;
+}
+@media (hover: hover) { #attachment-preview button:hover { background: var(--bg-message); color: var(--fg); } }
+
+#composer {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  /* On top of the base 0.75rem — never less than that even with no
+     inset (an iPad/desktop-in-a-browser reports 0 here), never less
+     than the actual home-indicator height on a device that has one. */
+  padding-bottom: max(0.75rem, var(--safe-bottom));
+  border-top: 1px solid var(--border);
+  /* #messages is the only flex sibling that gives way (`flex: 1;
+     min-height: 0`), so a composer grown to its 12rem cap can squeeze
+     the conversation to nothing on a short viewport — a phone in
+     landscape with the keyboard up is roughly 220px of usable height.
+     Capping the whole composer against the viewport keeps the
+     transcript on screen; the textarea scrolls internally past that,
+     which it already knows how to do. */
+  max-height: min(12rem, 45dvh);
+}
+
+#scroll-to-bottom {
+  position: absolute;
+  left: 50%;
+  bottom: 100%;
+  transform: translateX(-50%);
+  margin: 0 0 0.75rem;
+  width: 2.5rem;
+  height: 2.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--bg-message);
+  color: var(--fg);
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+@media (hover: hover) { #scroll-to-bottom:hover { background: var(--bg-message-you); } }
+
+#mention-autocomplete {
+  position: absolute;
+  left: 0.75rem;
+  right: 0.75rem;
+  bottom: 100%;
+  margin: 0 0 0.4rem;
+  padding: 0.25rem;
+  list-style: none;
+  background: var(--bg-message);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  /* A whole number of 2.75rem rows plus the list's own padding, so the
+     list never ends mid-row. */
+  max-height: 14.25rem;
+  overflow-y: auto;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+#mention-autocomplete li {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0.5rem;
+  min-height: 2.75rem;
+  border-radius: 0.4rem;
+  cursor: pointer;
+}
+
+#mention-autocomplete li .avatar,
+#mention-autocomplete li .avatar--initial {
+  width: 1.4rem;
+  height: 1.4rem;
+  font-size: 0.75rem;
+}
+
+#mention-autocomplete li[aria-selected="true"] { background: var(--accent); color: #fff; }
+
+/* A suggested colleague who isn't a member of this channel yet (see
+   mentionCandidates in app.js) — still pickable, just visibly not the
+   same as someone already reachable here. */
+.mention-candidate--outside { opacity: 0.75; }
+.mention-candidate__hint {
+  margin-left: auto;
+  padding-left: 0.5rem;
+  font-size: 0.7rem;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+#mention-autocomplete li[aria-selected="true"] .mention-candidate__hint { color: rgba(255, 255, 255, 0.75); }
+
+#attach-button {
+  border: none;
+  background: transparent;
+  color: var(--fg-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+  border-radius: 0.4rem;
+  font-size: 1.2rem;
+  cursor: pointer;
+  padding: 0.4rem;
+}
+@media (hover: hover) { #attach-button:hover { background: var(--bg-message); } }
+
+#composer-input {
+  flex: 1;
+  padding: 0.6rem 0.8rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  /* Grows with what's typed (see app.js's autoResizeComposer) instead of
+     staying a single, fixed-height line — capped so a long paste or a
+     long message doesn't push the whole composer off-screen; it scrolls
+     internally past that instead. */
+  font: inherit;
+  line-height: 1.4;
+  resize: none;
+  overflow-y: auto;
+  max-height: 12rem;
+}
+
+#composer button[type="submit"] {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.75rem;
+  padding: 0.6rem 1rem;
+  border-radius: 0.5rem;
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  font: inherit;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+#composer button[type="submit"]:disabled,
+#composer-input:disabled { opacity: 0.6; cursor: not-allowed; }
+
+#notify-permission-button {
+  min-height: 2.75rem;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0 0.5rem 0.4rem;
+  padding: 0.4rem 0.6rem;
+  border: 1px dashed var(--border);
+  border-radius: 0.5rem;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  font-size: 0.8rem;
+  text-align: left;
+}
+/* `display` split out behind :not([hidden]) on purpose — see the
+   #settings-backdrop comment above, the same trap this codebase already
+   found once: a bare `#id { display: flex }` has higher specificity
+   than the UA stylesheet's `[hidden] { display: none }`, so it wins and
+   the element stays visible even while genuinely hidden. The JS toggles
+   `hidden` correctly; the element just never actually hides. */
+#notify-permission-button:not([hidden]) { display: flex; }
+@media (hover: hover) { #notify-permission-button:hover { background: var(--bg-message); } }
+#notify-permission-button .icon { vertical-align: -0.2em; }
+
+#no-persistence-banner {
+  align-items: flex-start;
+  gap: 0.4rem;
+  margin: 0 0.5rem 0.4rem;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--auto-mode-border);
+  border-radius: 0.5rem;
+  background: var(--auto-mode-bg);
+  color: var(--fg);
+  font-size: 0.75rem;
+  line-height: 1.3;
+}
+/* Same specificity trap, same fix — see #notify-permission-button above. */
+#no-persistence-banner:not([hidden]) { display: flex; }
+#no-persistence-banner .icon { margin-top: 0.15rem; }
+
+.auto-mode-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 2.75rem;
+  margin-left: auto;
+  cursor: pointer;
+  user-select: none;
+}
+/* The checkbox itself is the browser's own ~13px box; the label makes
+   the row tappable, but the control is what the eye aims at. */
+.auto-mode-toggle input[type="checkbox"] { width: 1.15rem; height: 1.15rem; }
+
+#pane-header.pane-header--auto-mode {
+  background: var(--auto-mode-bg);
+  border-bottom-color: var(--auto-mode-border);
+}
+
+#hiring-mode-banner {
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.5rem 1rem;
+  background: var(--hiring-mode-bg);
+  border-bottom: 1px solid var(--hiring-mode-border);
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+/* Same specificity trap, same fix — see #notify-permission-button's own
+   comment further up. */
+#hiring-mode-banner:not([hidden]) { display: flex; }
+
+#pane.pane--hiring-mode #messages { background: var(--hiring-mode-bg); }
+
+/* Same specificity trap as #hiring-mode-banner just above ([hidden]
+   loses to a bare `display` unless it is `:not([hidden])`-qualified) —
+   same fix. A disclosure panel, not a modal: it sits inline between the
+   header and the transcript and pushes #messages down while open,
+   rather than covering it, so it needs none of the backdrop/focus-trap
+   machinery the three real dialogs share. */
+#conv-search-panel { flex-direction: column; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+#conv-search-panel:not([hidden]) { display: flex; }
+#conv-search-panel__row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+}
+#conv-search-input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 0.4rem;
+  background: var(--bg);
+  color: var(--fg);
+  padding: 0.4rem 0.6rem;
+  /* Under 16px triggers a phone browser's zoom-on-focus, with no way
+     back out of it in an app whose document never scrolls — see
+     #sidebar-search-input's own note. */
+  font-size: 1rem;
+}
+#conv-search-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+  border: none;
+  background: none;
+  border-radius: 0.4rem;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+@media (hover: hover) { #conv-search-close:hover { color: var(--fg); background: var(--bg-message); } }
+/* Its own scroller, capped rather than left to grow with a long
+   conversation's worth of hits — same `overscroll-behavior: contain`
+   as every other scrolling region in the app (see the grouped rule near
+   the top of this file), added here explicitly since this list did not
+   exist when that rule was written. */
+#conv-search-results {
+  max-height: 40vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 0.5rem 0.5rem;
+}
+
+/* The sessions with one colleague, in her ⋮ dialog — the
+   only place they're listed (not in the sidebar). Same row shape
+   as the workforce switcher: whole row clickable, the open one a plain
+   row with a tag instead of a button. */
+.session-list { list-style: none; margin: 0 0 0.75rem; padding: 0; }
+.session-list__row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  min-height: 2.75rem;
+  padding: 0.4rem 0.6rem;
+  font: inherit;
+  font-size: 0.9rem;
+  color: inherit;
+  text-align: left;
+  background: none;
+  border: 0;
+  border-radius: 0.4rem;
+}
+button.session-list__row { cursor: pointer; }
+@media (hover: hover) { button.session-list__row:hover { background: var(--bg-message); } }
+button.session-list__row:active { background: var(--bg-message); }
+.session-list__row--current { font-weight: 600; }
+.session-list__title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-list__tag {
+  flex-shrink: 0;
+  font-size: 0.65rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+}
+
+/* Which extra session is open — the one marker left on screen once
+   sessions stopped having sidebar rows. Reads as a label, clicks
+   through to the list. */
+.pane-header__session {
+  min-width: 0;
+  max-width: 16rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--fg);
+  background: var(--bg-message);
+  border: 0;
+  border-radius: 999px;
+  padding: 0.2rem 0.6rem;
+  cursor: pointer;
+}
+
+.session-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.session-form input[type="text"] {
+  padding: 0.4rem 0.5rem;
+  border-radius: 0.4rem;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.session-form button[type="submit"] {
+  min-height: 2.75rem;
+  padding: 0.4rem 0.75rem;
+  border-radius: 0.4rem;
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+}
+
+/* Markdown rendering inside a message bubble — kept tight, since a
+   bubble isn't a document: no big margins, code readable but not
+   dominant. */
+.message > span p { margin: 0 0 0.4em; }
+.message > span p:last-child { margin-bottom: 0; }
+.message > span ul,
+.message > span ol { margin: 0.2em 0 0.4em 1.1em; padding: 0; }
+.message > span code {
+  background: rgba(127, 127, 127, 0.15);
+  padding: 0.1em 0.3em;
+  border-radius: 0.25em;
+  font-family: ui-monospace, monospace;
+  font-size: 0.9em;
+}
+.message > span pre {
+  background: rgba(127, 127, 127, 0.12);
+  padding: 0.5em 0.7em;
+  border-radius: 0.4em;
+  overflow-x: auto;
+  margin: 0.3em 0;
+}
+.message > span pre code { background: none; padding: 0; }
+.message > span a { color: inherit; text-decoration: underline; }
+.message > span h2,
+.message > span h3,
+.message > span h4 { margin: 0.3em 0; font-size: 1em; font-weight: 700; }
+
+/* A tool-use line ("Edit: /path/to/file") — click to expand the
+   actual change instead of only ever seeing the one-line summary. */
+.tool-use-line {
+  cursor: pointer;
+  text-decoration: underline dotted;
+  text-decoration-color: var(--fg-muted);
+  /* Same long-path/no-wrap risk as .message > span above — "Bash: ls
+     -la ~/code/<repo>/..." is exactly this line's own
+     day-to-day content. */
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+@media (hover: hover) { .tool-use-line:hover { color: var(--fg); } }
+
+.tool-detail {
+  margin-top: 0.3rem;
+  max-width: 60ch;
+  max-height: 12rem;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  padding: 0.5rem;
+  background: var(--bg-message);
+}
+.tool-detail__label {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+  margin: 0.3rem 0 0.1rem;
+}
+.tool-detail pre {
+  margin: 0 0 0.4rem;
+  padding: 0.3rem 0.4rem;
+  border-radius: 0.3rem;
+  font-family: ui-monospace, monospace;
+  font-size: 0.8rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.tool-detail__removed { background: rgba(220, 80, 80, 0.15); }
+.tool-detail__added { background: rgba(80, 180, 100, 0.15); }
+
+/* The "how she got there" trail (tool calls + reasoning) for a finished
+   reply — a small, scrollable box, same formatting as before; only its
+   place is ahead of the reply bubble, so it's
+   its own element now rather than nested inside the bubble's span —
+   same max-width as a bubble (see .message) since it no longer inherits
+   one from a parent, and margin-bottom instead of -top to sit above. */
+.trail-box {
+  margin-bottom: 0.4rem;
+  max-width: 60ch;
+  max-height: 6rem;
+  overflow-y: auto;
+  border: 1px dashed var(--border);
+  border-radius: 0.5rem;
+  padding: 0.4rem 0.5rem;
+  font-size: 0.8rem;
+  color: var(--fg-muted);
+}
+.trail-box__entry { margin-bottom: 0.25rem; }
+.trail-box__entry:last-child { margin-bottom: 0; }
+.trail-box__thinking { font-style: italic; white-space: pre-wrap; overflow-wrap: break-word; word-break: break-word; }
+
+/* The way back to the list on a narrow screen (see the mobile-first
+   #app.pane-active rules near the top of this file) — hidden again by
+   the desktop section below regardless of pane-active there, since
+   desktop always shows both sidebar and pane and never needs it. No
+   [hidden] attribute in the HTML ([hidden]-vs-bare-display
+   specificity, avoided here on purpose) — `display` alone,
+   entirely CSS-driven. */
+#mobile-back-button {
+  display: none;
+  align-items: center;
+  gap: 0.4rem;
+  width: 100%;
+  /* Measured 38.2px tall with --safe-top at 0. Only the
+     notch inset pushed it over the floor, so it held on an iPhone and
+     missed it everywhere else. */
+  min-height: 2.75rem;
+  padding: 0.6rem 1rem;
+  /* The notch inset, which #pane was missing entirely — on a narrow
+     screen #pane and #sidebar-column swap places in the same grid row,
+     so with a conversation open this button is the thing sitting under
+     the status bar, and it was rendering into it. #sidebar-column
+     solves the same problem with padding on the column itself; that
+     doesn't work here, because #pane's own background is the message
+     area's white, which would have left a bare white band above a grey
+     bar rather than one bar reaching up under the status text the way
+     a native title bar does. Putting the inset on this button instead
+     extends the grey it already has. Zero on a device without a notch,
+     i.e. unchanged everywhere else. */
+  padding-top: calc(0.6rem + var(--safe-top));
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-sidebar);
+  color: var(--fg);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+#app.pane-active #mobile-back-button { display: flex; }
+
+/* --- Desktop (mobile-first: this is the enhancement, not the base) ---
+   this section is mobile-first: everything above is the unconditional, phone-width default;
+   restoring the side-by-side desktop layout is what needs a media
+   query, not the other way around. 721px: wide enough for a 220px
+   sidebar plus a usable message column next to it, narrow tablets still
+   fall into the mobile, single-pane layout above rather than a cramped
+   two-column one. Selectors that also appear above (#sidebar-column,
+   #pane, #app.pane-active ...) are repeated here rather than relying on
+   this block's mere position in the file to win — same specificity,
+   explicit selector match, not a source-order gamble (a mistake that has bitten before). */
+@media (min-width: 721px) {
+  #app { grid-template-columns: 220px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+
+  /* Back to the original, tighter bubble size on desktop — the phone
+     bump above (.message > span) was specifically about touch
+     legibility on a phone screen. */
+  .message > span { padding: 0.5rem 0.75rem; font-size: 1rem; }
+
+  #sidebar-column,
+  #app.pane-active #sidebar-column { display: flex; }
+  #pane,
+  #app.pane-active #pane { display: flex; }
+  #mobile-back-button,
+  #app.pane-active #mobile-back-button { display: none; }
+
+  /* The mobile tab bar's two destinations (Files, Settings) go back to
+     being #brand's own icon buttons, always reachable there since
+     #sidebar-column never hides on desktop. */
+  #mobile-tabbar { display: none; }
+  #settings-button, #diff-button { display: inline-flex; }
+
+  /* Back to one line: label, bar, figure — there is room for all three
+     at this width, and the bars line up across rows because the label
+     column has a fixed basis again. */
+  .usage-limit-row { flex-wrap: nowrap; }
+  .usage-limit-row__label { flex: 0 1 9rem; }
+  .usage-limit-row__bar { flex: 1 1 auto; order: 0; }
+  .usage-limit-row__detail { order: 0; }
+
+  #diff-modal { width: min(70rem, 95vw); height: min(42rem, 85vh, 85dvh); }
+  #diff-body { flex-direction: row; }
+  #diff-file-list {
+    width: 16rem;
+    max-height: none;
+    padding: 0 0.75rem 0 0;
+    border-right: 1px solid var(--border);
+    border-bottom: none;
+  }
+}
