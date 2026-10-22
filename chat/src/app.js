@@ -2427,6 +2427,10 @@ const handleSocketMessage = (event) => {
       thinkingStreaming.delete(key);
       renderSidebar(); // she just stopped typing — clear the sidebar's indicator even if this isn't the open conversation
       const text = applyHiringModeMarkers(key, update.text);
+      // Her turn is over: whatever was written meanwhile counts as read
+      // now and takes its place in the transcript, above this reply
+      // (the order the server stored it in).
+      for (const waiting of history.get(key)) delete waiting.pending;
       history.get(key).push({
         role: update.role,
         text,
@@ -2701,7 +2705,7 @@ function MessageRow({ role, avatarColleague, nameTag, item, toolText, onToggle, 
   return html`
     <${Fragment}>
       ${item.trail?.length ? html`<${TrailBox} trail=${item.trail} onToggleEntry=${onToggleTrailEntry} />` : null}
-      <div class="message message--${role}">
+      <div class="message message--${role}${item.pending ? ' message--pending' : ''}">
         ${avatarColleague ? html`<${Avatar} colleague=${avatarColleague} />` : null}
         ${isToolUse
           ? html`
@@ -2715,7 +2719,9 @@ function MessageRow({ role, avatarColleague, nameTag, item, toolText, onToggle, 
                 ${(item.attachments || []).map(
                   (attachment, i) => html`<img key=${i} class="attachment-thumb" src=${attachment.dataUrl} alt=${attachment.name} role="button" tabindex="0" />`
                 )}
-                ${time ? html`<time class="message__time">${time}</time>` : null}
+                ${item.pending
+                  ? html`<time class="message__time">Waiting, not read yet</time>`
+                  : time ? html`<time class="message__time">${time}</time>` : null}
               </span>
             `}
       </div>
@@ -2806,26 +2812,30 @@ function renderMessages({ forceScrollToBottom = false } = {}) {
   // shown live in the same small box, right under the in-progress reply.
   const liveTrail = pendingTrail.get(key) || [];
 
+  // One bubble. A message sent while the colleague was mid-turn is
+  // `pending` (see the send handler) and is drawn below her live block
+  // instead of among the settled ones — otherwise it scrolls up out of
+  // sight above her still-growing thinking and tool lines.
+  const row = (item, i) => html`<${MessageRow}
+    key=${i}
+    role=${item.role}
+    avatarColleague=${null}
+    nameTag=${null}
+    item=${item}
+    toolText=${item.text}
+    onToggle=${() => {
+      item.expanded = !item.expanded;
+      renderMessages();
+    }}
+    onToggleTrailEntry=${(entryIndex) => {
+      item.trail[entryIndex].expanded = !item.trail[entryIndex].expanded;
+      renderMessages();
+    }}
+  />`;
+
   render(
     html`<${Fragment}>
-      ${items.map(
-        (item, i) => html`<${MessageRow}
-          key=${i}
-          role=${item.role}
-          avatarColleague=${null}
-          nameTag=${null}
-          item=${item}
-          toolText=${item.text}
-          onToggle=${() => {
-            item.expanded = !item.expanded;
-            renderMessages();
-          }}
-          onToggleTrailEntry=${(entryIndex) => {
-            item.trail[entryIndex].expanded = !item.trail[entryIndex].expanded;
-            renderMessages();
-          }}
-        />`
-      )}
+      ${items.map((item, i) => (item.pending ? null : row(item, i)))}
       ${thinkingText ? html`<${StreamingRow} role="thinking" colleague=${null} text=${thinkingText} />` : null}
       ${partialText ? html`<${StreamingRow} role="colleague" colleague=${null} text=${partialText} />` : null}
       ${liveTrail.length
@@ -2838,6 +2848,7 @@ function renderMessages({ forceScrollToBottom = false } = {}) {
           />`
         : null}
       ${permission ? html`<${PermissionCard} permission=${permission} colleagueId=${key} isChannel=${false} />` : null}
+      ${items.map((item, i) => (item.pending ? row(item, i) : null))}
       ${!items.length && !thinkingText && !partialText && !permission
         ? html`<${EmptyConversation}
             text=${`No messages with ${colleaguesById.get(activeColleagueId)?.name || 'this colleague'} yet. Write the first one below.`}
@@ -3906,7 +3917,9 @@ form.addEventListener('submit', (event) => {
   const key = activeConvKey();
   if (!history.has(key)) history.set(key, []);
   const attachments = pendingAttachment ? [pendingAttachment] : [];
-  history.get(key).push({ role: 'you', text, attachments, createdAt: new Date().toISOString() });
+  // Written while she is still mid-turn: it stays below her live block,
+  // marked as waiting, until her turn ends (see the 'message' update).
+  history.get(key).push({ role: 'you', text, attachments, createdAt: new Date().toISOString(), pending: isTyping(key) });
   // Forced — sending your own message should always land you at the
   // bottom, same as every other chat app, regardless of where you'd
   // scrolled to read something older first.
