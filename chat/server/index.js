@@ -22,7 +22,7 @@ import { execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { networkInterfaces } from 'node:os';
-import { dirname, join as joinPath } from 'node:path';
+import { dirname, join as joinPath, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import open from 'open';
@@ -277,7 +277,21 @@ function lanAddress() {
   return null;
 }
 
+// The chat servers running in this process, by workforce folder. A server
+// that was switched away from keeps running while one of its colleagues is
+// mid-turn (see 'switch_workforce'); switching back finds it here and goes to
+// it, instead of starting a second server beside it that knows nothing of the
+// running turn (and would resume the same SDK session a second time).
+const runningServers = new Map(); // resolved folder -> { url, server, closing }
+
 export function runChatServer({ targetDir = process.cwd(), openBrowser = true, onReady, lan = false } = {}) {
+  const runningKey = resolvePath(targetDir);
+  const running = runningServers.get(runningKey);
+  if (running && !running.closing) {
+    onReady?.(running.url);
+    if (openBrowser) open(running.url).catch(() => {});
+    return Promise.resolve({ url: running.url, server: running.server });
+  }
   return new Promise((resolve, reject) => {
     // Token and preferred port both come from the same persisted-per-path record
     // now (see shared/chatSessions.js), instead of a fresh random
@@ -325,8 +339,6 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
     // human's own side-by-side 1:1 conversations, not something a
     // channel needs to pick between.
     const adapters = new Map();
-    // Set by switch_workforce; read by the server's 'close' handler.
-    let drainBeforeClose = false;
     const adapterFor = (colleagueId, sessionId = DEFAULT_SESSION_ID) => {
       const key = adapterKey(colleagueId, sessionId);
       if (!adapters.has(key)) {
@@ -1359,6 +1371,12 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
                 throw new Error(`No team/ or mitarbeiter/ folder in ${payload.path} — not a workforce repo.`);
               }
               const { url: newUrl } = await runChatServer({ targetDir: payload.path, lan, openBrowser: false });
+              // "Switching" to the folder this server already serves: the tabs
+              // just go to the same address, nothing to close.
+              if (resolvePath(payload.path) === runningKey) {
+                broadcast({ type: 'workforce_switch_ready', url: newUrl });
+                return;
+              }
               // Broadcast, not a reply to just this one connection —
               // every tab currently open against this instance is about
               // to lose its server out from under it (see the close()
@@ -1373,8 +1391,19 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
               // The old instance keeps running turns alive: the 'close'
               // handler below waits for them (bounded) before it
               // closes the adapters. Their replies still reach the store.
-              drainBeforeClose = true;
-              setTimeout(() => server.close(), 500);
+              // Closed only once nothing runs anymore, and only if nobody is
+              // connected by then (someone who switched back is using it
+              // again): until then it keeps serving, so switching back finds
+              // the running turn alive, live (see runningServers).
+              setTimeout(async () => {
+                // Waits for the tabs to have left as well as for the turns to
+                // end: the broadcast above only just went out.
+                await waitUntilIdle(() => connections.size > 0 || [...adapters.values()].some((a) => a.busy));
+                const entry = runningServers.get(runningKey);
+                if (connections.size > 0 || entry?.server !== server) return;
+                entry.closing = true;
+                server.close();
+              }, 500);
             } catch (err) {
               broadcast({ type: 'workforce_switch_failed', message: err.message });
             }
@@ -1440,6 +1469,7 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
       // launch for no reason.
       if (port !== session.port) saveSessionPort(targetDir, port);
       const url = `http://127.0.0.1:${port}/${token}/`;
+      runningServers.set(runningKey, { url, server, closing: false });
       onReady?.(url);
       if (lan) {
         // Explicit, every single run — this is the one thing standing
@@ -1501,15 +1531,9 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
       // (found by running a real one against a live colleague: the
       // WebSocket closed, the HTTP server closed, and the process sat
       // there anyway, kept up by the still-running `claude` child).
-      const shutDown = () => {
-        for (const adapter of adapters.values()) adapter.close?.();
-        store.close();
-      };
-      if (!drainBeforeClose) return shutDown();
-      // Switched away from this workforce: let running turns finish first
-      // (see drain.js) — their replies are still persisted by the
-      // onUpdate binding, even with no tab connected.
-      waitUntilIdle(() => [...adapters.values()].some((a) => a.busy)).then(shutDown);
+      if (runningServers.get(runningKey)?.server === server) runningServers.delete(runningKey);
+      for (const adapter of adapters.values()) adapter.close?.();
+      store.close();
     });
   });
 }
