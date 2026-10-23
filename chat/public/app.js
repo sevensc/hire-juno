@@ -5675,6 +5675,8 @@
   var convSettingsNewSessionEl = document.getElementById("conv-settings-new-session");
   var convSettingsModelSectionEl = document.getElementById("conv-settings-model-section");
   var convSettingsModelEl = document.getElementById("conv-settings-model");
+  var convSettingsWorktreeSectionEl = document.getElementById("conv-settings-worktree-section");
+  var convSettingsWorktreeEl = document.getElementById("conv-settings-worktree");
   var convSearchInputEl = document.getElementById("conv-search-input");
   var convSearchResultsEl = document.getElementById("conv-search-results");
   var convResetContextEl = document.getElementById("conv-reset-context");
@@ -6136,6 +6138,7 @@
     }
     renderConvSettingsAutoMode();
     renderConvSettingsNewSession();
+    renderConvSettingsWorktree();
     disarmClearChat();
     openDialog(convSettingsBackdropEl, convSettingsModalEl);
     renderConvSettingsModel();
@@ -6148,6 +6151,71 @@
   convSettingsBackdropEl.addEventListener("click", (event) => {
     if (event.target === convSettingsBackdropEl) closeConvSettingsModal();
   });
+  var worktreeInfo = /* @__PURE__ */ new Map();
+  var worktreeInfoLoading = /* @__PURE__ */ new Set();
+  async function loadWorktreeInfo(colleagueId, sessionId, { force = false } = {}) {
+    const key = convKey(colleagueId, sessionId);
+    if (worktreeInfoLoading.has(key) || worktreeInfo.has(key) && !force) return;
+    worktreeInfoLoading.add(key);
+    try {
+      const res = await fetch(
+        `api/worktree?colleagueId=${encodeURIComponent(colleagueId)}&sessionId=${encodeURIComponent(sessionId)}`
+      );
+      worktreeInfo.set(key, await res.json());
+    } catch {
+      worktreeInfo.set(key, { available: false, worktree: null, repoBranch: null });
+    } finally {
+      worktreeInfoLoading.delete(key);
+    }
+    if (key === activeConvKey()) {
+      renderPaneHeader();
+      if (!convSettingsBackdropEl.hidden) renderConvSettingsWorktree();
+    }
+  }
+  var worktreeForm = null;
+  async function renderConvSettingsWorktree() {
+    convSettingsWorktreeEl.innerHTML = "";
+    worktreeForm = null;
+    if (!activeColleagueId || isSubagentThread(activeColleagueId)) {
+      convSettingsWorktreeSectionEl.hidden = true;
+      return;
+    }
+    const colleagueId = activeColleagueId;
+    const sessionId = activeSessionId;
+    const key = convKey(colleagueId, sessionId);
+    if (!worktreeInfo.has(key)) {
+      await loadWorktreeInfo(colleagueId, sessionId);
+      return;
+    }
+    const info = worktreeInfo.get(key);
+    if (!info.available) {
+      convSettingsWorktreeSectionEl.hidden = true;
+      return;
+    }
+    convSettingsWorktreeSectionEl.hidden = false;
+    const hint = document.createElement("p");
+    hint.className = "model-picker__hint";
+    if (info.worktree) {
+      hint.textContent = `Works on branch ${info.worktree.branch} in ${info.worktree.path}.`;
+      convSettingsWorktreeEl.append(hint);
+      return;
+    }
+    hint.textContent = "Creates a git worktree and a branch for this conversation. She keeps what she knows and works there from her next message on. There is no way back from here yet.";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = "Work in its own worktree";
+    const error2 = document.createElement("p");
+    error2.className = "model-picker__error";
+    error2.setAttribute("role", "alert");
+    error2.hidden = true;
+    button.addEventListener("click", () => {
+      error2.hidden = true;
+      button.disabled = true;
+      socket.send(JSON.stringify({ type: "use_worktree", colleagueId, sessionId }));
+    });
+    convSettingsWorktreeEl.append(button, hint, error2);
+    worktreeForm = { colleagueId, sessionId, button, error: error2 };
+  }
   function renderPaneHeader() {
     paneHeaderEl.innerHTML = "";
     let hasContent = false;
@@ -6164,6 +6232,16 @@
         chip.textContent = session?.title || "Untitled session";
         chip.title = "Sessions with this colleague";
         chip.addEventListener("click", openConvSettingsModal);
+        entries.appendChild(chip);
+      }
+      const info = worktreeInfo.get(key);
+      if (!info) loadWorktreeInfo(activeColleagueId, activeSessionId);
+      const branch = info?.worktree?.branch || info?.repoBranch;
+      if (branch) {
+        const chip = document.createElement("span");
+        chip.className = `pane-header__branch${info.worktree ? " pane-header__branch--own" : ""}`;
+        chip.textContent = branch;
+        chip.title = info.worktree ? "Branch of this conversation's own worktree" : "Branch of the workforce folder (this conversation has no worktree of its own)";
         entries.appendChild(chip);
       }
       const line = statsLine(key);
@@ -6966,6 +7044,25 @@
       else autoModeKeys.delete(key2);
       if (key2 === activeConvKey()) renderPaneHeader();
       refreshSettingsModalIfOpen();
+      return;
+    }
+    if (update.type === "worktree_changed") {
+      const key2 = convKey(update.colleagueId, update.sessionId);
+      const info = worktreeInfo.get(key2) || { available: true, repoBranch: null };
+      worktreeInfo.set(key2, { ...info, available: true, worktree: { branch: update.branch, path: update.path } });
+      if (key2 === activeConvKey()) {
+        renderPaneHeader();
+        if (!convSettingsBackdropEl.hidden) renderConvSettingsWorktree();
+      }
+      return;
+    }
+    if (update.type === "worktree_failed") {
+      const form2 = worktreeForm;
+      if (form2 && form2.colleagueId === update.colleagueId && form2.sessionId === update.sessionId) {
+        form2.button.disabled = false;
+        form2.error.textContent = update.message || "Could not create the worktree.";
+        form2.error.hidden = false;
+      }
       return;
     }
     if (update.type === "model_changed" || update.type === "model_change_failed") {
