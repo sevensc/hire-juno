@@ -131,6 +131,11 @@ export class CopilotAdapter {
     });
   }
 
+  // True while a turn is in flight (sendMessage() sent, result not yet in).
+  get busy() {
+    return this._pendingResolve !== null;
+  }
+
   sendMessage(text, attachments) {
     return new Promise((resolve) => {
       this._pendingResolve = resolve;
