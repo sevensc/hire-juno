@@ -7238,6 +7238,7 @@
       case "tool_done": {
         const entry = (pendingTrail.get(key) || []).find((e2) => e2.id && e2.id === update.id);
         if (entry) entry.approval = update.approval;
+        for (const waiting of history.get(key)) delete waiting.pending;
         break;
       }
       case "message": {
