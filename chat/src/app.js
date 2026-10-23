@@ -3055,7 +3055,12 @@ async function loadChannelHistory(channelId, { force = false } = {}) {
   const rows = await res.json();
   channelMessages.set(
     channelId,
-    rows.map((row) => ({ senderId: row.sender_id, text: row.text, createdAt: row.created_at }))
+    rows.map((row) => ({
+      senderId: row.sender_id,
+      text: row.text,
+      createdAt: row.created_at,
+      attachments: storedAttachments(row.attachments),
+    }))
   );
 }
 
@@ -3097,6 +3102,13 @@ async function selectColleague(colleague, sessionId = DEFAULT_SESSION_ID) {
   if (activeConvKey() === key) renderMessages({ forceScrollToBottom: true });
 }
 
+// Images stored with a message come back as {id, name, mimeType}; the
+// bytes are fetched by the <img> itself (api/attachment), so `dataUrl`
+// holds that address — every renderer only ever reads `dataUrl`.
+function storedAttachments(list) {
+  return (list || []).map((a) => ({ ...a, dataUrl: `api/attachment?id=${a.id}` }));
+}
+
 // Same split, same reason as loadChannelHistory above.
 // Subagent threads never had a server-side history to fetch — they exist
 // only for this browser session (see chat/README.md) — so this fetch only
@@ -3111,7 +3123,13 @@ async function loadColleagueHistory(colleagueId, sessionId, key, { force = false
   const rows = await res.json();
   history.set(
     key,
-    rows.map((row) => ({ role: row.role, text: row.text, createdAt: row.created_at, trail: reconstructTrail(row.trail) }))
+    rows.map((row) => ({
+      role: row.role,
+      text: row.text,
+      createdAt: row.created_at,
+      trail: reconstructTrail(row.trail),
+      attachments: storedAttachments(row.attachments),
+    }))
   );
 }
 

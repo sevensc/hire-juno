@@ -521,6 +521,22 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
           return;
         }
 
+        if (req.method === 'GET' && route === 'api/attachment') {
+          const attachment = store.getAttachment(Number(url.searchParams.get('id')));
+          if (!attachment) {
+            res.writeHead(404).end('Not found.');
+            return;
+          }
+          // Only image types are ever stored (see store.js); nosniff keeps
+          // the browser from guessing a different type from the bytes.
+          res.writeHead(200, {
+            'Content-Type': attachment.mimeType,
+            'X-Content-Type-Options': 'nosniff',
+            'Cache-Control': 'private, max-age=31536000, immutable',
+          }).end(attachment.data);
+          return;
+        }
+
         if (req.method === 'GET' && route === 'api/search') {
           // Search across everything — messages and channel messages
           // together, main threads only (same scope as getLastMessages
@@ -828,13 +844,10 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
         async function relayChannelMessage(channelId, senderId, text, depth, attachments = []) {
           const channel = channelsById.get(channelId);
           if (!channel) return;
-          store.appendChannelMessage(channelId, senderId, text);
-          // Attachments aren't persisted here either (see claude.js's
-          // sendMessage — same "store.js has no place for binary
-          // content yet" gap as a 1:1 DM), so they only ever reach
-          // whoever's watching live: this broadcast, and the adapter
-          // dispatch below. A page reload loses them, same as a 1:1
-          // chat's images already do.
+          // Images are stored with the message (store.js, attachments
+          // table), so they survive a reload; the broadcast below still
+          // carries the bytes for whoever is watching live.
+          store.appendChannelMessage(channelId, senderId, text, attachments);
           broadcast({ channelId, type: 'channel_message', senderId, text, attachments });
 
           // When two channel messages are written back
@@ -1293,10 +1306,8 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
             return;
           }
           bindAdapter(adapter, colleagueId, sessionId);
-          // Attachments aren't persisted (store.js has no place for
-          // binary content yet) — only the text survives a restart.
-          // Named, not silent: the DB just doesn't have that column.
-          store.appendMessage(colleagueId, sessionId, 'you', text);
+          // Images are stored with the message (store.js, attachments table).
+          store.appendMessage(colleagueId, sessionId, 'you', text, undefined, attachments);
           await adapter.sendMessage(text, attachments);
         });
       });
