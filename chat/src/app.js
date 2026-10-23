@@ -841,8 +841,8 @@ convSettingsBackdropEl.addEventListener('click', (event) => {
 // for a real, standing 1:1 session — not a channel, not a one-off
 // subagent exchange), one line per member for a channel (several
 // colleagues' stats are relevant there at once).
-// What `api/worktree` says per 1:1 conversation key: {available, worktree,
-// repoBranch}. Loaded on demand (first time the header or the settings need
+// What `api/worktree` says per 1:1 conversation key: {available, worktree}.
+// Loaded on demand (first time the header or the settings need
 // it), not with the roster.
 const worktreeInfo = new Map();
 const worktreeInfoLoading = new Set();
@@ -856,7 +856,7 @@ async function loadWorktreeInfo(colleagueId, sessionId, { force = false } = {}) 
     );
     worktreeInfo.set(key, await res.json());
   } catch {
-    worktreeInfo.set(key, { available: false, worktree: null, repoBranch: null });
+    worktreeInfo.set(key, { available: false, worktree: null });
   } finally {
     worktreeInfoLoading.delete(key);
   }
@@ -950,18 +950,17 @@ function renderPaneHeader() {
       chip.addEventListener('click', openConvSettingsModal);
       entries.appendChild(chip);
     }
-    // The branch this conversation works on: its own worktree's, or else
-    // the workforce folder's. Loaded when first needed (see loadWorktreeInfo).
+    // The branch of this conversation's own worktree, and only that: a
+    // conversation without one has no branch of its own, and the folder the
+    // chat was started in says nothing about where she is working (she can
+    // work in another repo). Loaded when first needed (see loadWorktreeInfo).
     const info = worktreeInfo.get(key);
     if (!info) loadWorktreeInfo(activeColleagueId, activeSessionId);
-    const branch = info?.worktree?.branch || info?.repoBranch;
-    if (branch) {
+    if (info?.worktree) {
       const chip = document.createElement('span');
-      chip.className = `pane-header__branch${info.worktree ? ' pane-header__branch--own' : ''}`;
-      chip.textContent = branch;
-      chip.title = info.worktree
-        ? "Branch of this conversation's own worktree"
-        : "Branch of the workforce folder (this conversation has no worktree of its own)";
+      chip.className = 'pane-header__branch';
+      chip.textContent = info.worktree.branch;
+      chip.title = "Branch of this conversation's own worktree";
       entries.appendChild(chip);
     }
     const line = statsLine(key);
@@ -2204,7 +2203,7 @@ const handleSocketMessage = (event) => {
 
   if (update.type === 'worktree_changed') {
     const key = convKey(update.colleagueId, update.sessionId);
-    const info = worktreeInfo.get(key) || { available: true, repoBranch: null };
+    const info = worktreeInfo.get(key) || { available: true };
     worktreeInfo.set(key, { ...info, available: true, worktree: { branch: update.branch, path: update.path } });
     if (key === activeConvKey()) {
       renderPaneHeader();
