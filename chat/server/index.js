@@ -20,7 +20,7 @@
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
-import { readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { networkInterfaces } from 'node:os';
 import { dirname, join as joinPath } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -36,6 +36,7 @@ import { extractMentions, extractVocativeAddresses } from './mentions.js';
 import { findLayout, readRoster, resolveAvatarPath } from './roster.js';
 import { DEFAULT_SESSION_ID, openStore } from './store.js';
 import { resolveWorkforce } from './workforceId.js';
+import { chatBranchName, createWorktree, gitRoot, worktreeFolderName, worktreesDir } from './worktree.js';
 import { addWorkforce, listWorkforces, removeWorkforce, setActiveWorkforce } from '../../shared/workforceRegistry.js';
 import { getOrCreateSession, saveSessionPort } from '../../shared/chatSessions.js';
 
@@ -338,7 +339,11 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
         const resume = store.getAdapterSession(colleagueId, sessionId) || undefined;
         // The model picked for this conversation in its settings, if any.
         const model = store.getModelChoice(colleagueId, sessionId) || undefined;
-        const adapter = createAdapter(colleague, { targetDir, resume, model });
+        // Works in her conversation's own worktree when it has one (and the
+        // folder is still there), otherwise in the workforce folder.
+        const worktree = store.getWorktree(colleagueId, sessionId);
+        const cwd = worktree && existsSync(worktree.path) ? worktree.path : targetDir;
+        const adapter = createAdapter(colleague, { targetDir, cwd, resume, model });
         // Set once here, not per-message like onUpdate/onPermissionRequest
         // below (bindAdapter) — this is bookkeeping, not delivery to a
         // particular browser tab.
@@ -656,6 +661,21 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
           const channelId = url.searchParams.get('channelId') || '';
           res.writeHead(200, { 'Content-Type': 'application/json' }).end(
             JSON.stringify(store.getChannelHistory(channelId))
+          );
+          return;
+        }
+
+        if (req.method === 'GET' && route === 'api/worktree') {
+          // Whether this conversation can have its own worktree (a git repo
+          // and a workforce id to keep it under) and the one it has.
+          const colleagueId = url.searchParams.get('colleagueId') || '';
+          const sessionId = url.searchParams.get('sessionId') || DEFAULT_SESSION_ID;
+          const worktree = store.getWorktree(colleagueId, sessionId);
+          res.writeHead(200, { 'Content-Type': 'application/json' }).end(
+            JSON.stringify({
+              available: Boolean(workforce?.id) && Boolean(gitRoot(targetDir)),
+              worktree: worktree ? { branch: worktree.branch, path: worktree.path } : null,
+            })
           );
           return;
         }
@@ -1117,6 +1137,54 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
               model: checked.model,
               resolvedModel: shown?.resolvedModel || checked.model || null,
             });
+            return;
+          }
+
+          if (payload.type === 'use_worktree') {
+            // Moves this conversation into its own git worktree on a new
+            // branch (see worktree.js). Her SDK session is resumed from the
+            // saved id, so she keeps what she knows; only her working
+            // directory changes, from the next message on.
+            const colleagueId = payload.colleagueId;
+            const sessionId = payload.sessionId || DEFAULT_SESSION_ID;
+            const fail = (message) => broadcast({ type: 'worktree_failed', colleagueId, sessionId, message });
+            if (!readRoster(targetDir).some((c) => c.id === colleagueId)) {
+              fail('Unknown colleague.');
+              return;
+            }
+            const existing = store.getWorktree(colleagueId, sessionId);
+            if (existing) {
+              broadcast({ type: 'worktree_changed', colleagueId, sessionId, branch: existing.branch, path: existing.path });
+              return;
+            }
+            if (!workforce?.id) {
+              fail('A worktree needs a workforce id to be stored under, and this workforce has none yet.');
+              return;
+            }
+            if (!gitRoot(targetDir)) {
+              fail('This folder is not a git repository.');
+              return;
+            }
+            const key = adapterKey(colleagueId, sessionId);
+            if (adapters.get(key)?.busy) {
+              fail('She is still answering. Try again once the reply is finished.');
+              return;
+            }
+            const branch = chatBranchName(colleagueId, sessionId);
+            const path = joinPath(worktreesDir(workforce.id), worktreeFolderName(colleagueId, sessionId));
+            try {
+              createWorktree({ repoDir: targetDir, worktreeDir: path, branch });
+            } catch (err) {
+              fail(`Could not create the worktree: ${(err.stderr || err.message).toString().trim()}`);
+              return;
+            }
+            store.setWorktree(colleagueId, sessionId, path, branch);
+            // The running adapter still has the old working directory: drop
+            // it; the next message creates one in the worktree (adapterFor)
+            // and resumes the saved session.
+            adapters.get(key)?.close?.();
+            adapters.delete(key);
+            broadcast({ type: 'worktree_changed', colleagueId, sessionId, branch, path });
             return;
           }
 

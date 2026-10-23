@@ -11,6 +11,8 @@
 // `remove [-f] <worktree>`, `list --porcelain`.
 
 import { execFileSync } from 'node:child_process';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 
 function git(dir, args) {
   return execFileSync('git', args, { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
@@ -35,6 +37,18 @@ export function currentBranch(dir) {
   } catch {
     return null;
   }
+}
+
+// Where a workforce's conversation worktrees live: next to its chat
+// history under ~/.hire-juno/<workforce-id>/, outside the repo, so they
+// never show up in the repo's own status.
+export function worktreesDir(workforceId, baseDir = join(homedir(), '.hire-juno')) {
+  return join(baseDir, workforceId, 'worktrees');
+}
+
+// The folder name of one conversation's worktree inside worktreesDir().
+export function worktreeFolderName(colleagueId, conversationId) {
+  return chatBranchName(colleagueId, conversationId).slice('chat/'.length);
 }
 
 // A branch name for a conversation: `chat/<colleague>-<id>`, with anything

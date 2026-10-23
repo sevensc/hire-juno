@@ -12,6 +12,8 @@ import {
   gitRoot,
   listWorktrees,
   removeWorktree,
+  worktreeFolderName,
+  worktreesDir,
 } from '../chat/server/worktree.js';
 
 function makeRepo() {
@@ -96,4 +98,19 @@ test('removeWorktree deletes the folder, even with changes, and keeps the branch
 test('chatBranchName always yields a plain ref name', () => {
   assert.equal(chatBranchName('Nora', 'a1b2c3d4-e5f6-7890'), 'chat/nora-a1b2c3d4-e5f');
   assert.equal(chatBranchName('mila ü/..', '  '), 'chat/mila-x');
+});
+
+test('worktreesDir and worktreeFolderName place a conversation next to the chat history', () => {
+  assert.equal(worktreesDir('acme', '/base'), '/base/acme/worktrees');
+  assert.equal(worktreeFolderName('Nora', 'a1b2c3d4-e5f6-7890'), 'nora-a1b2c3d4-e5f');
+});
+
+test('the store remembers which worktree a conversation works in', async () => {
+  const { openStore } = await import('../chat/server/store.js');
+  const store = openStore({});
+  assert.equal(store.getWorktree('nora', 'default'), null);
+  store.setWorktree('nora', 'default', '/w/nora', 'chat/nora-default');
+  assert.deepEqual(store.getWorktree('nora', 'default'), { path: '/w/nora', branch: 'chat/nora-default' });
+  assert.equal(store.getWorktree('nora', 's2'), null);
+  assert.equal(store.getWorktree('juno', 'default'), null);
 });
