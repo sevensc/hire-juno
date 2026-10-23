@@ -374,6 +374,8 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
     // trail attached (see bindAdapter below), not just relayed live and
     // then lost on the next reload or restart.
     // Keyed by adapterKey(colleagueId, sessionId), same as `adapters`.
+    // key -> ids of 'you' messages saved while a turn was running, oldest first.
+    const waitingYou = new Map();
     const pendingTrails = new Map(); // key -> [{kind:'tool_use', name, input}]
     const pendingThinking = new Map(); // key -> accumulated thinking text of the in-progress turn
     const pendingText = new Map(); // key -> accumulated reply text of the in-progress turn (live bubble)
@@ -827,6 +829,16 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
               }
               pendingTrails.delete(key);
               store.appendMessage(colleagueId, sessionId, update.role, update.text, trail);
+              // This turn is over: everything that arrived while it ran
+              // belongs behind this reply (see store.moveToEnd). The oldest
+              // of those is what the colleague starts next, so it stops
+              // waiting; the rest keep waiting under their new ids.
+              const waiting = waitingYou.get(key);
+              if (waiting?.length) {
+                const moved = store.moveToEnd(waiting);
+                moved.shift();
+                waitingYou.set(key, moved);
+              }
             }
             recordStats(colleagueStats, key, update);
             broadcast(trail ? { colleagueId, sessionId, ...update, trail } : { colleagueId, sessionId, ...update });
@@ -1395,7 +1407,15 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
           }
           bindAdapter(adapter, colleagueId, sessionId);
           // Images are stored with the message (store.js, attachments table).
-          store.appendMessage(colleagueId, sessionId, 'you', text, undefined, attachments);
+          // A message that arrives mid-turn is remembered here, so the
+          // reply that ends that turn can be stored in front of it.
+          const wasBusy = adapter.busy;
+          const savedId = store.appendMessage(colleagueId, sessionId, 'you', text, undefined, attachments);
+          if (wasBusy) {
+            const key = adapterKey(colleagueId, sessionId);
+            if (!waitingYou.has(key)) waitingYou.set(key, []);
+            waitingYou.get(key).push(savedId);
+          }
           await adapter.sendMessage(text, attachments);
         });
       });

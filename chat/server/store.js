@@ -265,6 +265,20 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
      WHERE text LIKE ? ESCAPE '\\' ORDER BY id DESC LIMIT 50`
   );
 
+  const maxMessageIdStmt = db.prepare('SELECT MAX(id) AS id FROM messages');
+  const moveMessageStmt = db.prepare('UPDATE messages SET id = ? WHERE id = ?');
+  const moveAttachmentsStmt = db.prepare(
+    "UPDATE attachments SET message_id = ? WHERE kind = 'message' AND message_id = ?"
+  );
+  const moveToEndTx = db.transaction((ids) =>
+    ids.map((oldId) => {
+      const newId = maxMessageIdStmt.get().id + 1;
+      moveMessageStmt.run(newId, oldId);
+      moveAttachmentsStmt.run(newId, oldId);
+      return newId;
+    })
+  );
+
   // Stores the valid images of one message (see ATTACHMENT_MIME_TYPES);
   // anything else in the list is skipped, not stored.
   function saveAttachments(kind, messageId, attachments) {
@@ -308,6 +322,16 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
         trail?.length ? JSON.stringify(trail) : null
       );
       saveAttachments('message', lastInsertRowid, attachments);
+      return Number(lastInsertRowid);
+    },
+    // Puts the given messages behind everything stored so far, in the
+    // order given, and returns their new ids. For a message that arrived
+    // while the colleague was still answering an earlier one: it is saved
+    // on arrival, but belongs after that earlier reply, which is stored
+    // later. History is ordered by id, so the row takes a new, higher one
+    // (its images follow).
+    moveToEnd(ids) {
+      return moveToEndTx(ids);
     },
     getHistory(colleagueId, sessionId) {
       const sid = sessionId || DEFAULT_SESSION_ID;
