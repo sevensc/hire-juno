@@ -6269,6 +6269,7 @@
       (entry) => entry.kind === "tool_use" ? { kind: "tool_use", text: toolUseLine(entry.name, entry.input), toolName: entry.name, toolInput: entry.input, approval: entry.approval } : entry
     );
   }
+  var loadedHistory = /* @__PURE__ */ new Set();
   var pendingPermission = /* @__PURE__ */ new Map();
   var HIRING_MODE_START = /^:::mode hiring-process:start\s*$/m;
   var HIRING_MODE_END = /^:::mode hiring-process:end\s*$/m;
@@ -6923,6 +6924,21 @@
       selectChannel(update.channel);
       return;
     }
+    if (update.type === "live_state") {
+      for (const turn of update.turns || []) {
+        const key2 = convKey(turn.colleagueId, turn.sessionId);
+        if (turn.thinking) thinkingStreaming.set(key2, turn.thinking);
+        else thinkingStreaming.delete(key2);
+        if (turn.text) streaming.set(key2, turn.text);
+        else streaming.delete(key2);
+        const trail = reconstructTrail(turn.trail);
+        if (trail) pendingTrail.set(key2, trail);
+        else pendingTrail.delete(key2);
+      }
+      renderSidebar();
+      if (activeConvKey()) renderMessages();
+      return;
+    }
     if (update.type === "session_created") {
       if (!colleagueSessions.has(update.colleagueId)) colleagueSessions.set(update.colleagueId, []);
       colleagueSessions.get(update.colleagueId).push(update.session);
@@ -6966,6 +6982,7 @@
     if (update.type === "chat_cleared") {
       const key2 = update.channelId ? channelConvKey(update.channelId) : convKey(update.colleagueId, update.sessionId);
       history.set(key2, []);
+      loadedHistory.add(key2);
       if (!update.channelId) {
         const rosterColleague = colleaguesById.get(update.colleagueId);
         if (rosterColleague) rosterColleague.lastMessage = null;
@@ -7631,11 +7648,12 @@
   }
   async function loadColleagueHistory(colleagueId, sessionId, key, { force = false } = {}) {
     if (isSubagentThread(colleagueId)) return;
-    if (history.has(key) && !force) return;
+    if (loadedHistory.has(key) && !force) return;
     const res = await fetch(
       `api/history?colleagueId=${encodeURIComponent(colleagueId)}&sessionId=${encodeURIComponent(sessionId)}`
     );
     const rows = await res.json();
+    loadedHistory.add(key);
     history.set(
       key,
       rows.map((row) => ({
