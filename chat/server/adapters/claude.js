@@ -29,6 +29,7 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 
 import { isStaleResumeError, STALE_RESUME_MESSAGE } from './staleResume.js';
+import { TextBlockSeparator } from './textBlocks.js';
 
 // A tool_result's `content` (ToolResultBlockParam, per @anthropic-ai/sdk)
 // is either a plain string or an array of content blocks — normalizes
@@ -99,6 +100,7 @@ export class ClaudeAdapter {
     this._queue = [];
     this._notifyQueued = null;
     this._pendingResolve = null; // resolves the in-flight sendMessage() call, if any
+    this._textBlocks = new TextBlockSeparator(); // blank line between a turn's text blocks
     // Tool-use IDs of Task calls whose subagent thread we've already
     // announced to the frontend, so the second message in doesn't
     // re-announce it.
@@ -151,6 +153,7 @@ export class ClaudeAdapter {
         return;
       }
       this.onUpdate?.({ type: 'message', role: 'system', text: `Session error: ${err.message}` });
+      this._textBlocks.reset();
       this._pendingResolve?.();
       this._pendingResolve = null;
     });
@@ -234,6 +237,8 @@ export class ClaudeAdapter {
         // text on its own channel — this is the part the native apps
         // show as "<name> is thinking…" before she acts.
         const delta = message.event?.delta;
+        const separator = this._textBlocks.separatorFor(message.event);
+        if (separator) this.onUpdate?.({ type: 'delta', text: separator });
         if (delta?.type === 'text_delta' && delta.text) {
           this.onUpdate?.({ type: 'delta', text: delta.text });
         } else if (delta?.type === 'thinking_delta' && delta.thinking) {
@@ -307,6 +312,7 @@ export class ClaudeAdapter {
         this.onUpdate?.({ type: 'usage', ...summarizeUsage(message) });
         this._pendingResolve?.();
         this._pendingResolve = null;
+        this._textBlocks.reset();
         return;
       }
       default:
@@ -325,6 +331,7 @@ export class ClaudeAdapter {
     if (this._staleResumeHandled) return;
     this._staleResumeHandled = true;
     this.onUpdate?.({ type: 'message', role: 'system', text: STALE_RESUME_MESSAGE });
+    this._textBlocks.reset();
     this._pendingResolve?.();
     this._pendingResolve = null;
     this.onStaleResume?.();
