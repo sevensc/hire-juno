@@ -1638,6 +1638,12 @@ button.workforce-row__pick:disabled { cursor: default; opacity: 0.55; }
   font-size: 1.05rem;
   border-radius: 0.75rem;
   background: var(--bg-message);
+  /* A flex item's automatic minimum width is the width of its widest
+     unbreakable content, and a <pre> inside the bubble counts with its full
+     line even though it scrolls: one long line of code or a long URL made
+     the bubble, and the whole message list with it, scroll sideways.
+     With 0 the bubble keeps its own width and the code scrolls inside it. */
+  min-width: 0;
   white-space: pre-wrap;
   /* pre-wrap alone still
      refuses to break a single long token with no spaces in it at all
