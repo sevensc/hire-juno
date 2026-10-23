@@ -64,6 +64,18 @@ const SCHEMA = `
     data BLOB NOT NULL
   );
 
+  -- A conversation that works in its own git worktree, on its own branch
+  -- (see worktree.js). A row only exists once the worktree has been
+  -- created; no row means the conversation works in the workforce folder.
+  CREATE TABLE IF NOT EXISTS conversation_worktrees (
+    colleague_id TEXT NOT NULL,
+    session_id TEXT NOT NULL DEFAULT 'default',
+    path TEXT NOT NULL,
+    branch TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    PRIMARY KEY (colleague_id, session_id)
+  );
+
   CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     colleague_id TEXT NOT NULL,
@@ -198,6 +210,13 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
     `DELETE FROM attachments WHERE kind = 'channel_message' AND message_id IN (
        SELECT id FROM channel_messages WHERE channel_id = ?
      )`
+  );
+  const getWorktreeStmt = db.prepare(
+    'SELECT path, branch FROM conversation_worktrees WHERE colleague_id = ? AND session_id = ?'
+  );
+  const setWorktreeStmt = db.prepare(
+    `INSERT INTO conversation_worktrees (colleague_id, session_id, path, branch) VALUES (?, ?, ?, ?)
+     ON CONFLICT(colleague_id, session_id) DO UPDATE SET path = excluded.path, branch = excluded.branch`
   );
   const insertSessionStmt = db.prepare('INSERT INTO sessions (id, colleague_id, title) VALUES (?, ?, ?)');
   const listSessionsStmt = db.prepare(
@@ -356,6 +375,13 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
     // See the adapter_sessions table comment above — the SDK's own
     // resumable session id for one (colleague, our session) adapter.
     // The model chosen for this conversation, or null for "the default".
+    // The worktree this conversation works in, {path, branch}, or null.
+    getWorktree(colleagueId, sessionId) {
+      return getWorktreeStmt.get(colleagueId, sessionId || DEFAULT_SESSION_ID) ?? null;
+    },
+    setWorktree(colleagueId, sessionId, path, branch) {
+      setWorktreeStmt.run(colleagueId, sessionId || DEFAULT_SESSION_ID, path, branch);
+    },
     getModelChoice(colleagueId, sessionId) {
       return getModelChoiceStmt.get(colleagueId, sessionId || DEFAULT_SESSION_ID)?.model ?? null;
     },
