@@ -182,6 +182,7 @@ body { overscroll-behavior: none; }
 @keyframes pull-refresh-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) {
   .pull-refresh--settling { transition: none; }
+  .typing-indicator { animation: none; }
   /* Not removed outright: this ring is the only sign that the refresh is
      still running. Stepped and slow instead of smooth and fast. */
   .pull-refresh--busy .pull-refresh__spinner { animation: pull-refresh-spin 2s steps(8) infinite; }
@@ -1671,6 +1672,16 @@ button.workforce-row__pick:disabled { cursor: default; opacity: 0.55; }
   overscroll-behavior: contain;
 }
 .message--streaming > span { opacity: 0.85; }
+/* Last line of a 1:1 conversation while the colleague's turn is running,
+   below her live thinking/tool lines: same wording and pulse as the
+   sidebar's "typing…". Not shown while a permission card waits for an answer. */
+.typing-indicator {
+  color: var(--accent);
+  font-style: italic;
+  font-size: 0.85rem;
+  padding: 0 0.25rem;
+  animation: typing-pulse 1.4s ease-in-out infinite;
+}
 /* Written while the colleague was still mid-turn: dimmed until she has read it. */
 .message--pending > span { opacity: 0.65; }
 
