@@ -1078,6 +1078,9 @@ function reconstructTrail(trail) {
       : entry
   );
 }
+// Conversation keys whose stored transcript has been fetched (or emptied),
+// as opposed to keys that only have an entry because a live update arrived.
+const loadedHistory = new Set();
 const pendingPermission = new Map(); // colleagueId -> {requestId, toolName, title, displayName, description, input}
 
 // --- "Einstellungsprozess-Modus" ---------------------------------
@@ -2056,6 +2059,28 @@ const handleSocketMessage = (event) => {
     return;
   }
 
+  if (update.type === 'live_state') {
+    // What the colleagues' running turns have produced so far, sent once
+    // when this tab connected (see the server's upgrade handler). Replaces
+    // the live maps for those conversations rather than appending, so a
+    // reconnect of a tab that was listening all along changes nothing.
+    // `history` is deliberately left alone: loadColleagueHistory skips a
+    // conversation that already has an entry.
+    for (const turn of update.turns || []) {
+      const key = convKey(turn.colleagueId, turn.sessionId);
+      if (turn.thinking) thinkingStreaming.set(key, turn.thinking);
+      else thinkingStreaming.delete(key);
+      if (turn.text) streaming.set(key, turn.text);
+      else streaming.delete(key);
+      const trail = reconstructTrail(turn.trail);
+      if (trail) pendingTrail.set(key, trail);
+      else pendingTrail.delete(key);
+    }
+    renderSidebar();
+    if (activeConvKey()) renderMessages();
+    return;
+  }
+
   if (update.type === 'session_created') {
     if (!colleagueSessions.has(update.colleagueId)) colleagueSessions.set(update.colleagueId, []);
     colleagueSessions.get(update.colleagueId).push(update.session);
@@ -2110,6 +2135,7 @@ const handleSocketMessage = (event) => {
     // and re-render whatever's currently on screen.
     const key = update.channelId ? channelConvKey(update.channelId) : convKey(update.colleagueId, update.sessionId);
     history.set(key, []);
+    loadedHistory.add(key); // an emptied transcript is the real one, nothing to fetch
     if (!update.channelId) {
       const rosterColleague = colleaguesById.get(update.colleagueId);
       if (rosterColleague) rosterColleague.lastMessage = null;
@@ -3117,11 +3143,16 @@ function storedAttachments(list) {
 // than a request that would come back empty and wipe the thread.
 async function loadColleagueHistory(colleagueId, sessionId, key, { force = false } = {}) {
   if (isSubagentThread(colleagueId)) return;
-  if (history.has(key) && !force) return;
+  // Not `history.has(key)`: a live update (delta, thinking, a message that
+  // arrives) creates an empty entry before this runs when a tab is opened
+  // or reloaded mid-turn, and that used to count as "already loaded" — the
+  // stored conversation then never appeared.
+  if (loadedHistory.has(key) && !force) return;
   const res = await fetch(
     `api/history?colleagueId=${encodeURIComponent(colleagueId)}&sessionId=${encodeURIComponent(sessionId)}`
   );
   const rows = await res.json();
+  loadedHistory.add(key);
   history.set(
     key,
     rows.map((row) => ({

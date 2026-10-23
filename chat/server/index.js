@@ -371,6 +371,7 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
     // Keyed by adapterKey(colleagueId, sessionId), same as `adapters`.
     const pendingTrails = new Map(); // key -> [{kind:'tool_use', name, input}]
     const pendingThinking = new Map(); // key -> accumulated thinking text of the in-progress turn
+    const pendingText = new Map(); // key -> accumulated reply text of the in-progress turn (live bubble)
 
     // The gatekeeper isn't a colleague — it's a shared, anonymous
     // classifier call, so its usage doesn't fit colleagueStats' per-
@@ -738,6 +739,22 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
         connections.add(ws);
         ws.on('close', () => connections.delete(ws));
 
+        // A tab that opens (or reloads) while a colleague is mid-turn only
+        // hears the rest of the stream; what came before — thinking, reply
+        // text so far, tool lines — is told to it once, here. Only for
+        // turns still running (an adapter that is not busy has nothing live).
+        const turns = [];
+        for (const [key, adapter] of adapters) {
+          if (!adapter.busy) continue;
+          const thinking = pendingThinking.get(key);
+          const text = pendingText.get(key);
+          const trail = pendingTrails.get(key);
+          if (!thinking && !text && !trail?.length) continue;
+          const [colleagueId, sessionId] = key.split('::');
+          turns.push({ colleagueId, sessionId, thinking, text, trail });
+        }
+        if (turns.length) ws.send(JSON.stringify({ type: 'live_state', turns }));
+
         // Bound on the adapter itself, not passed into each
         // sendMessage() call — see agentAdapter.js. A colleague can run
         // a Task subagent in the background and reply right away; that
@@ -779,7 +796,10 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
               if (entry) entry.approval = update.approval;
             } else if (update.type === 'thinking_delta') {
               pendingThinking.set(key, (pendingThinking.get(key) || '') + update.text);
+            } else if (update.type === 'delta') {
+              pendingText.set(key, (pendingText.get(key) || '') + update.text);
             } else if (update.type === 'message') {
+              pendingText.delete(key);
               trail = pendingTrails.get(key) || [];
               if (pendingThinking.has(key)) {
                 trail.push({ kind: 'thinking', text: pendingThinking.get(key) });
