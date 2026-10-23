@@ -1966,6 +1966,14 @@ function closeImageLightbox() {
   dialogOpener.delete(imageLightboxEl);
   if (opener?.isConnected) opener.focus?.();
 }
+// The Copy button of a code block (see markdown.js) is part of the rendered
+// HTML, so one delegated listener serves all of them, like the thumbnails.
+messagesEl.addEventListener('click', (event) => {
+  const button = event.target.closest?.('.code-copy');
+  if (!button) return;
+  const code = button.parentElement?.querySelector('code');
+  if (code) copyWithFeedback(code.textContent, button);
+});
 messagesEl.addEventListener('click', (event) => {
   if (!event.target.classList.contains('attachment-thumb')) return;
   openImageLightbox(event.target);
@@ -2772,6 +2780,49 @@ function TrailBox({ trail, onToggleEntry }) {
 // element above the bubble, not inside it — ahead of the reply, where
 // the reasoning reads naturally, rather than tucked under the reply
 // text or as a run of separate bubbles.
+// Puts `text` on the clipboard. `navigator.clipboard` only exists in secure
+// contexts (https or localhost, MDN: Clipboard.writeText), and this app is
+// also opened over plain http on a LAN address, so there is a fallback
+// through a temporary, selected textarea. Resolves to true when it worked.
+async function copyToClipboard(text) {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      // fall through to the textarea
+    }
+  }
+  const previous = document.activeElement;
+  const area = document.createElement('textarea');
+  area.value = text;
+  area.setAttribute('readonly', '');
+  area.style.cssText = 'position:fixed;top:0;left:0;opacity:0;';
+  document.body.appendChild(area);
+  area.select();
+  area.setSelectionRange(0, text.length);
+  let ok = false;
+  try {
+    ok = document.execCommand('copy');
+  } catch {
+    ok = false;
+  }
+  area.remove();
+  previous?.focus?.();
+  return ok;
+}
+
+// Copies and says so on the button itself for a moment ("Copied" or
+// "Copy failed"), then restores its label.
+async function copyWithFeedback(text, button) {
+  const label = button.dataset.label || button.textContent;
+  button.dataset.label = label;
+  const ok = await copyToClipboard(text);
+  button.textContent = ok ? 'Copied' : 'Copy failed';
+  clearTimeout(Number(button.dataset.timer));
+  button.dataset.timer = String(setTimeout(() => { button.textContent = label; }, 1500));
+}
+
 function MessageRow({ role, avatarColleague, nameTag, item, toolText, onToggle, onToggleTrailEntry }) {
   const isToolUse = item.toolInput !== undefined;
   const time = formatMessageTime(item.createdAt);
@@ -2792,9 +2843,14 @@ function MessageRow({ role, avatarColleague, nameTag, item, toolText, onToggle, 
                 ${(item.attachments || []).map(
                   (attachment, i) => html`<img key=${i} class="attachment-thumb" src=${attachment.dataUrl} alt=${attachment.name} role="button" tabindex="0" />`
                 )}
-                ${item.pending
-                  ? html`<time class="message__time">Waiting, not read yet</time>`
-                  : time ? html`<time class="message__time">${time}</time>` : null}
+                <span class="message__footer">
+                  ${item.text
+                    ? html`<button type="button" class="copy-button" aria-label="Copy message as Markdown" onClick=${(event) => copyWithFeedback(item.text, event.currentTarget)}>Copy</button>`
+                    : null}
+                  ${item.pending
+                    ? html`<time class="message__time">Waiting, not read yet</time>`
+                    : time ? html`<time class="message__time">${time}</time>` : null}
+                </span>
               </span>
             `}
       </div>
