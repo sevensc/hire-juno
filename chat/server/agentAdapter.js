@@ -109,11 +109,18 @@ const CHAT_UI_SKILL = readFileSync(joinPath(dirname(fileURLToPath(import.meta.ur
 // for now. Not forwarded to CopilotAdapter: its ACP session's own resume
 // story hasn't been checked against this codebase, and passing an unused
 // option silently would be a claim about behavior nobody verified.
-export function createAdapter(colleague, { targetDir, resume, model }) {
+// `cwd` is where she works; it differs from `targetDir` (where her profile
+// is read from) when the conversation has its own git worktree.
+export function createAdapter(colleague, { targetDir, cwd = targetDir, resume, model }) {
   const ownProfile = readProfileBody(targetDir, colleague.id) ?? `You are ${colleague.name}.`;
-  const systemPrompt = `${ownProfile}\n\n${CHAT_UI_SKILL}`;
+  const worktreeNote =
+    cwd === targetDir
+      ? ''
+      : `\n\nYour working directory is ${cwd}, a git worktree on its own branch for this conversation. ` +
+        `Work only inside it and do not change files in ${targetDir}.`;
+  const systemPrompt = `${ownProfile}${worktreeNote}\n\n${CHAT_UI_SKILL}`;
   const wantsCopilot = colleague.adapter.some((a) => a.toLowerCase().includes('copilot'));
   return wantsCopilot
-    ? new CopilotAdapter(colleague, { cwd: targetDir })
-    : new ClaudeAdapter(colleague, { systemPrompt, cwd: targetDir, resume, model });
+    ? new CopilotAdapter(colleague, { cwd })
+    : new ClaudeAdapter(colleague, { systemPrompt, cwd, resume, model });
 }
