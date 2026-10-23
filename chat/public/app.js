@@ -5602,6 +5602,11 @@
     tokens[idx].tag = shiftedHeading(tokens[idx]);
     return self.renderToken(tokens, idx, options);
   };
+  var copyButton = '<button type="button" class="code-copy" aria-label="Copy code">Copy</button>';
+  for (const rule of ["fence", "code_block"]) {
+    const original = md.renderer.rules[rule];
+    md.renderer.rules[rule] = (...args) => `<div class="code-block">${copyButton}${original(...args)}</div>`;
+  }
   md.renderer.rules.table_open = () => '<div class="table-scroll"><table>\n';
   md.renderer.rules.table_close = () => "</table></div>\n";
   function renderMarkdown(text2) {
@@ -6871,6 +6876,12 @@
     if (opener?.isConnected) opener.focus?.();
   }
   messagesEl.addEventListener("click", (event) => {
+    const button = event.target.closest?.(".code-copy");
+    if (!button) return;
+    const code2 = button.parentElement?.querySelector("code");
+    if (code2) copyWithFeedback(code2.textContent, button);
+  });
+  messagesEl.addEventListener("click", (event) => {
     if (!event.target.classList.contains("attachment-thumb")) return;
     openImageLightbox(event.target);
   });
@@ -7392,6 +7403,42 @@
     </div>
   `;
   }
+  async function copyToClipboard(text2) {
+    if (navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(text2);
+        return true;
+      } catch {
+      }
+    }
+    const previous = document.activeElement;
+    const area = document.createElement("textarea");
+    area.value = text2;
+    area.setAttribute("readonly", "");
+    area.style.cssText = "position:fixed;top:0;left:0;opacity:0;";
+    document.body.appendChild(area);
+    area.select();
+    area.setSelectionRange(0, text2.length);
+    let ok = false;
+    try {
+      ok = document.execCommand("copy");
+    } catch {
+      ok = false;
+    }
+    area.remove();
+    previous?.focus?.();
+    return ok;
+  }
+  async function copyWithFeedback(text2, button) {
+    const label = button.dataset.label || button.textContent;
+    button.dataset.label = label;
+    const ok = await copyToClipboard(text2);
+    button.textContent = ok ? "Copied" : "Copy failed";
+    clearTimeout(Number(button.dataset.timer));
+    button.dataset.timer = String(setTimeout(() => {
+      button.textContent = label;
+    }, 1500));
+  }
   function MessageRow({ role, avatarColleague, nameTag, item, toolText, onToggle, onToggleTrailEntry }) {
     const isToolUse = item.toolInput !== void 0;
     const time = formatMessageTime(item.createdAt);
@@ -7410,7 +7457,10 @@
                 ${(item.attachments || []).map(
       (attachment, i2) => m2`<img key=${i2} class="attachment-thumb" src=${attachment.dataUrl} alt=${attachment.name} role="button" tabindex="0" />`
     )}
-                ${item.pending ? m2`<time class="message__time">Waiting, not read yet</time>` : time ? m2`<time class="message__time">${time}</time>` : null}
+                <span class="message__footer">
+                  ${item.text ? m2`<button type="button" class="copy-button" aria-label="Copy message as Markdown" onClick=${(event) => copyWithFeedback(item.text, event.currentTarget)}>Copy</button>` : null}
+                  ${item.pending ? m2`<time class="message__time">Waiting, not read yet</time>` : time ? m2`<time class="message__time">${time}</time>` : null}
+                </span>
               </span>
             `}
       </div>

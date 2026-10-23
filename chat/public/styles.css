@@ -1703,12 +1703,48 @@ button.workforce-row__pick:disabled { cursor: default; opacity: 0.55; }
   font-weight: 600;
 }
 
+/* Time on the right, Copy on the left of the same line. */
+.message__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-top: 0.2rem;
+}
+.message__footer .message__time { margin-top: 0; margin-left: auto; }
 .message__time {
   display: block;
   margin-top: 0.2rem;
   font-size: 0.68rem;
   color: var(--fg-muted);
   text-align: right;
+}
+
+/* Copy buttons (whole message, code block): quiet until the bubble is
+   hovered or the button focused; always shown where there is no hover
+   (phone). Not part of a text selection. */
+.copy-button,
+.code-copy {
+  font: inherit;
+  font-size: 0.68rem;
+  color: var(--fg-muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 0.4rem;
+  padding: 0.05rem 0.45rem;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.copy-button { opacity: 0; }
+.message:hover .copy-button,
+.copy-button:focus-visible { opacity: 1; }
+/* Above the code, not on it: a short line of code would run under the button. */
+.code-block .code-copy { display: block; margin: 0 0 0.2rem auto; opacity: 0.6; }
+.code-block:hover .code-copy,
+.code-copy:focus-visible { opacity: 1; }
+@media (hover: none) {
+  .copy-button { opacity: 0.7; }
 }
 
 .sidebar-section-header {
