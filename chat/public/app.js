@@ -7591,7 +7591,12 @@
     const rows = await res.json();
     channelMessages.set(
       channelId,
-      rows.map((row) => ({ senderId: row.sender_id, text: row.text, createdAt: row.created_at }))
+      rows.map((row) => ({
+        senderId: row.sender_id,
+        text: row.text,
+        createdAt: row.created_at,
+        attachments: storedAttachments(row.attachments)
+      }))
     );
   }
   function isSubagentThread(colleagueId) {
@@ -7620,6 +7625,9 @@
     await loadColleagueHistory(colleague.id, activeSessionId, key);
     if (activeConvKey() === key) renderMessages({ forceScrollToBottom: true });
   }
+  function storedAttachments(list2) {
+    return (list2 || []).map((a2) => ({ ...a2, dataUrl: `api/attachment?id=${a2.id}` }));
+  }
   async function loadColleagueHistory(colleagueId, sessionId, key, { force = false } = {}) {
     if (isSubagentThread(colleagueId)) return;
     if (history.has(key) && !force) return;
@@ -7629,7 +7637,13 @@
     const rows = await res.json();
     history.set(
       key,
-      rows.map((row) => ({ role: row.role, text: row.text, createdAt: row.created_at, trail: reconstructTrail(row.trail) }))
+      rows.map((row) => ({
+        role: row.role,
+        text: row.text,
+        createdAt: row.created_at,
+        trail: reconstructTrail(row.trail),
+        attachments: storedAttachments(row.attachments)
+      }))
     );
   }
   function appendUnreadBadge(button, key) {

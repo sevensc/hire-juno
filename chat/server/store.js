@@ -25,6 +25,11 @@ import DatabaseConstructor from 'better-sqlite3';
 // nothing about a pre-upgrade chat.db needs to change to keep working.
 export const DEFAULT_SESSION_ID = 'default';
 
+// The only attachment types the chat accepts (see agentAdapter.js) — also
+// the only ones ever stored or served back, so a client can't get e.g.
+// text/html served from the chat's own origin.
+export const ATTACHMENT_MIME_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -43,6 +48,20 @@ const SCHEMA = `
     -- the same way.
     trail TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  );
+
+  -- Images sent along with a message, kept apart from the message rows so
+  -- reading a history never drags the bytes along: the history only lists
+  -- {id, name, mimeType}, the bytes come from one request per image
+  -- (api/attachment). "kind" says which table "message_id" points into
+  -- ('message' or 'channel_message'); removed together with that history.
+  CREATE TABLE IF NOT EXISTS attachments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    message_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    data BLOB NOT NULL
   );
 
   CREATE TABLE IF NOT EXISTS sessions (
@@ -141,7 +160,7 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
     'INSERT INTO messages (colleague_id, session_id, role, text, trail) VALUES (?, ?, ?, ?, ?)'
   );
   const historyStmt = db.prepare(
-    'SELECT role, text, trail, created_at FROM messages WHERE colleague_id = ? AND session_id = ? ORDER BY id ASC'
+    'SELECT id, role, text, trail, created_at FROM messages WHERE colleague_id = ? AND session_id = ? ORDER BY id ASC'
   );
   // One row per colleague's *main* thread only (session_id = 'default')
   // — the sidebar preview is about "what's the latest in this
@@ -152,6 +171,32 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
     `SELECT colleague_id, role, text, created_at FROM messages
      WHERE session_id = ? AND id IN (
        SELECT MAX(id) FROM messages WHERE session_id = ? GROUP BY colleague_id
+     )`
+  );
+  const insertAttachmentStmt = db.prepare(
+    'INSERT INTO attachments (kind, message_id, name, mime_type, data) VALUES (?, ?, ?, ?, ?)'
+  );
+  const messageAttachmentsStmt = db.prepare(
+    `SELECT id, message_id, name, mime_type FROM attachments
+     WHERE kind = 'message' AND message_id IN (
+       SELECT id FROM messages WHERE colleague_id = ? AND session_id = ?
+     )`
+  );
+  const channelAttachmentsStmt = db.prepare(
+    `SELECT id, message_id, name, mime_type FROM attachments
+     WHERE kind = 'channel_message' AND message_id IN (
+       SELECT id FROM channel_messages WHERE channel_id = ?
+     )`
+  );
+  const getAttachmentStmt = db.prepare('SELECT mime_type, data FROM attachments WHERE id = ?');
+  const deleteMessageAttachmentsStmt = db.prepare(
+    `DELETE FROM attachments WHERE kind = 'message' AND message_id IN (
+       SELECT id FROM messages WHERE colleague_id = ? AND session_id = ?
+     )`
+  );
+  const deleteChannelAttachmentsStmt = db.prepare(
+    `DELETE FROM attachments WHERE kind = 'channel_message' AND message_id IN (
+       SELECT id FROM channel_messages WHERE channel_id = ?
      )`
   );
   const insertSessionStmt = db.prepare('INSERT INTO sessions (id, colleague_id, title) VALUES (?, ?, ?)');
@@ -166,7 +211,7 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
     'INSERT INTO channel_messages (channel_id, sender_id, text) VALUES (?, ?, ?)'
   );
   const channelHistoryStmt = db.prepare(
-    'SELECT sender_id, text, created_at FROM channel_messages WHERE channel_id = ? ORDER BY id ASC'
+    'SELECT id, sender_id, text, created_at FROM channel_messages WHERE channel_id = ? ORDER BY id ASC'
   );
   const saveAdapterSessionStmt = db.prepare(
     `INSERT INTO adapter_sessions (colleague_id, session_id, sdk_session_id, updated_at)
@@ -201,6 +246,31 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
      WHERE text LIKE ? ESCAPE '\\' ORDER BY id DESC LIMIT 50`
   );
 
+  // Stores the valid images of one message (see ATTACHMENT_MIME_TYPES);
+  // anything else in the list is skipped, not stored.
+  function saveAttachments(kind, messageId, attachments) {
+    for (const a of Array.isArray(attachments) ? attachments : []) {
+      if (!a || !ATTACHMENT_MIME_TYPES.includes(a.mimeType) || typeof a.data !== 'string' || !a.data) continue;
+      insertAttachmentStmt.run(
+        kind,
+        messageId,
+        String(a.name || 'image').slice(0, 200),
+        a.mimeType,
+        Buffer.from(a.data, 'base64')
+      );
+    }
+  }
+
+  // message_id -> [{id, name, mimeType}] for one history.
+  function groupAttachments(rows) {
+    const byMessage = new Map();
+    for (const r of rows) {
+      if (!byMessage.has(r.message_id)) byMessage.set(r.message_id, []);
+      byMessage.get(r.message_id).push({ id: r.id, name: r.name, mimeType: r.mime_type });
+    }
+    return byMessage;
+  }
+
   return {
     persisted: Boolean(workforceId),
     // `trail` (optional): the same [{kind:'tool_use'|'thinking', ...}]
@@ -208,19 +278,25 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
     // table's own comment above) — stored as JSON, `null` when omitted or
     // empty so a plain message keeps reading back exactly as before this
     // column existed.
-    appendMessage(colleagueId, sessionId, role, text, trail) {
-      insertStmt.run(
+    // `attachments` (optional): [{name, mimeType, data}] as sent by the
+    // client (data is base64) — only images, see saveAttachments.
+    appendMessage(colleagueId, sessionId, role, text, trail, attachments) {
+      const { lastInsertRowid } = insertStmt.run(
         colleagueId,
         sessionId || DEFAULT_SESSION_ID,
         role,
         text,
         trail?.length ? JSON.stringify(trail) : null
       );
+      saveAttachments('message', lastInsertRowid, attachments);
     },
     getHistory(colleagueId, sessionId) {
-      return historyStmt.all(colleagueId, sessionId || DEFAULT_SESSION_ID).map((row) => ({
+      const sid = sessionId || DEFAULT_SESSION_ID;
+      const attachments = groupAttachments(messageAttachmentsStmt.all(colleagueId, sid));
+      return historyStmt.all(colleagueId, sid).map((row) => ({
         ...row,
         trail: row.trail ? JSON.parse(row.trail) : undefined,
+        attachments: attachments.get(row.id),
       }));
     },
     // colleagueId -> {role, text, createdAt} for the sidebar preview —
@@ -264,11 +340,18 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
         memberIds: JSON.parse(row.member_ids),
       }));
     },
-    appendChannelMessage(channelId, senderId, text) {
-      insertChannelMessageStmt.run(channelId, senderId, text);
+    appendChannelMessage(channelId, senderId, text, attachments) {
+      const { lastInsertRowid } = insertChannelMessageStmt.run(channelId, senderId, text);
+      saveAttachments('channel_message', lastInsertRowid, attachments);
     },
     getChannelHistory(channelId) {
-      return channelHistoryStmt.all(channelId);
+      const attachments = groupAttachments(channelAttachmentsStmt.all(channelId));
+      return channelHistoryStmt.all(channelId).map((row) => ({ ...row, attachments: attachments.get(row.id) }));
+    },
+    // The bytes of one stored image, or null.
+    getAttachment(id) {
+      const row = getAttachmentStmt.get(id);
+      return row ? { mimeType: row.mime_type, data: row.data } : null;
     },
     // See the adapter_sessions table comment above — the SDK's own
     // resumable session id for one (colleague, our session) adapter.
@@ -308,10 +391,12 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
     // was just deleted.
     clearHistory(colleagueId, sessionId) {
       const sid = sessionId || DEFAULT_SESSION_ID;
+      deleteMessageAttachmentsStmt.run(colleagueId, sid);
       deleteMessagesStmt.run(colleagueId, sid);
       deleteAdapterSessionStmt.run(colleagueId, sid);
     },
     clearChannelHistory(channelId) {
+      deleteChannelAttachmentsStmt.run(channelId);
       deleteChannelMessagesStmt.run(channelId);
     },
     // Main-thread messages only (session_id = 'default'), same scope as
