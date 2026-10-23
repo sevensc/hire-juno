@@ -31,6 +31,10 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { isStaleResumeError, STALE_RESUME_MESSAGE } from './staleResume.js';
 import { TextBlockSeparator } from './textBlocks.js';
 
+// Tools that always ask in the chat unless its Auto mode is on, whatever the
+// Claude settings allow. The names are Claude Code's own tool names.
+export const ASK_UNLESS_AUTO_MODE = ['Bash', 'Edit', 'Write', 'NotebookEdit', 'WebFetch', 'WebSearch', 'mcp__*'];
+
 // A tool_result's `content` (ToolResultBlockParam, per @anthropic-ai/sdk)
 // is either a plain string or an array of content blocks — normalizes
 // both to text, keeping only the text blocks (a Task/Agent result is
@@ -138,6 +142,16 @@ export class ClaudeAdapter {
         // want `adaptive` instead. Real, billed output tokens on every
         // turn.
         thinking: { type: 'adaptive', display: 'summarized' },
+        // Without this, a tool call that a permission rule from the user's,
+        // the project's or the local Claude settings already allows never
+        // reaches `canUseTool`: it runs without anyone being asked, with or
+        // without the chat's Auto mode. Ask rules are checked before allow
+        // rules whatever they are written for (Claude Code permissions docs:
+        // "deny, then ask, then allow"), so these make the chat ask for these
+        // tools every time; only Auto mode (see server/index.js) answers for
+        // the human. Read-only tools (Read, Grep, Glob) keep Claude's own
+        // default of not asking.
+        settings: { permissions: { ask: ASK_UNLESS_AUTO_MODE } },
         canUseTool: (toolName, input, opts) => this._handlePermission(toolName, input, opts),
         ...(resume ? { resume } : {}),
         // The model picked in the conversation's settings, if any — an
