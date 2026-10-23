@@ -1506,9 +1506,8 @@ button.workforce-row__pick:disabled { cursor: default; opacity: 0.55; }
   white-space: nowrap;
   font-size: 0.8rem;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  color: var(--fg-muted);
+  color: var(--accent);
 }
-.pane-header__branch--own { color: var(--accent); }
 .pane-header__entry strong { color: var(--fg); font-weight: 600; }
 
 /* The header's fixed right-hand corner: search toggle + ⋮, grouped so

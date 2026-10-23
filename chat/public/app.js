@@ -6163,7 +6163,7 @@
       );
       worktreeInfo.set(key, await res.json());
     } catch {
-      worktreeInfo.set(key, { available: false, worktree: null, repoBranch: null });
+      worktreeInfo.set(key, { available: false, worktree: null });
     } finally {
       worktreeInfoLoading.delete(key);
     }
@@ -6236,12 +6236,11 @@
       }
       const info = worktreeInfo.get(key);
       if (!info) loadWorktreeInfo(activeColleagueId, activeSessionId);
-      const branch = info?.worktree?.branch || info?.repoBranch;
-      if (branch) {
+      if (info?.worktree) {
         const chip = document.createElement("span");
-        chip.className = `pane-header__branch${info.worktree ? " pane-header__branch--own" : ""}`;
-        chip.textContent = branch;
-        chip.title = info.worktree ? "Branch of this conversation's own worktree" : "Branch of the workforce folder (this conversation has no worktree of its own)";
+        chip.className = "pane-header__branch";
+        chip.textContent = info.worktree.branch;
+        chip.title = "Branch of this conversation's own worktree";
         entries.appendChild(chip);
       }
       const line = statsLine(key);
@@ -7048,7 +7047,7 @@
     }
     if (update.type === "worktree_changed") {
       const key2 = convKey(update.colleagueId, update.sessionId);
-      const info = worktreeInfo.get(key2) || { available: true, repoBranch: null };
+      const info = worktreeInfo.get(key2) || { available: true };
       worktreeInfo.set(key2, { ...info, available: true, worktree: { branch: update.branch, path: update.path } });
       if (key2 === activeConvKey()) {
         renderPaneHeader();
