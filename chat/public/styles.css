@@ -1496,6 +1496,19 @@ button.workforce-row__pick:disabled { cursor: default; opacity: 0.55; }
    wraps whole entries onto new lines, it can't shrink one entry that's
    already wider than the viewport by itself — this is what let it. */
 .pane-header__entry { min-width: 0; }
+/* The branch the open conversation works on; accented when it is the
+   conversation's own worktree branch, muted when it is the workforce folder's. */
+.pane-header__branch {
+  min-width: 0;
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.8rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--fg-muted);
+}
+.pane-header__branch--own { color: var(--accent); }
 .pane-header__entry strong { color: var(--fg); font-weight: 600; }
 
 /* The header's fixed right-hand corner: search toggle + ⋮, grouped so

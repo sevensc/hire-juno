@@ -37,7 +37,7 @@ import { extractMentions, extractVocativeAddresses } from './mentions.js';
 import { findLayout, readRoster, resolveAvatarPath } from './roster.js';
 import { DEFAULT_SESSION_ID, openStore } from './store.js';
 import { resolveWorkforce } from './workforceId.js';
-import { chatBranchName, createWorktree, gitRoot, worktreeFolderName, worktreesDir } from './worktree.js';
+import { chatBranchName, createWorktree, currentBranch, gitRoot, worktreeFolderName, worktreesDir } from './worktree.js';
 import { addWorkforce, listWorkforces, removeWorkforce, setActiveWorkforce } from '../../shared/workforceRegistry.js';
 import { getOrCreateSession, saveSessionPort } from '../../shared/chatSessions.js';
 
@@ -671,7 +671,8 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
 
         if (req.method === 'GET' && route === 'api/worktree') {
           // Whether this conversation can have its own worktree (a git repo
-          // and a workforce id to keep it under) and the one it has.
+          // and a workforce id to keep it under), the one it has, and the
+          // workforce folder's own branch.
           const colleagueId = url.searchParams.get('colleagueId') || '';
           const sessionId = url.searchParams.get('sessionId') || DEFAULT_SESSION_ID;
           const worktree = store.getWorktree(colleagueId, sessionId);
@@ -679,6 +680,9 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
             JSON.stringify({
               available: Boolean(workforce?.id) && Boolean(gitRoot(targetDir)),
               worktree: worktree ? { branch: worktree.branch, path: worktree.path } : null,
+              // The branch of the workforce folder itself: what a conversation
+              // without its own worktree works on.
+              repoBranch: currentBranch(targetDir),
             })
           );
           return;
