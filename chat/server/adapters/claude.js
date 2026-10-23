@@ -99,6 +99,9 @@ export class ClaudeAdapter {
     this._queue = [];
     this._notifyQueued = null;
     this._pendingResolve = null; // resolves the in-flight sendMessage() call, if any
+    // Messages sent whose turn has not ended yet. A message sent mid-turn
+    // counts too, which _pendingResolve alone can't say: it only holds the latest.
+    this._outstanding = 0;
     // Tool-use IDs of Task calls whose subagent thread we've already
     // announced to the frontend, so the second message in doesn't
     // re-announce it.
@@ -153,6 +156,7 @@ export class ClaudeAdapter {
       this.onUpdate?.({ type: 'message', role: 'system', text: `Session error: ${err.message}` });
       this._pendingResolve?.();
       this._pendingResolve = null;
+      this._outstanding = 0;
     });
   }
 
@@ -307,6 +311,7 @@ export class ClaudeAdapter {
         this.onUpdate?.({ type: 'usage', ...summarizeUsage(message) });
         this._pendingResolve?.();
         this._pendingResolve = null;
+        this._outstanding = Math.max(0, this._outstanding - 1);
         return;
       }
       default:
@@ -327,6 +332,7 @@ export class ClaudeAdapter {
     this.onUpdate?.({ type: 'message', role: 'system', text: STALE_RESUME_MESSAGE });
     this._pendingResolve?.();
     this._pendingResolve = null;
+    this._outstanding = 0;
     this.onStaleResume?.();
   }
 
@@ -350,10 +356,11 @@ export class ClaudeAdapter {
 
   // True while a turn is in flight (sendMessage() sent, result not yet in).
   get busy() {
-    return this._pendingResolve !== null;
+    return this._outstanding > 0;
   }
 
   sendMessage(text, attachments) {
+    this._outstanding++;
     return new Promise((resolve) => {
       this._pendingResolve = resolve;
       // A plain string keeps the common case simple; the Messages API
