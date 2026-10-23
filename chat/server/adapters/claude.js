@@ -254,6 +254,8 @@ export class ClaudeAdapter {
         for (const block of message.message?.content ?? []) {
           if (block.type === 'tool_use') {
             this.onUpdate?.({ type: 'tool_use', id: block.id, name: block.name, input: block.input });
+          } else if (block.type === 'text') {
+            this._textBlocks.addText(block.text);
           }
         }
         return;
@@ -298,7 +300,9 @@ export class ClaudeAdapter {
       }
       case 'result': {
         if (message.subtype === 'success') {
-          this.onUpdate?.({ type: 'message', role: 'colleague', text: message.result });
+          // The SDK's `result` is only the last text block of the turn;
+          // what was written before a tool call is kept (see textBlocks.js).
+          this.onUpdate?.({ type: 'message', role: 'colleague', text: this._textBlocks.turnText(message.result) });
         } else if (isStaleResumeError((message.errors || []).join(' '))) {
           this._handleStaleResume();
           return;

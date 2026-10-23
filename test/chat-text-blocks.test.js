@@ -31,3 +31,20 @@ test('a new turn starts without a separator again', () => {
   s.reset();
   assert.equal(s.separatorFor(textStart), '');
 });
+
+test('the turn text joins all finished blocks, the SDK result is only the fallback', () => {
+  const s = new TextBlockSeparator();
+  s.addText('ALPHA\n');
+  s.addText('   ');
+  s.addText(undefined);
+  s.addText('BETA');
+  assert.equal(s.turnText('BETA'), 'ALPHA\n\nBETA');
+});
+
+test('without any text block the fallback is used, and a new turn starts empty', () => {
+  const s = new TextBlockSeparator();
+  assert.equal(s.turnText('from result'), 'from result');
+  s.addText('one');
+  s.reset();
+  assert.equal(s.turnText('from result'), 'from result');
+});
