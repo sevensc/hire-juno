@@ -2473,6 +2473,10 @@ const handleSocketMessage = (event) => {
     case 'tool_done': {
       const entry = (pendingTrail.get(key) || []).find((e) => e.id && e.id === update.id);
       if (entry) entry.approval = update.approval;
+      // A tool result is where a message sent during her turn is folded into
+      // that turn (measured against the SDK, see server/waiting.js): she has
+      // read it now, so it stops being drawn as "waiting".
+      for (const waiting of history.get(key)) delete waiting.pending;
       break;
     }
     case 'message': {
