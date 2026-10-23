@@ -1099,7 +1099,7 @@ function reconstructTrail(trail) {
   if (!trail?.length) return undefined;
   return trail.map((entry) =>
     entry.kind === 'tool_use'
-      ? { kind: 'tool_use', text: toolUseLine(entry.name, entry.input), toolName: entry.name, toolInput: entry.input }
+      ? { kind: 'tool_use', text: toolUseLine(entry.name, entry.input), toolName: entry.name, toolInput: entry.input, approval: entry.approval }
       : entry
   );
 }
@@ -2361,15 +2361,22 @@ const handleSocketMessage = (event) => {
         if (!channelPendingTrail.has(colleagueId)) channelPendingTrail.set(colleagueId, []);
         channelPendingTrail.get(colleagueId).push({
           kind: 'tool_use',
+          id: update.id,
           text: toolUseLine(update.name, update.input),
           toolName: update.name,
           toolInput: update.input,
         });
         break;
       }
+      case 'tool_done': {
+        const entry = (channelPendingTrail.get(colleagueId) || []).find((e) => e.id && e.id === update.id);
+        if (entry) entry.approval = update.approval;
+        break;
+      }
       case 'permission_request':
         if (isAlwaysAllowed(channelKey(colleagueId, channelId), update.toolName)) {
-          socket.send(JSON.stringify({ type: 'permission_response', requestId: update.requestId, allow: true }));
+          const via = alwaysAllowedTools.get(channelKey(colleagueId, channelId))?.has('*') ? 'autopilot' : 'allow always';
+          socket.send(JSON.stringify({ type: 'permission_response', requestId: update.requestId, allow: true, via }));
           break;
         }
         channelPendingPermission.set(channelKey(colleagueId, channelId), { channelId, ...update });
@@ -2451,11 +2458,17 @@ const handleSocketMessage = (event) => {
       if (!pendingTrail.has(key)) pendingTrail.set(key, []);
       pendingTrail.get(key).push({
         kind: 'tool_use',
+        id: update.id,
         text: toolUseLine(update.name, update.input),
         toolName: update.name,
         toolInput: update.input,
       });
       if (!wasTyping) renderSidebar();
+      break;
+    }
+    case 'tool_done': {
+      const entry = (pendingTrail.get(key) || []).find((e) => e.id && e.id === update.id);
+      if (entry) entry.approval = update.approval;
       break;
     }
     case 'message': {
@@ -2518,7 +2531,8 @@ const handleSocketMessage = (event) => {
     }
     case 'permission_request':
       if (isAlwaysAllowed(key, update.toolName)) {
-        socket.send(JSON.stringify({ type: 'permission_response', requestId: update.requestId, allow: true }));
+        const via = alwaysAllowedTools.get(key)?.has('*') ? 'autopilot' : 'allow always';
+        socket.send(JSON.stringify({ type: 'permission_response', requestId: update.requestId, allow: true, via }));
         return;
       }
       pendingPermission.set(key, update);
@@ -2710,6 +2724,19 @@ function ToolDetailBox({ input }) {
 // the 'message' case in the socket handler for how the trail is built).
 // A tool-use entry keeps its own click-to-expand detail, same as before;
 // a thinking entry is just its accumulated text.
+// How a tool call got its go-ahead, shown next to the call when it was NOT
+// a prompt the human answered: allowed by a settings rule or by default
+// ('not asked'), by auto mode, by an earlier "Allow always", or by the
+// channel autopilot. Reading files and searching need no approval at all
+// (Claude Code's permission docs: read-only tools require none within the
+// working directory), so those stay unlabelled.
+const NO_APPROVAL_TOOLS = new Set(['Read', 'Grep', 'Glob']);
+function approvalLabel(entry) {
+  if (!entry.approval || entry.approval === 'asked') return null;
+  if (entry.approval === 'not asked' && NO_APPROVAL_TOOLS.has(entry.toolName)) return null;
+  return entry.approval === 'not asked' ? 'ran without asking' : entry.approval;
+}
+
 function TrailBox({ trail, onToggleEntry }) {
   return html`
     <div class="trail-box">
@@ -2719,6 +2746,7 @@ function TrailBox({ trail, onToggleEntry }) {
             ${entry.kind === 'tool_use'
               ? html`
                   <span class="tool-use-line" onClick=${() => onToggleEntry(i)}>${entry.text}</span>
+                  ${approvalLabel(entry) ? html` <span class="trail-box__approval">${approvalLabel(entry)}</span>` : null}
                   ${entry.expanded ? html`<${ToolDetailBox} input=${entry.toolInput} />` : null}
                 `
               : html`<span class="trail-box__thinking">${entry.text}</span>`}
