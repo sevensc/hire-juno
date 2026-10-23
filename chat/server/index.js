@@ -29,6 +29,7 @@ import open from 'open';
 import { WebSocketServer } from 'ws';
 
 import { createAdapter } from './agentAdapter.js';
+import { waitUntilIdle } from './drain.js';
 import { validateModelChoice } from './modelChoice.js';
 import { decideRelevance } from './gatekeeper.js';
 import { extractMentions, extractVocativeAddresses } from './mentions.js';
@@ -322,6 +323,8 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
     // human's own side-by-side 1:1 conversations, not something a
     // channel needs to pick between.
     const adapters = new Map();
+    // Set by switch_workforce; read by the server's 'close' handler.
+    let drainBeforeClose = false;
     const adapterFor = (colleagueId, sessionId = DEFAULT_SESSION_ID) => {
       const key = adapterKey(colleagueId, sessionId);
       if (!adapters.has(key)) {
@@ -1255,6 +1258,10 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
               // a moment to actually go out before this instance closes
               // — a close() called synchronously right after could race
               // the send.
+              // The old instance keeps running turns alive: the 'close'
+              // handler below waits for them (bounded) before it
+              // closes the adapters. Their replies still reach the store.
+              drainBeforeClose = true;
               setTimeout(() => server.close(), 500);
             } catch (err) {
               broadcast({ type: 'workforce_switch_failed', message: err.message });
@@ -1377,8 +1384,15 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
       // (found by running a real one against a live colleague: the
       // WebSocket closed, the HTTP server closed, and the process sat
       // there anyway, kept up by the still-running `claude` child).
-      for (const adapter of adapters.values()) adapter.close?.();
-      store.close();
+      const shutDown = () => {
+        for (const adapter of adapters.values()) adapter.close?.();
+        store.close();
+      };
+      if (!drainBeforeClose) return shutDown();
+      // Switched away from this workforce: let running turns finish first
+      // (see drain.js) — their replies are still persisted by the
+      // onUpdate binding, even with no tab connected.
+      waitUntilIdle(() => [...adapters.values()].some((a) => a.busy)).then(shutDown);
     });
   });
 }
