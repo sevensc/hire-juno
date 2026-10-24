@@ -264,6 +264,10 @@ export class ClaudeAdapter {
         for (const block of message.message?.content ?? []) {
           if (block.type === 'tool_use') {
             this.onUpdate?.({ type: 'subagent_tool_use', id: parentId, name: block.name, input: block.input });
+          } else if (block.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
+            // A sub-agent sends no partial messages; its finished text
+            // between tool calls only arrives here.
+            this.onUpdate?.({ type: 'subagent_message', id: parentId, text: block.text });
           }
         }
       }

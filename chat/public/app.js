@@ -5819,7 +5819,6 @@
     }
     if (activeColleagueId && !isSubagentThread(activeColleagueId)) {
       socket.send(JSON.stringify({ type: "reset_context", colleagueId: activeColleagueId, sessionId: activeSessionId }));
-      removeAllSubagentPanels(activeColleagueId);
     }
   }
   var alwaysAllowedTools = /* @__PURE__ */ new Map();
@@ -7001,25 +7000,53 @@
       avatarId: known ? known.id : null
     });
   }
-  function removeSubagentPanel(ownerColleagueId, subagentId) {
+  function removeSubagentPanel(ownerColleagueId, subagentId, { notify: notify2 = true } = {}) {
     const panels = subagentPanels.get(ownerColleagueId);
     const panel = panels?.get(subagentId);
     if (!panel) return;
     panels.delete(subagentId);
     colleaguesById.delete(panel.syntheticId);
+    history.delete(panel.syntheticId);
+    loadedHistory.delete(panel.syntheticId);
+    if (notify2) socket.send(JSON.stringify({ type: "close_subagent", id: subagentId }));
     if (activeColleagueId === panel.syntheticId) {
       const owner = colleaguesById.get(ownerColleagueId);
       if (owner) selectColleague(owner);
     }
     renderSidebar();
   }
-  function removeAllSubagentPanels(ownerColleagueId) {
-    const panels = subagentPanels.get(ownerColleagueId);
-    if (!panels) return;
-    for (const subagentId of [...panels.keys()]) removeSubagentPanel(ownerColleagueId, subagentId);
+  function restoreSubagentPanels(threads) {
+    for (const thread of threads) {
+      if (!subagentPanels.has(thread.ownerId)) subagentPanels.set(thread.ownerId, /* @__PURE__ */ new Map());
+      const panels = subagentPanels.get(thread.ownerId);
+      const existing = panels.get(thread.id);
+      if (existing) {
+        existing.closed = thread.status === "done";
+        continue;
+      }
+      const panel = {
+        id: thread.id,
+        ownerColleagueId: thread.ownerId,
+        syntheticId: `sub:${thread.id}`,
+        knownColleagueId: colleaguesById.has(thread.subagentType) ? thread.subagentType : null,
+        subagentType: thread.subagentType,
+        taskDescription: thread.description || void 0,
+        closed: thread.status === "done"
+      };
+      panels.set(thread.id, panel);
+      registerSubagentColleague(panel);
+    }
   }
   var handleSocketMessage = (event) => {
     const update = JSON.parse(event.data);
+    if (update.type === "subagent_removed") {
+      for (const id of update.ids || []) {
+        for (const [ownerId, panels] of subagentPanels) {
+          if (panels.has(id)) removeSubagentPanel(ownerId, id, { notify: false });
+        }
+      }
+      return;
+    }
     if (update.type === "channel_created") {
       channelsById.set(update.channel.id, update.channel);
       channelMessages.set(update.channel.id, []);
@@ -7305,6 +7332,7 @@
           panel2.syntheticId,
           update.prompt ? [{ role: "you", text: update.prompt, createdAt: (/* @__PURE__ */ new Date()).toISOString() }] : []
         );
+        loadedHistory.add(panel2.syntheticId);
         renderSidebar();
         return;
       }
@@ -7315,12 +7343,34 @@
         update.type = "tool_use";
       } else if (update.type === "subagent_delta") {
         update.type = "delta";
+      } else if (update.type === "subagent_message") {
+        history.get(key) || history.set(key, []);
+        history.get(key).push({
+          role: "colleague",
+          text: update.text,
+          createdAt: (/* @__PURE__ */ new Date()).toISOString(),
+          trail: reconstructTrail(update.trail)
+        });
+        streaming.delete(key);
+        pendingTrail.delete(key);
+        if (key === activeConvKey()) renderMessages();
+        return;
       } else if (update.type === "subagent_end") {
         panel.closed = true;
         update.type = "message";
         update.role = "colleague";
         update.text = update.report || "";
         renderSidebar();
+        const shown = history.get(key) || [];
+        const last = shown[shown.length - 1];
+        if (last?.role === "colleague" && last.text === update.text && !update.trail?.length) {
+          streaming.delete(key);
+          pendingTrail.delete(key);
+          thinkingStreaming.delete(key);
+          renderSidebar();
+          if (key === activeConvKey()) renderMessages();
+          return;
+        }
       }
     }
     if (!history.has(key)) history.set(key, []);
@@ -7815,7 +7865,7 @@
     return (list2 || []).map((a2) => ({ ...a2, dataUrl: `api/attachment?id=${a2.id}` }));
   }
   async function loadColleagueHistory(colleagueId, sessionId, key, { force = false } = {}) {
-    if (isSubagentThread(colleagueId)) return;
+    sessionId = sessionId || DEFAULT_SESSION_ID;
     if (loadedHistory.has(key) && !force) return;
     const res = await fetch(
       `api/history?colleagueId=${encodeURIComponent(colleagueId)}&sessionId=${encodeURIComponent(sessionId)}`
@@ -8169,6 +8219,11 @@
       if (!isSubagentThread(id) && !rosterIds.has(id)) colleaguesById.delete(id);
     }
     for (const colleague of colleaguesList) colleaguesById.set(colleague.id, colleague);
+    try {
+      const subRes = await fetch("api/subagent-threads");
+      if (subRes.ok) restoreSubagentPanels(await subRes.json());
+    } catch {
+    }
     const channelsRes = await fetch("api/channels");
     const channels = await channelsRes.json();
     channelsById.clear();

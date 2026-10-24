@@ -357,10 +357,9 @@ function turnOnAutoMode() {
 //
 // A subagent panel is that colleague's own
 // remembered context too (it exists only because she ran a Task call),
-// so resetting her context takes those with it. Only the sidebar
-// display goes away here; there was never a server-side row for a
-// subagent panel to clear in the first place (see store.js's own
-// comment on that).
+// so resetting her context takes those with it: the server deletes the
+// stored windows of this conversation and tells every tab
+// (subagent_removed, handled in handleSocketMessage).
 function resetContext() {
   if (activeChannelId) {
     socket.send(JSON.stringify({ type: 'reset_context', channelId: activeChannelId }));
@@ -368,7 +367,6 @@ function resetContext() {
   }
   if (activeColleagueId && !isSubagentThread(activeColleagueId)) {
     socket.send(JSON.stringify({ type: 'reset_context', colleagueId: activeColleagueId, sessionId: activeSessionId }));
-    removeAllSubagentPanels(activeColleagueId);
   }
 }
 
@@ -2126,23 +2124,26 @@ function registerSubagentColleague(panel) {
   });
 }
 
-// The two ways a subagent panel goes away — one deliberate click on a
-// single row (see renderSidebar's `.colleague-row__remove`), or a whole
-// colleague's worth of them at once (resetContext, above). Both funnel
+// The ways a subagent panel goes away — one deliberate click on a
+// single row (see renderSidebar's `.colleague-row__remove`), or the
+// server reporting windows gone (a reset or cleared chat of the owner, or
+// another tab closing one: subagent_removed). Both funnel
 // through this one: drop the bookkeeping entry, drop the synthetic
 // colleague-shaped entry registerSubagentColleague added so avatarEl/
 // selectColleague stop resolving it, and — if that panel happened to be
 // the open conversation — fall back to the owner's own thread rather
 // than leave the pane pointing at a row that no longer exists in the
-// sidebar. No server call: subagent panels never had a server-side row
-// to begin with (see store.js's own comment on that), so this is
-// purely local cleanup, same as registering one was.
-function removeSubagentPanel(ownerColleagueId, subagentId) {
+// sidebar. A click also tells the server, which deletes the window and its
+// messages for good; `notify: false` is for when the server told us.
+function removeSubagentPanel(ownerColleagueId, subagentId, { notify = true } = {}) {
   const panels = subagentPanels.get(ownerColleagueId);
   const panel = panels?.get(subagentId);
   if (!panel) return;
   panels.delete(subagentId);
   colleaguesById.delete(panel.syntheticId);
+  history.delete(panel.syntheticId);
+  loadedHistory.delete(panel.syntheticId);
+  if (notify) socket.send(JSON.stringify({ type: 'close_subagent', id: subagentId }));
   if (activeColleagueId === panel.syntheticId) {
     const owner = colleaguesById.get(ownerColleagueId);
     if (owner) selectColleague(owner);
@@ -2150,10 +2151,32 @@ function removeSubagentPanel(ownerColleagueId, subagentId) {
   renderSidebar();
 }
 
-function removeAllSubagentPanels(ownerColleagueId) {
-  const panels = subagentPanels.get(ownerColleagueId);
-  if (!panels) return;
-  for (const subagentId of [...panels.keys()]) removeSubagentPanel(ownerColleagueId, subagentId);
+// Builds the panels the server still has (api/subagent-threads) — after a
+// reload or a server restart they are all that is left of the windows. A
+// panel that is already here (live, this page) is only brought up to date.
+// What was streamed live is not restored: a running one shows its brief
+// and "running" until its end arrives.
+function restoreSubagentPanels(threads) {
+  for (const thread of threads) {
+    if (!subagentPanels.has(thread.ownerId)) subagentPanels.set(thread.ownerId, new Map());
+    const panels = subagentPanels.get(thread.ownerId);
+    const existing = panels.get(thread.id);
+    if (existing) {
+      existing.closed = thread.status === 'done';
+      continue;
+    }
+    const panel = {
+      id: thread.id,
+      ownerColleagueId: thread.ownerId,
+      syntheticId: `sub:${thread.id}`,
+      knownColleagueId: colleaguesById.has(thread.subagentType) ? thread.subagentType : null,
+      subagentType: thread.subagentType,
+      taskDescription: thread.description || undefined,
+      closed: thread.status === 'done',
+    };
+    panels.set(thread.id, panel);
+    registerSubagentColleague(panel);
+  }
 }
 
 // A backgrounded/sleeping mobile Safari (and the standalone PWA the
@@ -2166,6 +2189,15 @@ function removeAllSubagentPanels(ownerColleagueId) {
 // navigation involved.
 const handleSocketMessage = (event) => {
   const update = JSON.parse(event.data);
+
+  if (update.type === 'subagent_removed') {
+    for (const id of update.ids || []) {
+      for (const [ownerId, panels] of subagentPanels) {
+        if (panels.has(id)) removeSubagentPanel(ownerId, id, { notify: false });
+      }
+    }
+    return;
+  }
 
   if (update.type === 'channel_created') {
     channelsById.set(update.channel.id, update.channel);
@@ -2562,6 +2594,7 @@ const handleSocketMessage = (event) => {
         panel.syntheticId,
         update.prompt ? [{ role: 'you', text: update.prompt, createdAt: new Date().toISOString() }] : []
       );
+      loadedHistory.add(panel.syntheticId); // built here, nothing to fetch for it
       renderSidebar();
       return;
     }
@@ -2572,12 +2605,37 @@ const handleSocketMessage = (event) => {
       update.type = 'tool_use'; // falls through to the shared case below
     } else if (update.type === 'subagent_delta') {
       update.type = 'delta';
+    } else if (update.type === 'subagent_message') {
+      // Finished text between its tool calls: a message of the window; the
+      // window itself goes on (only subagent_end closes it).
+      history.get(key) || history.set(key, []);
+      history.get(key).push({
+        role: 'colleague',
+        text: update.text,
+        createdAt: new Date().toISOString(),
+        trail: reconstructTrail(update.trail),
+      });
+      streaming.delete(key);
+      pendingTrail.delete(key);
+      if (key === activeConvKey()) renderMessages();
+      return;
     } else if (update.type === 'subagent_end') {
       panel.closed = true;
       update.type = 'message';
       update.role = 'colleague';
       update.text = update.report || '';
       renderSidebar(); // the nested entry's "done talking" state
+      // The report is often the last text block again: not shown twice.
+      const shown = history.get(key) || [];
+      const last = shown[shown.length - 1];
+      if (last?.role === 'colleague' && last.text === update.text && !update.trail?.length) {
+        streaming.delete(key);
+        pendingTrail.delete(key);
+        thinkingStreaming.delete(key);
+        renderSidebar();
+        if (key === activeConvKey()) renderMessages();
+        return;
+      }
     }
   }
 
@@ -3338,13 +3396,10 @@ function storedAttachments(list) {
 }
 
 // Same split, same reason as loadChannelHistory above.
-// Subagent threads never had a server-side history to fetch — they exist
-// only for this browser session (see chat/README.md) — so this fetch only
-// ever runs for real colleagues, and a pull inside one is a no-op rather
-// than a request that would come back empty and wipe the thread.
+// A subagent window's brief, tool lines and report are stored by the server
+// under its synthetic id too (see store.js), so it loads like any other.
 async function loadColleagueHistory(colleagueId, sessionId, key, { force = false } = {}) {
-  if (isSubagentThread(colleagueId)) return;
-  // Not `history.has(key)`: a live update (delta, thinking, a message that
+  sessionId = sessionId || DEFAULT_SESSION_ID; // a subagent thread has no session of its own  // Not `history.has(key)`: a live update (delta, thinking, a message that
   // arrives) creates an empty entry before this runs when a tab is opened
   // or reloaded mid-turn, and that used to count as "already loaded" — the
   // stored conversation then never appeared.
@@ -3894,6 +3949,16 @@ async function loadRoster({ preserveSelection = false } = {}) {
     if (!isSubagentThread(id) && !rosterIds.has(id)) colleaguesById.delete(id);
   }
   for (const colleague of colleaguesList) colleaguesById.set(colleague.id, colleague);
+
+  // The sub-agent windows the server kept (see restoreSubagentPanels).
+  // After the roster is in colleaguesById, so a window of a known colleague
+  // gets her name and avatar again.
+  try {
+    const subRes = await fetch('api/subagent-threads');
+    if (subRes.ok) restoreSubagentPanels(await subRes.json());
+  } catch {
+    // an older server has no such route: no windows to restore
+  }
 
   const channelsRes = await fetch('api/channels');
   const channels = await channelsRes.json();

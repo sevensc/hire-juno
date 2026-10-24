@@ -571,6 +571,13 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
           return;
         }
 
+        if (req.method === 'GET' && route === 'api/subagent-threads') {
+          res.writeHead(200, { 'Content-Type': 'application/json' }).end(
+            JSON.stringify(store.listSubagentThreads())
+          );
+          return;
+        }
+
         if (req.method === 'GET' && route === 'api/attachment') {
           const attachment = store.getAttachment(Number(url.searchParams.get('id')));
           if (!attachment) {
@@ -805,6 +812,15 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
       }
     };
 
+    // A conversation's context reset or cleared chat takes its sub-agent
+    // windows with it (they are part of what she remembers).
+    const subagentThreadExists = (id) => store.listSubagentThreads().some((t) => t.id === id);
+    const dropSubagentThreadsOf = (colleagueId, sessionId) => {
+      const ids = store.deleteSubagentThreadsOf(colleagueId, sessionId);
+      for (const id of ids) pendingTrails.delete(`sub:${id}`);
+      if (ids.length) broadcast({ type: 'subagent_removed', ids });
+    };
+
     server.on('upgrade', (req, socket, head) => {
       const url = new URL(req.url, 'http://127.0.0.1');
       const parts = url.pathname.split('/').filter(Boolean);
@@ -863,6 +879,52 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
             // overheard — see the client's own 'message' case for the
             // matching half of this fix.
             let trail;
+            if (update.type.startsWith('subagent_')) {
+              // A sub-agent window is kept like a conversation of its own
+              // (see store.js, subagent_threads): the brief when it starts,
+              // its tool lines collected on the way, the report with that
+              // trail when it ends.
+              const subKey = `sub:${update.id}`;
+              let endTrail;
+              if (update.type === 'subagent_start') {
+                const created = store.createSubagentThread({
+                  id: update.id,
+                  ownerId: colleagueId,
+                  sessionId,
+                  subagentType: update.subagentType,
+                  description: update.taskDescription,
+                });
+                if (created && update.prompt) store.appendMessage(subKey, sessionId, 'you', update.prompt);
+              } else if (update.type === 'subagent_tool_use') {
+                if (!pendingTrails.has(subKey)) pendingTrails.set(subKey, []);
+                pendingTrails.get(subKey).push({ kind: 'tool_use', name: update.name, input: update.input });
+              } else if (update.type === 'subagent_message') {
+                // Text between tool calls: stored in arrival order, with the
+                // tool lines collected since the last message as its trail.
+                const subTrail = pendingTrails.get(subKey) || [];
+                pendingTrails.delete(subKey);
+                endTrail = subTrail;
+                if (subagentThreadExists(update.id) && update.text) {
+                  store.appendMessage(subKey, sessionId, 'colleague', update.text, subTrail);
+                }
+              } else if (update.type === 'subagent_end') {
+                const subTrail = pendingTrails.get(subKey) || [];
+                pendingTrails.delete(subKey);
+                endTrail = subTrail;
+                // A window the user closed meanwhile has no row any more:
+                // nothing is stored for it.
+                if (subagentThreadExists(update.id)) {
+                  // The report is often the last text block again: not stored twice.
+                  const rows = store.getHistory(subKey);
+                  const last = rows[rows.length - 1];
+                  const same = last?.role === 'colleague' && last.text === (update.report || '') && !subTrail.length;
+                  if (!same) store.appendMessage(subKey, sessionId, 'colleague', update.report || '', subTrail);
+                  store.finishSubagentThread(update.id);
+                }
+              }
+              broadcast({ colleagueId, sessionId, ...update, ...(endTrail ? { trail: endTrail } : {}) });
+              return;
+            }
             if (update.type === 'tool_use') {
               if (!pendingTrails.has(key)) pendingTrails.set(key, []);
               pendingTrails.get(key).push({ kind: 'tool_use', id: update.id, name: update.name, input: update.input });
@@ -1319,10 +1381,21 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
                 adapters.delete(key);
               }
               store.clearAdapterSession(payload.colleagueId, sessionId);
+              dropSubagentThreadsOf(payload.colleagueId, sessionId);
               const notice = 'Context reset — starting fresh from here.';
               store.appendMessage(payload.colleagueId, sessionId, 'system', notice);
               broadcast({ colleagueId: payload.colleagueId, sessionId, type: 'message', role: 'system', text: notice });
             }
+            return;
+          }
+
+          // The user closed one finished sub-agent window: gone for good,
+          // with everything stored for it. Other open tabs hear about it.
+          if (payload.type === 'close_subagent') {
+            if (typeof payload.id !== 'string' || !payload.id) return;
+            store.deleteSubagentThread(payload.id);
+            pendingTrails.delete(`sub:${payload.id}`);
+            broadcast({ type: 'subagent_removed', ids: [payload.id] });
             return;
           }
 
@@ -1360,6 +1433,7 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
                 adapters.delete(key);
               }
               store.clearHistory(payload.colleagueId, sessionId);
+              dropSubagentThreadsOf(payload.colleagueId, sessionId);
               broadcast({ type: 'chat_cleared', colleagueId: payload.colleagueId, sessionId });
             }
             return;

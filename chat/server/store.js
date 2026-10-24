@@ -25,6 +25,13 @@ import DatabaseConstructor from 'better-sqlite3';
 // nothing about a pre-upgrade chat.db needs to change to keep working.
 export const DEFAULT_SESSION_ID = 'default';
 
+// A sub-agent window is stored under the synthetic id `sub:<tool_use-id>`
+// (the same one the client uses) in the messages table, under this session
+// id — not the default one, so the main-thread preview and the search never
+// pick its rows up.
+export const SUBAGENT_SESSION_ID = 'subagent';
+const SUBAGENT_PREFIX = 'sub:';
+
 // The only attachment types the chat accepts (see agentAdapter.js) — also
 // the only ones ever stored or served back, so a client can't get e.g.
 // text/html served from the chat's own origin.
@@ -74,6 +81,21 @@ const SCHEMA = `
     branch TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     PRIMARY KEY (colleague_id, session_id)
+  );
+
+  -- One row per sub-agent window of a colleague (the Agent/Task call she
+  -- made): who owns it, in which of her sessions, what it is, and whether it
+  -- still runs. Its brief, tool lines and report are rows of "messages"
+  -- under the synthetic colleague_id 'sub:<id>'. Kept until the window is
+  -- closed, or its owner's context is reset or chat cleared.
+  CREATE TABLE IF NOT EXISTS subagent_threads (
+    id TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL,
+    session_id TEXT NOT NULL DEFAULT 'default',
+    subagent_type TEXT NOT NULL,
+    description TEXT,
+    status TEXT NOT NULL DEFAULT 'running',
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
   );
 
   CREATE TABLE IF NOT EXISTS sessions (
@@ -290,6 +312,16 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
      WHERE text LIKE ? ESCAPE '\\' ORDER BY id DESC LIMIT 50`
   );
 
+  const insertSubagentStmt = db.prepare(
+    'INSERT OR IGNORE INTO subagent_threads (id, owner_id, session_id, subagent_type, description) VALUES (?, ?, ?, ?, ?)'
+  );
+  const finishSubagentStmt = db.prepare("UPDATE subagent_threads SET status = 'done' WHERE id = ?");
+  const listSubagentsStmt = db.prepare(
+    'SELECT id, owner_id, session_id, subagent_type, description, status, created_at FROM subagent_threads ORDER BY created_at ASC, rowid ASC'
+  );
+  const ownerSubagentIdsStmt = db.prepare('SELECT id FROM subagent_threads WHERE owner_id = ? AND session_id = ?');
+  const deleteSubagentStmt = db.prepare('DELETE FROM subagent_threads WHERE id = ?');
+
   const maxMessageIdStmt = db.prepare('SELECT MAX(id) AS id FROM messages');
   const moveMessageStmt = db.prepare('UPDATE messages SET id = ? WHERE id = ?');
   const moveAttachmentsStmt = db.prepare(
@@ -341,7 +373,7 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
     appendMessage(colleagueId, sessionId, role, text, trail, attachments) {
       const { lastInsertRowid } = insertStmt.run(
         colleagueId,
-        sessionId || DEFAULT_SESSION_ID,
+        sessionKey(colleagueId, sessionId),
         role,
         text,
         trail?.length ? JSON.stringify(trail) : null
@@ -359,7 +391,7 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
       return moveToEndTx(ids);
     },
     getHistory(colleagueId, sessionId) {
-      const sid = sessionId || DEFAULT_SESSION_ID;
+      const sid = sessionKey(colleagueId, sessionId);
       const attachments = groupAttachments(messageAttachmentsStmt.all(colleagueId, sid));
       return historyStmt.all(colleagueId, sid).map((row) => ({
         ...row,
@@ -493,7 +525,7 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
     // let a later reply silently resume the SDK session whose transcript
     // was just deleted.
     clearHistory(colleagueId, sessionId) {
-      const sid = sessionId || DEFAULT_SESSION_ID;
+      const sid = sessionKey(colleagueId, sessionId);
       deleteMessageAttachmentsStmt.run(colleagueId, sid);
       deleteMessagesStmt.run(colleagueId, sid);
       deleteAdapterSessionStmt.run(colleagueId, sid);
@@ -523,10 +555,53 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
         createdAt: row.created_at,
       }));
     },
+    // Sub-agent windows. `createSubagentThread` returns false when the id
+    // exists already (a repeated start), so the brief is not stored twice.
+    createSubagentThread({ id, ownerId, sessionId, subagentType, description }) {
+      const { changes } = insertSubagentStmt.run(
+        id,
+        ownerId,
+        sessionId || DEFAULT_SESSION_ID,
+        subagentType || 'subagent',
+        description || null
+      );
+      return changes > 0;
+    },
+    finishSubagentThread(id) {
+      finishSubagentStmt.run(id);
+    },
+    listSubagentThreads() {
+      return listSubagentsStmt.all().map((row) => ({
+        id: row.id,
+        ownerId: row.owner_id,
+        sessionId: row.session_id,
+        subagentType: row.subagent_type,
+        description: row.description,
+        status: row.status,
+        createdAt: row.created_at,
+      }));
+    },
+    // Removes the window and everything stored for it.
+    deleteSubagentThread(id) {
+      const syntheticId = `${SUBAGENT_PREFIX}${id}`;
+      deleteMessageAttachmentsStmt.run(syntheticId, SUBAGENT_SESSION_ID);
+      deleteMessagesStmt.run(syntheticId, SUBAGENT_SESSION_ID);
+      deleteSubagentStmt.run(id);
+    },
+    // All windows one conversation of a colleague has; returns their ids.
+    deleteSubagentThreadsOf(ownerId, sessionId) {
+      const ids = ownerSubagentIdsStmt.all(ownerId, sessionId || DEFAULT_SESSION_ID).map((row) => row.id);
+      for (const id of ids) this.deleteSubagentThread(id);
+      return ids;
+    },
     close() {
       db.close();
     },
   };
+}
+
+function sessionKey(colleagueId, sessionId) {
+  return String(colleagueId).startsWith(SUBAGENT_PREFIX) ? SUBAGENT_SESSION_ID : sessionId || DEFAULT_SESSION_ID;
 }
 
 function escapeLike(text) {

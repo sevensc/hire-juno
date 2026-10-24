@@ -101,7 +101,10 @@ Also real, added after the first working slice:
   per colleague (carrying the unread/draft state of every session, and
   returning to the one you were last in), and the pane header names the
   open session when it isn't her main conversation. Nested rows in the
-  sidebar are for subagent exchanges only.
+  sidebar are for subagent exchanges only. Those windows are kept in
+  the chat database (brief, tool lines, report) and come back after a
+  reload or a server restart; they stay until you close one (the x on a
+  finished one), reset the owner's context or clear her chat.
 - **Model choice** per conversation — a dropdown in the conversation
   settings (⋮ in the pane header), 1:1 only. The list is what this
   account can use, as the SDK reports it for that colleague's own
