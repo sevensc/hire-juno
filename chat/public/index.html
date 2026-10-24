@@ -156,6 +156,7 @@ try {
       <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="5" y1="3" x2="5" y2="21"/><path d="M5 4h13l-3 4 3 4H5"/></svg>
       Einstellungsprozess läuft
     </div>
+    <div id="handover-notice" role="status" hidden></div>
     <div id="messages" role="log" aria-live="polite"></div>
     <div id="attachment-preview" hidden></div>
     <form id="composer">
@@ -332,6 +333,13 @@ try {
          its own branch (see server/worktree.js). Shown when the workforce
          has an id to keep it under; app.js's renderConvSettingsWorktree
          fills it in. -->
+    <!-- Terminal: continue this 1:1 conversation in the Claude Code CLI
+         (see server/cliSession.js). app.js's renderConvSettingsTerminal
+         fills it in. -->
+    <section id="conv-settings-terminal-section" hidden>
+      <h3>Terminal</h3>
+      <div id="conv-settings-terminal"></div>
+    </section>
     <section id="conv-settings-worktree-section" hidden>
       <h3>Worktree</h3>
       <div id="conv-settings-worktree"></div>

@@ -5719,6 +5719,9 @@
   var convSettingsModelEl = document.getElementById("conv-settings-model");
   var convSettingsWorktreeSectionEl = document.getElementById("conv-settings-worktree-section");
   var convSettingsWorktreeEl = document.getElementById("conv-settings-worktree");
+  var convSettingsTerminalSectionEl = document.getElementById("conv-settings-terminal-section");
+  var convSettingsTerminalEl = document.getElementById("conv-settings-terminal");
+  var handoverNoticeEl = document.getElementById("handover-notice");
   var convSearchInputEl = document.getElementById("conv-search-input");
   var convSearchResultsEl = document.getElementById("conv-search-results");
   var convResetContextEl = document.getElementById("conv-reset-context");
@@ -6190,6 +6193,7 @@
     renderConvSettingsAutoMode();
     renderConvSettingsNewSession();
     renderConvSettingsWorktree();
+    renderConvSettingsTerminal();
     disarmClearChat();
     openDialog(convSettingsBackdropEl, convSettingsModalEl);
     renderConvSettingsModel();
@@ -6272,6 +6276,183 @@
     });
     convSettingsWorktreeEl.append(pathInput, button, hint, error2);
     worktreeForm = { colleagueId, sessionId, button, error: error2 };
+  }
+  var cliInfo = /* @__PURE__ */ new Map();
+  async function loadCliInfo(colleagueId, sessionId) {
+    const key = convKey(colleagueId, sessionId);
+    try {
+      const res = await fetch(
+        `api/cli-session?colleagueId=${encodeURIComponent(colleagueId)}&sessionId=${encodeURIComponent(sessionId)}`
+      );
+      cliInfo.set(key, await res.json());
+    } catch {
+      cliInfo.set(key, { available: false, handedOver: false });
+    }
+    if (key === activeConvKey()) {
+      renderHandoverNotice();
+      if (!convSettingsBackdropEl.hidden) renderConvSettingsTerminal({ reload: false });
+    }
+  }
+  function renderHandoverNotice() {
+    handoverNoticeEl.innerHTML = "";
+    const colleagueId = activeColleagueId;
+    const sessionId = activeSessionId;
+    const info = colleagueId && !isSubagentThread(colleagueId) ? cliInfo.get(convKey(colleagueId, sessionId)) : null;
+    handoverNoticeEl.hidden = !info?.handedOver;
+    if (!info?.handedOver) return;
+    const text2 = document.createElement("span");
+    text2.textContent = "Handed over to the terminal";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = "Take back";
+    button.addEventListener("click", () => {
+      socket.send(JSON.stringify({ type: "take_back_terminal", colleagueId, sessionId }));
+    });
+    handoverNoticeEl.append(text2, button);
+  }
+  var terminalForm = null;
+  async function renderConvSettingsTerminal({ reload = true } = {}) {
+    convSettingsTerminalEl.innerHTML = "";
+    terminalForm = null;
+    if (!activeColleagueId || isSubagentThread(activeColleagueId)) {
+      convSettingsTerminalSectionEl.hidden = true;
+      return;
+    }
+    const colleagueId = activeColleagueId;
+    const sessionId = activeSessionId;
+    const key = convKey(colleagueId, sessionId);
+    if (reload) {
+      await loadCliInfo(colleagueId, sessionId);
+      return;
+    }
+    const info = cliInfo.get(key);
+    if (!info) return;
+    convSettingsTerminalSectionEl.hidden = false;
+    const status = document.createElement("p");
+    status.className = "model-picker__hint";
+    status.setAttribute("role", "status");
+    const error2 = document.createElement("p");
+    error2.className = "model-picker__error";
+    error2.setAttribute("role", "alert");
+    error2.hidden = true;
+    const commandEl = document.createElement("code");
+    commandEl.className = "terminal-command";
+    commandEl.hidden = true;
+    terminalForm = { colleagueId, sessionId, status, error: error2, commandEl };
+    const wrap = document.createElement("div");
+    wrap.className = "terminal-menu";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.id = "terminal-menu-button";
+    button.textContent = "Continue in terminal";
+    button.setAttribute("aria-haspopup", "menu");
+    button.setAttribute("aria-expanded", "false");
+    button.setAttribute("aria-controls", "terminal-menu-list");
+    const list2 = document.createElement("ul");
+    list2.id = "terminal-menu-list";
+    list2.className = "terminal-menu__list";
+    list2.setAttribute("role", "menu");
+    list2.setAttribute("aria-labelledby", "terminal-menu-button");
+    list2.hidden = true;
+    const closeMenu = ({ refocus = false } = {}) => {
+      list2.hidden = true;
+      button.setAttribute("aria-expanded", "false");
+      if (refocus) button.focus();
+    };
+    const items = [];
+    const addItem = (label, onChoose) => {
+      const li = document.createElement("li");
+      li.setAttribute("role", "none");
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "terminal-menu__item";
+      item.setAttribute("role", "menuitem");
+      item.tabIndex = -1;
+      item.textContent = label;
+      item.addEventListener("click", () => {
+        closeMenu({ refocus: true });
+        onChoose();
+      });
+      li.appendChild(item);
+      list2.appendChild(li);
+      items.push(item);
+    };
+    const show = (command, message) => {
+      error2.hidden = true;
+      commandEl.textContent = command;
+      commandEl.hidden = false;
+      status.textContent = message;
+    };
+    addItem("Transfer to terminal", async () => {
+      if (isTyping(key)) {
+        error2.textContent = "She is still answering. Hand over once she is done.";
+        error2.hidden = false;
+        return;
+      }
+      const ok = await copyToClipboard(info.resumeCommand);
+      show(info.resumeCommand, `${ok ? "Copied." : "Copy failed, select it by hand."} Run it in a terminal. The chat lets go of the session meanwhile.`);
+      socket.send(JSON.stringify({ type: "handover_terminal", colleagueId, sessionId }));
+    });
+    addItem("Fork into terminal", async () => {
+      const ok = await copyToClipboard(info.forkCommand);
+      show(info.forkCommand, `${ok ? "Copied." : "Copy failed, select it by hand."} The terminal works on a copy; this chat goes on unchanged.`);
+    });
+    const focusItem = (index) => items[(index + items.length) % items.length].focus();
+    const openMenu = (index) => {
+      list2.hidden = false;
+      button.setAttribute("aria-expanded", "true");
+      focusItem(index);
+    };
+    button.addEventListener("click", () => list2.hidden ? openMenu(0) : closeMenu());
+    button.addEventListener("keydown", (event) => {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        openMenu(0);
+      } else if (event.key === "ArrowUp") {
+        event.preventDefault();
+        openMenu(-1);
+      }
+    });
+    list2.addEventListener("keydown", (event) => {
+      const at = items.indexOf(document.activeElement);
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        focusItem(at + 1);
+      } else if (event.key === "ArrowUp") {
+        event.preventDefault();
+        focusItem(at - 1);
+      } else if (event.key === "Home") {
+        event.preventDefault();
+        focusItem(0);
+      } else if (event.key === "End") {
+        event.preventDefault();
+        focusItem(-1);
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        closeMenu({ refocus: true });
+      } else if (event.key === "Tab") closeMenu();
+    });
+    wrap.addEventListener("focusout", (event) => {
+      if (!wrap.contains(event.relatedTarget)) closeMenu();
+    });
+    wrap.append(button, list2);
+    const hint = document.createElement("p");
+    hint.className = "model-picker__hint";
+    if (!info.available) {
+      button.disabled = true;
+      hint.textContent = "Available once she has answered at least once.";
+    } else {
+      hint.textContent = "Copies a command for a terminal on this machine; nothing is opened for you. Transfer: the chat stops using the session until you take it back. Fork: the terminal works on a copy and this chat goes on unchanged.";
+    }
+    convSettingsTerminalEl.append(wrap);
+    if (info.handedOver) {
+      const handed = document.createElement("p");
+      handed.className = "model-picker__hint";
+      handed.textContent = "Handed over to the terminal. Take it back above the message box.";
+      convSettingsTerminalEl.append(handed);
+    }
+    convSettingsTerminalEl.append(hint, commandEl, status, error2);
   }
   function renderPaneHeader() {
     paneHeaderEl.innerHTML = "";
@@ -7205,6 +7386,22 @@
       }
       return;
     }
+    if (update.type === "terminal_handover") {
+      const key2 = convKey(update.colleagueId, update.sessionId);
+      cliInfo.set(key2, { ...cliInfo.get(key2) || { available: true }, handedOver: Boolean(update.handedOver) });
+      const form2 = terminalForm;
+      if (update.failed && form2 && form2.colleagueId === update.colleagueId && form2.sessionId === update.sessionId) {
+        form2.commandEl.hidden = true;
+        form2.status.textContent = "";
+        form2.error.textContent = `Not handed over: ${update.message || "failed"} Do not use the copied command.`;
+        form2.error.hidden = false;
+      }
+      if (key2 === activeConvKey()) {
+        renderHandoverNotice();
+        if (!update.failed && !convSettingsBackdropEl.hidden && !update.handedOver) renderConvSettingsTerminal({ reload: false });
+      }
+      return;
+    }
     if (update.type === "worktree_failed") {
       const form2 = worktreeForm;
       if (form2 && form2.colleagueId === update.colleagueId && form2.sessionId === update.sessionId) {
@@ -7996,6 +8193,8 @@
     autoResizeComposer();
     renderPaneHeader();
     refreshDiffIfOpen();
+    renderHandoverNotice();
+    if (canReply) loadCliInfo(colleague.id, activeSessionId);
     const key = activeConvKey();
     await loadColleagueHistory(colleague.id, activeSessionId, key);
     if (activeConvKey() === key) renderMessages({ forceScrollToBottom: true });
@@ -8582,6 +8781,12 @@
     }
     if (!activeColleagueId) return;
     const key = activeConvKey();
+    if (cliInfo.get(key)?.handedOver) {
+      if (!window.confirm("The terminal may be using this session. Take it back and send?")) return;
+      cliInfo.set(key, { ...cliInfo.get(key), handedOver: false });
+      renderHandoverNotice();
+      socket.send(JSON.stringify({ type: "take_back_terminal", colleagueId: activeColleagueId, sessionId: activeSessionId }));
+    }
     if (!history.has(key)) history.set(key, []);
     const attachments = pendingAttachment ? [pendingAttachment] : [];
     const typing = isTyping(key);

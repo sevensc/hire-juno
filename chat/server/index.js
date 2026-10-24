@@ -42,6 +42,7 @@ import { currentBranch, gitRoot, resolveGitDir } from './worktree.js';
 import { addWorkforce, listWorkforces, removeWorkforce, setActiveWorkforce } from '../../shared/workforceRegistry.js';
 import { getOrCreateSession, saveSessionPort } from '../../shared/chatSessions.js';
 import { portToRemember } from '../../shared/portFlag.js';
+import { cliSessionInfo, createHandovers, transferToTerminal } from './cliSession.js';
 
 // One colleague can now have several independent, parallel
 // conversations running at once (e.g. one session per topic) — each is its own adapter
@@ -347,6 +348,17 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
     // human's own side-by-side 1:1 conversations, not something a
     // channel needs to pick between.
     const adapters = new Map();
+    // The folder she runs in for a conversation (also what the terminal
+    // command changes into). A worktree of another repo does not move her:
+    // she keeps the workforce folder as cwd (her agents and settings are
+    // read from there) and the prompt names the worktree (see createAdapter).
+    const conversationCwd = (colleagueId, sessionId) => {
+      const worktree = store.getWorktree(colleagueId, sessionId);
+      const worktreeThere = worktree && existsSync(worktree.path);
+      return worktreeThere && worktreeIsStartRepo(worktree.repoPath, targetDir) ? worktree.path : targetDir;
+    };
+    // Conversations handed to the terminal: the chat leaves their session alone.
+    const handovers = createHandovers();
     const adapterFor = (colleagueId, sessionId = DEFAULT_SESSION_ID) => {
       const key = adapterKey(colleagueId, sessionId);
       if (!adapters.has(key)) {
@@ -363,11 +375,8 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
         // Works in her conversation's own worktree when it has one (and the
         // folder is still there), otherwise in the workforce folder.
         const worktree = store.getWorktree(colleagueId, sessionId);
-        // A worktree of another repo does not move her: she keeps the
-        // workforce folder as cwd (her agents and settings are read from
-        // there) and the prompt names the worktree (see createAdapter).
         const worktreeThere = worktree && existsSync(worktree.path);
-        const cwd = worktreeThere && worktreeIsStartRepo(worktree.repoPath, targetDir) ? worktree.path : targetDir;
+        const cwd = conversationCwd(colleagueId, sessionId);
         // She may move the conversation into a worktree herself (a tool of
         // hers, see useWorktree.js), if it can have one.
         let replaceWhenIdle = false;
@@ -686,6 +695,23 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
           return;
         }
 
+        if (req.method === 'GET' && route === 'api/cli-session') {
+          // What the terminal needs to continue this 1:1 conversation. Not for
+          // channels or subagent windows (the client never asks for them; an
+          // unknown id answers unavailable), and nothing before the first turn.
+          const colleagueId = url.searchParams.get('colleagueId') || '';
+          const sessionId = url.searchParams.get('sessionId') || DEFAULT_SESSION_ID;
+          const known = readRoster(targetDir).some((c) => c.id === colleagueId);
+          const info = cliSessionInfo({
+            sdkSessionId: known ? store.getAdapterSession(colleagueId, sessionId) : null,
+            cwd: known ? conversationCwd(colleagueId, sessionId) : null,
+          });
+          res.writeHead(200, { 'Content-Type': 'application/json' }).end(
+            JSON.stringify({ ...info, handedOver: handovers.has(adapterKey(colleagueId, sessionId)) })
+          );
+          return;
+        }
+
         if (req.method === 'GET' && route === 'api/models') {
           // What the conversation's settings dialog offers. Asked of the
           // colleague's own adapter, so opening the dialog starts her
@@ -695,7 +721,8 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
           // dialog simply leaves the section out.
           const colleagueId = url.searchParams.get('colleagueId') || '';
           const sessionId = url.searchParams.get('sessionId') || DEFAULT_SESSION_ID;
-          const adapter = adapterFor(colleagueId, sessionId);
+          // Not while the terminal has the session: asking would start it.
+          const adapter = handovers.has(adapterKey(colleagueId, sessionId)) ? null : adapterFor(colleagueId, sessionId);
           let models = null;
           if (adapter && typeof adapter.supportedModels === 'function') {
             try {
@@ -1136,6 +1163,8 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
           }
 
           for (const colleagueId of targets) {
+            // Her main conversation is with the terminal: a channel turn would write into it.
+            if (handovers.has(adapterKey(colleagueId, DEFAULT_SESSION_ID))) continue;
             const adapter = adapterFor(colleagueId);
             if (!adapter) continue;
 
@@ -1331,6 +1360,33 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
               model: checked.model,
               resolvedModel: shown?.resolvedModel || checked.model || null,
             });
+            return;
+          }
+
+          if (payload.type === 'handover_terminal' || payload.type === 'take_back_terminal') {
+            // "Transfer to terminal": the chat lets go of the session so only
+            // the terminal writes to it. "Take back": the next message
+            // resumes it from the saved id.
+            const colleagueId = payload.colleagueId;
+            const sessionId = payload.sessionId || DEFAULT_SESSION_ID;
+            const key = adapterKey(colleagueId, sessionId);
+            const reply = (extra) => broadcast({ type: 'terminal_handover', colleagueId, sessionId, ...extra });
+            if (!readRoster(targetDir).some((c) => c.id === colleagueId)) {
+              reply({ handedOver: false, failed: true, message: 'Unknown colleague.' });
+              return;
+            }
+            if (payload.type === 'take_back_terminal') {
+              handovers.remove(key);
+              reply({ handedOver: false });
+              return;
+            }
+            if (!cliSessionInfo({ sdkSessionId: store.getAdapterSession(colleagueId, sessionId), cwd: targetDir }).available) {
+              reply({ handedOver: false, failed: true, message: 'There is no session to hand over yet.' });
+              return;
+            }
+            const result = transferToTerminal({ handovers, key, adapter: adapters.get(key) });
+            if (result.ok) adapters.delete(key);
+            reply(result.ok ? { handedOver: true } : { handedOver: false, failed: true, message: result.message });
             return;
           }
 
@@ -1598,6 +1654,12 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
 
           const { colleagueId, text, attachments } = payload;
           const sessionId = payload.sessionId || DEFAULT_SESSION_ID;
+          if (handovers.has(adapterKey(colleagueId, sessionId))) {
+            // The client asks first and takes it back; a message that still
+            // arrives is refused rather than written into the terminal's session.
+            broadcast({ colleagueId, sessionId, type: 'message', role: 'system', text: 'This conversation is handed over to the terminal. Take it back to continue here.' });
+            return;
+          }
           const adapter = adapterFor(colleagueId, sessionId);
           if (!adapter) {
             broadcast({ colleagueId, sessionId, type: 'message', role: 'system', text: 'Unknown colleague.' });
