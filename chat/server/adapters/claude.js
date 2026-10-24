@@ -174,6 +174,12 @@ export class ClaudeAdapter {
         // the target repo and nothing points the session there.
         cwd,
         includePartialMessages: true,
+        // Makes the CLI hand every user message that carries a uuid back as
+        // `isReplay: true` at the moment the session takes it up (measured: a
+        // message pushed during a running tool call came back with the tool
+        // result that it was folded into). That is the exact "read" signal for a
+        // waiting message; see the `isReplay` branch below.
+        extraArgs: { 'replay-user-messages': null },
         // On the newest models (this account's resolved default is
         // "sonnet" — checked via the SDK's own resolveSettings(), not
         // guessed) thinking already runs by default; what was missing
@@ -343,6 +349,11 @@ export class ClaudeAdapter {
         return;
       }
       case 'user': {
+        // The session took up a message that was sent with a uuid: it is read.
+        if (message.isReplay) {
+          if (message.uuid) this.onUpdate?.({ type: 'message_read', uuid: message.uuid });
+          return;
+        }
         // The main loop's own tool_result for a finished Task call is
         // the closing signal for that subagent's thread — the subagent
         // itself never sends an explicit "I'm done".

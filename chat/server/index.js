@@ -902,6 +902,14 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
         const bindAdapter = (adapter, colleagueId, sessionId) => {
           const key = adapterKey(colleagueId, sessionId);
           adapter.onUpdate = (update) => {
+            // The session took up a waiting message (the exact moment, not an
+            // estimate from a tool result): it stops waiting everywhere.
+            if (update.type === 'message_read') {
+              if (waitingYou.remove(key, update.uuid)) {
+                broadcast({ type: 'message_read', colleagueId, sessionId, id: update.uuid });
+              }
+              return;
+            }
             // Same three update types the client's own trail-building
             // switch reacts to (see the socket handler in
             // chat/src/app.js) — collected here too so the finished
@@ -1156,6 +1164,7 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
               // a channel turn yet, so these are dropped rather than fed
               // into state that assumes a 1:1 context.
               if (update.type.startsWith('subagent_')) return;
+              if (update.type === 'message_read') return; // waiting messages exist for 1:1 only
               recordStats(colleagueStats, adapterKey(colleagueId, DEFAULT_SESSION_ID), update);
               rememberStats(adapterKey(colleagueId, DEFAULT_SESSION_ID), update);
               broadcast({ channelId, colleagueId, ...update });
