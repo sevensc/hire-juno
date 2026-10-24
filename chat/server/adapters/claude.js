@@ -271,6 +271,13 @@ export class ClaudeAdapter {
         for (const block of message.message?.content ?? []) {
           if (block.type === 'tool_use') {
             this.onUpdate?.({ type: 'subagent_tool_use', id: parentId, name: block.name, input: block.input });
+            // Its real report: shown at once, in case the end comes late.
+            const handback = this._subagents.rememberHandback(parentId, block);
+            if (handback) this.onUpdate?.({ type: 'subagent_message', id: parentId, text: handback });
+          } else if (block.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
+            // A sub-agent sends no partial messages; its finished text
+            // between tool calls only arrives here.
+            this.onUpdate?.({ type: 'subagent_message', id: parentId, text: block.text });
           }
         }
       }
@@ -365,11 +372,12 @@ export class ClaudeAdapter {
               !this._subagents.isBackground(block.tool_use_id)
             ) {
               this._openSubagents.delete(block.tool_use_id);
-              this._subagents.forget(block.tool_use_id);
               const result = message.tool_use_result;
-              const report = result && typeof result === 'object' && 'content' in result
+              const rawReport = result && typeof result === 'object' && 'content' in result
                 ? toolResultText(result.content)
                 : toolResultText(block.content);
+              const report = this._subagents.resolveReport(block.tool_use_id, rawReport);
+              this._subagents.forget(block.tool_use_id);
               this.onUpdate?.({ type: 'subagent_end', id: block.tool_use_id, report });
             }
           }

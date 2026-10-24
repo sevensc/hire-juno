@@ -51,6 +51,8 @@
 //   { type: 'subagent_start', id, subagentType, taskDescription }
 //   { type: 'subagent_delta', id, text }
 //   { type: 'subagent_tool_use', id, name, input }
+//   { type: 'subagent_message', id, text }          — a finished text block of
+//     the sub-agent between its tool calls (it streams no partial text)
 //   { type: 'session_info', model, effort }         — sent once, as soon as
 //     the backend's session actually starts (the model/effort a colleague
 //     is really running on can differ from what her profile.md asks for —

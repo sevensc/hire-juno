@@ -10,10 +10,36 @@
 //     background agent printed `summary: "SUBDONE"` for a prompt asking it
 //     to reply exactly that. A foreground sub-agent still ends with the tool
 //     result, which carries the full report.
+// How the tool result / notification of a sub-agent begins when its report
+// was delivered by its SubagentHandback call instead.
+export const PLACEHOLDER_START = "This agent's report was delivered to you as a message from";
+
 export class SubagentTracker {
   constructor() {
     this._inputs = new Map(); // tool_use id -> input of the Agent/Task call
     this._background = new Set(); // tool_use ids started in the background
+    this._handbacks = new Map(); // sub-agent tool_use id -> text of its SubagentHandback call
+  }
+
+  // Call for every tool_use block a sub-agent sends (`id` = the call that
+  // started it). Its real report is the `message` of its SubagentHandback
+  // call; the tool result and the task notification only carry a
+  // placeholder pointing there. Returns the text when the block is one.
+  rememberHandback(id, block) {
+    if (block?.type !== 'tool_use' || block.name !== 'SubagentHandback') return undefined;
+    const message = block.input?.message;
+    if (typeof message !== 'string' || !message.trim()) return undefined;
+    this._handbacks.set(id, message);
+    return message;
+  }
+
+  // The report to show for a sub-agent that ended with `report`: the
+  // remembered handback text when `report` is the placeholder, else `report`.
+  resolveReport(id, report) {
+    if (typeof report === 'string' && report.startsWith(PLACEHOLDER_START)) {
+      return this._handbacks.get(id) ?? report;
+    }
+    return report;
   }
 
   // Call for every tool_use block of the colleague's own turns.
@@ -50,7 +76,8 @@ export class SubagentTracker {
     if (message?.subtype !== 'task_notification' || !message.tool_use_id) return null;
     if (!this._background.has(message.tool_use_id)) return null;
     const summary = typeof message.summary === 'string' ? message.summary : '';
-    const report = message.status === 'completed' ? summary : `(${message.status}) ${summary}`.trim();
+    const resolved = this.resolveReport(message.tool_use_id, summary);
+    const report = message.status === 'completed' ? resolved : `(${message.status}) ${resolved}`.trim();
     this.forget(message.tool_use_id);
     return { id: message.tool_use_id, report };
   }
@@ -58,5 +85,6 @@ export class SubagentTracker {
   forget(id) {
     this._inputs.delete(id);
     this._background.delete(id);
+    this._handbacks.delete(id);
   }
 }

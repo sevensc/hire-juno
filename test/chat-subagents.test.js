@@ -43,3 +43,31 @@ test('a foreground sub-agent, other subtypes and unknown ids end nothing here', 
   assert.equal(t.endFromNotification({ subtype: 'task_notification', tool_use_id: 'other', status: 'completed', summary: 'x' }), null);
   assert.equal(t.endFromNotification({ subtype: 'task_notification', status: 'completed', summary: 'x' }), null);
 });
+
+const PLACEHOLDER = 'This agent\'s report was delivered to you as a message from "abc" (its SubagentHandback call). Read it there; it is not repeated here.';
+const handback = { type: 'tool_use', name: 'SubagentHandback', input: { message: 'The real report' } };
+
+test('a placeholder report is replaced by the text of the SubagentHandback call', () => {
+  const t = new SubagentTracker();
+  assert.equal(t.rememberHandback('a', handback), 'The real report');
+  assert.equal(t.resolveReport('a', PLACEHOLDER), 'The real report');
+  assert.equal(t.resolveReport('a', 'A real report from the result'), 'A real report from the result');
+});
+
+test('without a handback the placeholder and any other report stay as they are', () => {
+  const t = new SubagentTracker();
+  assert.equal(t.rememberHandback('a', { type: 'tool_use', name: 'Read', input: { message: 'x' } }), undefined);
+  assert.equal(t.rememberHandback('a', { type: 'tool_use', name: 'SubagentHandback', input: {} }), undefined);
+  assert.equal(t.resolveReport('a', PLACEHOLDER), PLACEHOLDER);
+  assert.equal(t.resolveReport('a', 'plain'), 'plain');
+});
+
+test('a background sub-agent notification with the placeholder ends with the handback text', () => {
+  const t = new SubagentTracker();
+  t.noteSystemMessage({ subtype: 'task_started', tool_use_id: 'a', is_backgrounded: true });
+  t.rememberHandback('a', handback);
+  assert.deepEqual(
+    t.endFromNotification({ subtype: 'task_notification', tool_use_id: 'a', status: 'completed', summary: PLACEHOLDER }),
+    { id: 'a', report: 'The real report' }
+  );
+});
