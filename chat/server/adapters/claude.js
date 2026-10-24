@@ -27,6 +27,7 @@
 // silent, complete loss of the subagent thread, not a rendering bug.
 
 import { createSdkMcpServer, query, tool } from '@anthropic-ai/claude-agent-sdk';
+import { z } from 'zod';
 
 import { isStaleResumeError, STALE_RESUME_MESSAGE } from './staleResume.js';
 import { SubagentTracker } from './subagents.js';
@@ -70,8 +71,11 @@ export function worktreeToolResult(result) {
   if (!result.ok) return { content: [{ type: 'text', text: result.message }], isError: true };
   const text = result.created
     ? `Created a git worktree on branch ${result.branch} at ${result.path}. ` +
-      `Your shell and file tools still start in the old folder for the rest of this turn: ` +
-      `work in ${result.path} by absolute path. From your next turn on it is your working directory.`
+      (result.cwdIsWorktree === false
+        ? `Your working directory stays where it is, because it is not this repository: ` +
+          `work on this repository in ${result.path} by absolute path (or cd there).`
+        : `Your shell and file tools still start in the old folder for the rest of this turn: ` +
+          `work in ${result.path} by absolute path. From your next turn on it is your working directory.`)
     : `This conversation already has a worktree, on branch ${result.branch} at ${result.path}.`;
   return { content: [{ type: 'text', text }] };
 }
@@ -86,9 +90,10 @@ export function worktreeServer(useWorktree) {
       tool(
         'use_worktree',
         'Moves this conversation into its own git worktree on a new branch, so the changes stay off the main ' +
-          'checkout. Takes no arguments. Returns the worktree path and branch.',
-        {},
-        async () => worktreeToolResult(useWorktree())
+          'checkout. Optional `repoPath`: the absolute path of the top folder of the git repository to branch ' +
+          'from, when you work in a repo other than the one you started in. Returns the worktree path and branch.',
+        { repoPath: z.string().optional().describe('Absolute path of the git repository to work in') },
+        async ({ repoPath }) => worktreeToolResult(useWorktree({ repoPath }))
       ),
     ],
   });
@@ -116,6 +121,8 @@ export class ClaudeAdapter {
   // above); see createAdapter in agentAdapter.js.
   constructor(colleague, { systemPrompt, cwd, resume, model, useWorktree }) {
     this.colleague = colleague;
+    this.systemPrompt = systemPrompt;
+    this.cwd = cwd;
     // Set by whoever owns this adapter (server/index.js) right after
     // creating it, and re-bound on every subsequent message so a
     // reconnected browser tab takes over delivery. Both may be null

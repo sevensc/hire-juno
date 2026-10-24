@@ -111,7 +111,7 @@ test('the store remembers which worktree a conversation works in', async () => {
   const store = openStore({});
   assert.equal(store.getWorktree('nora', 'default'), null);
   store.setWorktree('nora', 'default', '/w/nora', 'chat/nora-default');
-  assert.deepEqual(store.getWorktree('nora', 'default'), { path: '/w/nora', branch: 'chat/nora-default' });
+  assert.deepEqual(store.getWorktree('nora', 'default'), { path: '/w/nora', branch: 'chat/nora-default', repoPath: null });
   assert.equal(store.getWorktree('nora', 's2'), null);
   assert.equal(store.getWorktree('juno', 'default'), null);
 });
