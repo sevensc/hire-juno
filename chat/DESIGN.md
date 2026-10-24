@@ -44,6 +44,20 @@ All colours are CSS custom properties on `:root`, each declared with
 carries `color-scheme: light dark`. Never hard-code a colour in a rule;
 add a token.
 
+Which side of each pair is shown is the user's choice under Settings >
+Appearance: System (default, follows the device), Light or Dark. A
+forced choice sets `data-theme="light"|"dark"` on `<html>`, which pins
+`color-scheme` and so every `light-dark()` token at once; System removes
+the attribute. The choice is kept in the browser's localStorage
+(`hire-juno-chat:theme`) and applied by an inline script in `<head>`
+before the first paint, together with `<meta name="color-scheme">`. A
+new colour therefore needs no extra rule for the switch, only its
+`light-dark()` pair. The control is a segmented row of native radios:
+44px-high labels, selected state as a 2px `--accent` border plus bold
+text on `--bg-message` (measured 5.26:1 light and 5.86:1 dark against
+that fill; label text `--fg` on it 15.08:1 and 12.66:1), focus ring
+drawn on the label.
+
 | Token | Light | Dark | Used for |
 | --- | --- | --- | --- |
 | `--bg` | `#ffffff` | `#16171a` | Page and conversation background |

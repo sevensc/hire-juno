@@ -15,6 +15,7 @@ import { html } from 'htm/preact';
 
 import { renderMarkdown } from './markdown.js';
 import { pickConversationToRestore, recallOpenConversation, rememberOpenConversation } from './open-conversation.js';
+import { applyTheme, readThemePreference, writeThemePreference } from './theme.js';
 
 const paneEl = document.getElementById('pane');
 const paneHeaderEl = document.getElementById('pane-header');
@@ -38,6 +39,19 @@ const workforceAddFormEl = document.getElementById('workforce-add-form');
 const workforceAddInputEl = document.getElementById('workforce-add-input');
 const workforceErrorEl = document.getElementById('workforce-error');
 const settingsNotifyRowEl = document.getElementById('settings-notify-row');
+
+// Appearance (settings dialog): the <head> already applied the stored
+// choice before the first paint; this only syncs the radios to it and
+// applies a new one on the spot. See theme.js.
+{
+  const themeChoiceEl = document.getElementById('theme-choice');
+  const stored = applyTheme(readThemePreference());
+  const checked = themeChoiceEl.querySelector(`input[value="${stored}"]`);
+  if (checked) checked.checked = true;
+  themeChoiceEl.addEventListener('change', (event) => {
+    applyTheme(writeThemePreference(event.target.value));
+  });
+}
 const usageLimitsEl = document.getElementById('usage-limits');
 const sidebarSearchInputEl = document.getElementById('sidebar-search-input');
 const convSettingsBackdropEl = document.getElementById('conv-settings-backdrop');

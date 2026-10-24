@@ -5641,6 +5641,39 @@
     return null;
   }
 
+  // chat/src/theme.js
+  var THEME_STORAGE_KEY = "hire-juno-chat:theme";
+  var THEME_CHOICES = ["system", "light", "dark"];
+  function normalizeThemePreference(value) {
+    return THEME_CHOICES.includes(value) ? value : "system";
+  }
+  function readThemePreference(storage = globalThis.localStorage) {
+    try {
+      return normalizeThemePreference(storage.getItem(THEME_STORAGE_KEY));
+    } catch {
+      return "system";
+    }
+  }
+  function writeThemePreference(value, storage = globalThis.localStorage) {
+    const choice = normalizeThemePreference(value);
+    try {
+      if (choice === "system") storage.removeItem(THEME_STORAGE_KEY);
+      else storage.setItem(THEME_STORAGE_KEY, choice);
+    } catch {
+    }
+    return choice;
+  }
+  function applyTheme(value, doc = globalThis.document) {
+    const choice = normalizeThemePreference(value);
+    const root = doc?.documentElement;
+    if (!root) return choice;
+    if (choice === "system") delete root.dataset.theme;
+    else root.dataset.theme = choice;
+    const meta = doc.querySelector?.('meta[name="color-scheme"]');
+    if (meta) meta.setAttribute("content", choice === "system" ? "light dark" : choice);
+    return choice;
+  }
+
   // chat/src/app.js
   var paneEl = document.getElementById("pane");
   var paneHeaderEl = document.getElementById("pane-header");
@@ -5664,6 +5697,15 @@
   var workforceAddInputEl = document.getElementById("workforce-add-input");
   var workforceErrorEl = document.getElementById("workforce-error");
   var settingsNotifyRowEl = document.getElementById("settings-notify-row");
+  {
+    const themeChoiceEl = document.getElementById("theme-choice");
+    const stored = applyTheme(readThemePreference());
+    const checked = themeChoiceEl.querySelector(`input[value="${stored}"]`);
+    if (checked) checked.checked = true;
+    themeChoiceEl.addEventListener("change", (event) => {
+      applyTheme(writeThemePreference(event.target.value));
+    });
+  }
   var usageLimitsEl = document.getElementById("usage-limits");
   var sidebarSearchInputEl = document.getElementById("sidebar-search-input");
   var convSettingsBackdropEl = document.getElementById("conv-settings-backdrop");

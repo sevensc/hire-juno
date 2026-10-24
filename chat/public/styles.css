@@ -25,6 +25,11 @@
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
 }
+/* Appearance choice from the settings dialog (chat/src/theme.js). Every
+   token above is a light-dark() pair, so pinning color-scheme is the
+   whole switch; no attribute means "light dark", the system decides. */
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
 
 * { box-sizing: border-box; }
 
@@ -651,6 +656,49 @@ button.workforce-row__pick:disabled { cursor: default; opacity: 0.55; }
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--fg-muted);
+}
+
+/* Appearance: a three-way segmented control built from native radios
+   (keyboard and screen-reader behaviour come with them). The radio
+   itself is visually hidden; its label is the 44px target, and the
+   focus ring is drawn on the label while the radio inside has
+   keyboard focus. Selected = accent border plus bold text, so the
+   state does not hang on colour alone. */
+#theme-choice { margin: 0; padding: 0; border: 0; min-width: 0; }
+#theme-choice legend { padding: 0; }
+.segmented { display: flex; gap: 0.4rem; flex-wrap: wrap; }
+.segmented label {
+  position: relative;
+  flex: 1 1 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 4.5rem;
+  min-height: 2.75rem;
+  padding: 0.25rem 0.7rem;
+  border-radius: 0.4rem;
+  border: 1px solid var(--border);
+  color: var(--fg);
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.segmented input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+@media (hover: hover) { .segmented label:hover { background: var(--bg-message); } }
+.segmented label:has(input:checked) {
+  border: 2px solid var(--accent);
+  padding: calc(0.25rem - 1px) calc(0.7rem - 1px);
+  background: var(--bg-message);
+  font-weight: 600;
+}
+.segmented label:has(input:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 /* #conv-settings-modal — the per-conversation counterpart to

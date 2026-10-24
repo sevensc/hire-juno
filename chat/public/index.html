@@ -10,6 +10,21 @@
      already keep content clear of them). -->
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>hire-juno chat</title>
+<!-- Appearance (settings dialog): the chosen theme is applied here,
+     before styles.css and before the first paint, so a forced light or
+     dark never shows the system theme first. Inline copy of
+     chat/src/theme.js's readThemePreference + applyTheme; keep the key
+     and the values in step with it. -->
+<meta name="color-scheme" content="light dark" />
+<script>
+try {
+  var t = localStorage.getItem('hire-juno-chat:theme');
+  if (t === 'light' || t === 'dark') {
+    document.documentElement.dataset.theme = t;
+    document.querySelector('meta[name="color-scheme"]').setAttribute('content', t);
+  }
+} catch (e) {}
+</script>
 <link rel="stylesheet" href="styles.css" />
 <!-- PWA support so the page passes as an app on iPhone. The
      manifest carries __TEAM_NAME__/__TOKEN__ placeholders the same way
@@ -260,6 +275,19 @@
     <section>
       <h3>Notifications</h3>
       <div id="settings-notify-row"></div>
+    </section>
+    <section>
+      <!-- Native radios: arrow keys move the choice, a screen reader
+           announces "Appearance, radio group, 1 of 3". The fieldset's
+           legend is the section heading. -->
+      <fieldset id="theme-choice">
+        <legend><h3>Appearance</h3></legend>
+        <div class="segmented">
+          <label><input type="radio" name="theme" value="system" checked /><span>System</span></label>
+          <label><input type="radio" name="theme" value="light" /><span>Light</span></label>
+          <label><input type="radio" name="theme" value="dark" /><span>Dark</span></label>
+        </div>
+      </fieldset>
     </section>
     <section>
       <h3>Branding</h3>
