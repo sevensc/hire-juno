@@ -5654,6 +5654,51 @@
     return null;
   }
 
+  // chat/src/issue-link.js
+  var ISSUE_URL = "https://github.com/sevensc/hire-juno/issues/new";
+  var BROWSERS = [
+    ["Edge", /\b(?:Edg|EdgA|EdgiOS)\/(\d+)/],
+    ["Opera", /\bOPR\/(\d+)/],
+    ["Firefox", /\b(?:Firefox|FxiOS)\/(\d+)/],
+    ["Chrome", /(?:Chrome|CriOS)\/(\d+)/],
+    ["Safari", /\bVersion\/(\d+)[^]*\bSafari\//]
+  ];
+  function browserFromUserAgent(ua = "") {
+    for (const [name, re] of BROWSERS) {
+      const m3 = re.exec(ua);
+      if (m3) return `${name} ${m3[1]}`;
+    }
+    return "unknown";
+  }
+  function osFamilyFromUserAgent(ua = "") {
+    if (/Android/.test(ua)) return "Android";
+    if (/iPhone|iPad|iPod/.test(ua)) return "iOS";
+    if (/Windows/.test(ua)) return "Windows";
+    if (/Mac OS X|Macintosh/.test(ua)) return "macOS";
+    if (/CrOS/.test(ua)) return "ChromeOS";
+    if (/Linux|X11/.test(ua)) return "Linux";
+    return "unknown";
+  }
+  function buildIssueUrl({ version, userAgent } = {}) {
+    const url = new URL(ISSUE_URL);
+    const body = [
+      "### What happened",
+      "",
+      "",
+      "### What you expected",
+      "",
+      "",
+      "### Environment",
+      "",
+      `- hire-juno: ${version || "unknown"}`,
+      `- Browser: ${browserFromUserAgent(userAgent)}`,
+      `- OS: ${osFamilyFromUserAgent(userAgent)}`,
+      ""
+    ].join("\n");
+    url.searchParams.set("body", body);
+    return url.toString();
+  }
+
   // chat/src/limit-notice.js
   function formatTime(ms, now, locale) {
     const date = new Date(ms);
@@ -5728,6 +5773,7 @@
   var workforceAddFormEl = document.getElementById("workforce-add-form");
   var workforceAddInputEl = document.getElementById("workforce-add-input");
   var workforceErrorEl = document.getElementById("workforce-error");
+  var issueLinkEl = document.getElementById("issue-link");
   var settingsNotifyRowEl = document.getElementById("settings-notify-row");
   {
     const themeChoiceEl = document.getElementById("theme-choice");
@@ -8728,7 +8774,8 @@
   }
   async function loadRoster({ preserveSelection = false } = {}) {
     const statusRes = await fetch("api/status");
-    const { persisted, teamName } = await statusRes.json();
+    const { persisted, teamName, version } = await statusRes.json();
+    issueLinkEl.href = buildIssueUrl({ version, userAgent: navigator.userAgent });
     noPersistenceBannerEl.hidden = persisted;
     brandNameEl.textContent = teamName;
     brandNameEl.title = teamName;
