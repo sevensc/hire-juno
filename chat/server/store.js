@@ -123,6 +123,22 @@ const SCHEMA = `
   -- choice is set — no row means "the default". Deliberately not removed
   -- by a context reset: that clears what a colleague remembers, not how
   -- she was set up.
+  -- The last model/effort and token/cost figures reported for a
+  -- conversation's session, so the header still shows them after a server
+  -- restart. A snapshot, not a ledger: it is replaced whenever the adapter
+  -- reports again, and the adapter counts from zero after a restart.
+  CREATE TABLE IF NOT EXISTS conversation_stats (
+    colleague_id TEXT NOT NULL,
+    session_id TEXT NOT NULL DEFAULT 'default',
+    model TEXT,
+    effort TEXT,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    total_tokens INTEGER,
+    cost_usd REAL,
+    PRIMARY KEY (colleague_id, session_id)
+  );
+
   CREATE TABLE IF NOT EXISTS model_choices (
     colleague_id TEXT NOT NULL,
     session_id TEXT NOT NULL DEFAULT 'default',
@@ -240,6 +256,15 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
   const getAdapterSessionStmt = db.prepare(
     'SELECT sdk_session_id FROM adapter_sessions WHERE colleague_id = ? AND session_id = ?'
   );
+  const saveStatsStmt = db.prepare(
+    `INSERT INTO conversation_stats
+       (colleague_id, session_id, model, effort, input_tokens, output_tokens, total_tokens, cost_usd)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(colleague_id, session_id) DO UPDATE SET
+       model = excluded.model, effort = excluded.effort, input_tokens = excluded.input_tokens,
+       output_tokens = excluded.output_tokens, total_tokens = excluded.total_tokens, cost_usd = excluded.cost_usd`
+  );
+  const allStatsStmt = db.prepare('SELECT * FROM conversation_stats');
   const getModelChoiceStmt = db.prepare('SELECT model FROM model_choices WHERE colleague_id = ? AND session_id = ?');
   const setModelChoiceStmt = db.prepare(
     `INSERT INTO model_choices (colleague_id, session_id, model) VALUES (?, ?, ?)
@@ -405,6 +430,34 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
     },
     setWorktree(colleagueId, sessionId, path, branch) {
       setWorktreeStmt.run(colleagueId, sessionId || DEFAULT_SESSION_ID, path, branch);
+    },
+    // `stats` is the object index.js keeps per conversation: {model, effort,
+    // inputTokens, outputTokens, totalTokens, costUsd}, any of them may be unset.
+    saveStats(colleagueId, sessionId, stats) {
+      saveStatsStmt.run(
+        colleagueId,
+        sessionId || DEFAULT_SESSION_ID,
+        stats.model ?? null,
+        stats.effort ?? null,
+        stats.inputTokens ?? null,
+        stats.outputTokens ?? null,
+        stats.totalTokens ?? null,
+        stats.costUsd ?? null
+      );
+    },
+    // [[colleagueId, sessionId, stats], ...] for every conversation with a
+    // snapshot; fields that were never reported are left out of `stats`.
+    getAllStats() {
+      return allStatsStmt.all().map((row) => {
+        const stats = {};
+        if (row.model != null) stats.model = row.model;
+        if (row.effort != null) stats.effort = row.effort;
+        if (row.input_tokens != null) stats.inputTokens = row.input_tokens;
+        if (row.output_tokens != null) stats.outputTokens = row.output_tokens;
+        if (row.total_tokens != null) stats.totalTokens = row.total_tokens;
+        if (row.cost_usd != null) stats.costUsd = row.cost_usd;
+        return [row.colleague_id, row.session_id, stats];
+      });
     },
     getModelChoice(colleagueId, sessionId) {
       return getModelChoiceStmt.get(colleagueId, sessionId || DEFAULT_SESSION_ID)?.model ?? null;
