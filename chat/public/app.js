@@ -5613,6 +5613,19 @@
     return md.render(text2).replace(/>\n/g, ">");
   }
 
+  // chat/src/send-kind.js
+  function pickSendKind({ typing, requested }) {
+    return typing && requested === "queue" ? "queue" : "send";
+  }
+  function nextMenuIndex(current, key, count) {
+    if (count <= 0) return null;
+    if (key === "ArrowDown") return (current + 1) % count;
+    if (key === "ArrowUp") return (current - 1 + count) % count;
+    if (key === "Home") return 0;
+    if (key === "End") return count - 1;
+    return null;
+  }
+
   // chat/src/open-conversation.js
   var STORAGE_KEY = "hire-juno-chat:open-conversation";
   function rememberOpenConversation(value, storage = globalThis.localStorage) {
@@ -5728,8 +5741,10 @@
   var input = document.getElementById("composer-input");
   var fileInput = document.getElementById("composer-file");
   var attachmentPreviewEl = document.getElementById("attachment-preview");
-  var sendButton = form.querySelector('button[type="submit"]');
+  var sendButton = document.getElementById("send-button");
   var queueButtonEl = document.getElementById("queue-button");
+  var sendMenuButtonEl = document.getElementById("send-menu-button");
+  var sendMenuEl = document.getElementById("send-menu");
   var attachButtonEl = document.getElementById("attach-button");
   var imageLightboxEl = document.getElementById("image-lightbox");
   var imageLightboxImgEl = document.getElementById("image-lightbox-img");
@@ -7844,15 +7859,62 @@
     );
     refreshHiringModeStyling(key);
     followThinkingTail();
-    updateQueueButton();
+    updateSendMenu();
     if (stickToBottom) scrollMessagesToBottom();
     else updateScrollToBottomButton();
   }
-  function updateQueueButton() {
-    queueButtonEl.hidden = !(activeColleagueId && !activeChannelId && !input.disabled && isTyping(activeConvKey()));
+  function updateSendMenu() {
+    const available = Boolean(activeColleagueId && !activeChannelId && !input.disabled && isTyping(activeConvKey()));
+    sendMenuButtonEl.hidden = !available;
+    if (!available) closeSendMenu();
   }
+  function sendMenuItems() {
+    return [...sendMenuEl.querySelectorAll('[role="menuitem"]')];
+  }
+  function openSendMenu() {
+    sendMenuEl.hidden = false;
+    sendMenuButtonEl.setAttribute("aria-expanded", "true");
+    sendMenuItems()[0].focus();
+  }
+  function closeSendMenu({ restoreFocus = false } = {}) {
+    const wasOpen = !sendMenuEl.hidden;
+    sendMenuEl.hidden = true;
+    sendMenuButtonEl.setAttribute("aria-expanded", "false");
+    if (wasOpen && restoreFocus && !sendMenuButtonEl.hidden) sendMenuButtonEl.focus();
+  }
+  sendMenuButtonEl.addEventListener("click", () => {
+    if (sendMenuEl.hidden) openSendMenu();
+    else closeSendMenu({ restoreFocus: true });
+  });
+  sendMenuButtonEl.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+      event.preventDefault();
+      if (sendMenuEl.hidden) openSendMenu();
+    }
+  });
+  sendMenuEl.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeSendMenu({ restoreFocus: true });
+      return;
+    }
+    if (event.key === "Tab") {
+      closeSendMenu();
+      return;
+    }
+    const items = sendMenuItems();
+    const next = nextMenuIndex(items.indexOf(document.activeElement), event.key, items.length);
+    if (next !== null) {
+      event.preventDefault();
+      items[next].focus();
+    }
+  });
+  document.addEventListener("click", (event) => {
+    if (!sendMenuEl.hidden && !sendMenuEl.contains(event.target) && !sendMenuButtonEl.contains(event.target)) closeSendMenu();
+  });
   function renderChannelMessages({ forceScrollToBottom = false } = {}) {
-    queueButtonEl.hidden = true;
+    sendMenuButtonEl.hidden = true;
+    closeSendMenu();
     const stickToBottom = forceScrollToBottom || isNearBottom();
     const items = channelMessages.get(activeChannelId) || [];
     const typingEntries = [];
@@ -7946,6 +8008,7 @@
     activeSessionId = null;
     rememberOpenConversation({ channelId: channel.id });
     closeMentionAutocomplete();
+    closeSendMenu();
     if (unreadConversations.delete(UNREAD_CHANNEL_PREFIX + channel.id)) refreshUnreadTitle();
     renderSidebar();
     input.disabled = false;
@@ -7985,6 +8048,7 @@
     if (activeSessionId !== null) rememberOpenConversation({ colleagueId: colleague.id, sessionId: activeSessionId });
     activeChannelId = null;
     closeMentionAutocomplete();
+    closeSendMenu();
     if (unreadConversations.delete(activeConvKey())) refreshUnreadTitle();
     renderSidebar();
     const canReply = !isSubagentThread(colleague.id);
@@ -8550,7 +8614,7 @@
     }
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
-      if (event.altKey && !queueButtonEl.hidden) form.requestSubmit(queueButtonEl);
+      if (event.altKey && !sendMenuButtonEl.hidden) form.requestSubmit(queueButtonEl);
       else form.requestSubmit();
     }
   });
@@ -8562,6 +8626,10 @@
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     closeMentionAutocomplete();
+    if (!sendMenuEl.hidden) {
+      closeSendMenu();
+      input.focus();
+    }
     const text2 = input.value.trim();
     if (!text2 && !pendingAttachment) return;
     if (activeChannelId) {
@@ -8585,7 +8653,7 @@
     if (!history.has(key)) history.set(key, []);
     const attachments = pendingAttachment ? [pendingAttachment] : [];
     const typing = isTyping(key);
-    const kind = typing && event.submitter === queueButtonEl ? "queue" : "send";
+    const kind = pickSendKind({ typing, requested: event.submitter?.dataset.kind });
     const clientId = newMessageId();
     history.get(key).push({ role: "you", text: text2, attachments, createdAt: (/* @__PURE__ */ new Date()).toISOString(), pending: typing, clientId, kind });
     renderMessages({ forceScrollToBottom: true });

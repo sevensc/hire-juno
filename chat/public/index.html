@@ -191,10 +191,19 @@ try {
       </button>
       <input id="composer-file" type="file" accept="image/png,image/jpeg,image/gif,image/webp" hidden />
       <textarea id="composer-input" rows="1" autocomplete="off" placeholder="Message…" disabled></textarea>
-      <button type="submit" disabled>Send</button>
-      <!-- Only while the colleague's turn runs (app.js, updateQueueButton):
-           sends the message as a turn of its own after hers ends. -->
-      <button id="queue-button" type="submit" class="secondary-button" hidden aria-keyshortcuts="Alt+Enter" title="Answered after the current turn ends (Alt+Enter)">Queue message</button>
+      <!-- Split button: Send, plus (only while the colleague's turn runs,
+           app.js updateSendMenu) an arrow opening a small menu of ways to
+           send. Choosing an entry sends right away; nothing is remembered. -->
+      <div id="send-split">
+        <button id="send-button" type="submit" disabled>Send</button>
+        <button id="send-menu-button" type="button" hidden aria-haspopup="menu" aria-expanded="false" aria-controls="send-menu" aria-label="More ways to send">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 15 12 9 18 15"/></svg>
+        </button>
+      </div>
+      <div id="send-menu" role="menu" aria-label="More ways to send" hidden>
+        <button type="submit" role="menuitem" tabindex="-1" data-kind="send">Send</button>
+        <button id="queue-button" type="submit" role="menuitem" tabindex="-1" data-kind="queue" aria-keyshortcuts="Alt+Enter" title="Answered after the current turn ends">Queue message <kbd>Alt+Enter</kbd></button>
+      </div>
     </form>
   </main>
   <!-- Mobile only: a persistent bottom tab
