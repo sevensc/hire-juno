@@ -34,6 +34,13 @@ export class WaitingMessages {
     return (this._entries.get(key) || []).map((e) => ({ ...e }));
   }
 
+  // How many messages wait, over all conversations.
+  count() {
+    let n = 0;
+    for (const entries of this._entries.values()) n += entries.length;
+    return n;
+  }
+
   // The waiting entry sent under this uuid, or undefined. The live entry:
   // its `id` follows the row when it is moved behind a reply.
   find(key, uuid) {
