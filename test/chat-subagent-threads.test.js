@@ -138,3 +138,33 @@ test('a SubagentHandback call is shown as a tool line and as a message at once',
     ['subagent_message', 'The real report'],
   ]);
 });
+
+test('through the adapter: a later SendMessage to a launched sub-agent becomes subagent_sent for its window', () => {
+  const adapter = Object.create(ClaudeAdapter.prototype);
+  adapter._openSubagents = new Set();
+  adapter._subagents = new SubagentTracker();
+  adapter._textBlocks = { addText() {} };
+  adapter._approvals = new Map();
+  const updates = [];
+  adapter.onUpdate = (u) => updates.push(u);
+  // her Agent call returns the launch notice with the agent id
+  adapter._handleMessage({
+    type: 'user',
+    parent_tool_use_id: null,
+    message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_A', content: [{ type: 'text', text: 'launched' }] }] },
+    tool_use_result: { isAsync: true, status: 'async_launched', agentId: 'agent42' },
+  });
+  // later she sends it a message, and sends one to a colleague
+  adapter._handleMessage({
+    type: 'assistant',
+    parent_tool_use_id: null,
+    message: {
+      content: [
+        { type: 'tool_use', id: 's1', name: 'SendMessage', input: { to: 'agent42', message: 'Please go on.' } },
+        { type: 'tool_use', id: 's2', name: 'SendMessage', input: { to: 'romy', message: 'unrelated' } },
+      ],
+    },
+  });
+  const sent = updates.filter((u) => u.type === 'subagent_sent');
+  assert.deepEqual(sent, [{ type: 'subagent_sent', id: 'toolu_A', text: 'Please go on.' }]);
+});

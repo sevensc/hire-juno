@@ -7458,6 +7458,11 @@
         update.type = "tool_use";
       } else if (update.type === "subagent_delta") {
         update.type = "delta";
+      } else if (update.type === "subagent_sent") {
+        history.get(key) || history.set(key, []);
+        history.get(key).push({ role: "you", text: update.text, createdAt: (/* @__PURE__ */ new Date()).toISOString() });
+        if (key === activeConvKey()) renderMessages();
+        return;
       } else if (update.type === "subagent_message") {
         history.get(key) || history.set(key, []);
         history.get(key).push({
