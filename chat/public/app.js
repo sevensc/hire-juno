@@ -7011,7 +7011,7 @@
     if (notify2) socket.send(JSON.stringify({ type: "close_subagent", id: subagentId }));
     if (activeColleagueId === panel.syntheticId) {
       const owner = colleaguesById.get(ownerColleagueId);
-      if (owner) selectColleague(owner);
+      if (owner) selectColleague(owner, panel.sessionId || lastSessionByColleague.get(owner.id) || DEFAULT_SESSION_ID);
     }
     renderSidebar();
   }
@@ -7031,6 +7031,7 @@
         knownColleagueId: colleaguesById.has(thread.subagentType) ? thread.subagentType : null,
         subagentType: thread.subagentType,
         taskDescription: thread.description || void 0,
+        sessionId: thread.sessionId || DEFAULT_SESSION_ID,
         closed: thread.status === "done"
       };
       panels.set(thread.id, panel);
@@ -7324,6 +7325,9 @@
           knownColleagueId: colleaguesById.has(update.subagentType) ? update.subagentType : null,
           subagentType: update.subagentType || "subagent",
           taskDescription: update.taskDescription,
+          // The conversation of the owner it was started in: closing the window
+          // goes back there, not to her main conversation.
+          sessionId: update.sessionId || DEFAULT_SESSION_ID,
           closed: false
         };
         subagentPanels.get(ownerColleagueId).set(update.id, panel2);
