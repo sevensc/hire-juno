@@ -5641,6 +5641,25 @@
     return null;
   }
 
+  // chat/src/limit-notice.js
+  function formatTime(ms, now, locale) {
+    const date = new Date(ms);
+    const time = date.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" });
+    if (date.toDateString() === new Date(now).toDateString()) return time;
+    return `${date.toLocaleDateString(locale, { weekday: "short" })} ${time}`;
+  }
+  function limitNoticeText(update, { now = Date.now(), locale } = {}) {
+    if (update.status === "allowed_warning") {
+      const util = update.utilization;
+      const percent = typeof util === "number" ? Math.round(util <= 1 ? util * 100 : util) : null;
+      return { line: null, warning: percent === null ? "Usage limit close" : `Usage at ${percent} %` };
+    }
+    let line = "Usage limit reached.";
+    if (typeof update.resetsAt === "number") line += ` Resets at ${formatTime(update.resetsAt, now, locale)}.`;
+    else if (update.resetText) line += ` ${update.resetText.replace(/^resets\b/i, "Resets").replace(/\.?$/, ".")}`;
+    return { line, warning: null };
+  }
+
   // chat/src/theme.js
   var THEME_STORAGE_KEY = "hire-juno-chat:theme";
   var THEME_CHOICES = ["system", "light", "dark"];
@@ -5800,6 +5819,7 @@
     document.title = unreadConversations.size > 0 ? `(${unreadConversations.size}) ${BASE_TITLE}` : BASE_TITLE;
   }
   var channelsById = /* @__PURE__ */ new Map();
+  var limitWarnings = /* @__PURE__ */ new Map();
   var channelMessages = /* @__PURE__ */ new Map();
   var channelTyping = /* @__PURE__ */ new Map();
   var channelStreaming = /* @__PURE__ */ new Map();
@@ -6305,6 +6325,12 @@
         const span = document.createElement("span");
         span.className = "pane-header__entry";
         span.appendChild(document.createTextNode(line));
+        entries.appendChild(span);
+      }
+      if (limitWarnings.has(key)) {
+        const span = document.createElement("span");
+        span.className = "pane-header__entry";
+        span.textContent = limitWarnings.get(key).text;
         entries.appendChild(span);
       }
       paneHeaderEl.classList.toggle("pane-header--auto-mode", autoModeKeys.has(key));
@@ -7536,8 +7562,25 @@
         for (const waiting of history.get(key)) if (waiting.kind !== "queue") delete waiting.pending;
         break;
       }
+      case "limit_notice": {
+        const { line, warning } = limitNoticeText(update);
+        if (warning) {
+          limitWarnings.set(key, { text: warning, fresh: true });
+          if (key === activeConvKey()) renderPaneHeader();
+        } else {
+          history.set(key, (history.get(key) || []).filter((m3) => !m3.limitNotice));
+          history.get(key).push({ role: "system", text: line, createdAt: (/* @__PURE__ */ new Date()).toISOString(), limitNotice: true });
+        }
+        break;
+      }
       case "message": {
         streaming.delete(key);
+        if (update.role === "colleague") {
+          const warned = limitWarnings.get(key);
+          if (warned?.fresh) warned.fresh = false;
+          else limitWarnings.delete(key);
+          history.set(key, (history.get(key) || []).filter((m3) => !m3.limitNotice));
+        }
         pendingTrail.delete(key);
         thinkingStreaming.delete(key);
         renderSidebar();

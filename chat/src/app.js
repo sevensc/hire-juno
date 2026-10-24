@@ -15,6 +15,7 @@ import { html } from 'htm/preact';
 
 import { renderMarkdown } from './markdown.js';
 import { pickConversationToRestore, recallOpenConversation, rememberOpenConversation } from './open-conversation.js';
+import { limitNoticeText } from './limit-notice.js';
 import { applyTheme, readThemePreference, writeThemePreference } from './theme.js';
 
 const paneEl = document.getElementById('pane');
@@ -238,6 +239,9 @@ function refreshUnreadTitle() {
   document.title = unreadConversations.size > 0 ? `(${unreadConversations.size}) ${BASE_TITLE}` : BASE_TITLE;
 }
 const channelsById = new Map(); // channelId -> {id, name, memberIds}
+// A quiet 'Usage at 90 %' in the pane header, per conversation key; gone one
+// finished turn after it arrived (see the 'limit_notice' case).
+const limitWarnings = new Map();
 const channelMessages = new Map(); // channelId -> [{senderId, text, kind?}] — senderId is 'you', 'system', or a colleague id
 // Live, in-progress state for channel-triggered turns — the counterpart
 // to `streaming`/`thinkingStreaming`/`pendingPermission` below, but
@@ -1007,6 +1011,12 @@ function renderPaneHeader() {
       const span = document.createElement('span');
       span.className = 'pane-header__entry';
       span.appendChild(document.createTextNode(line));
+      entries.appendChild(span);
+    }
+    if (limitWarnings.has(key)) {
+      const span = document.createElement('span');
+      span.className = 'pane-header__entry';
+      span.textContent = limitWarnings.get(key).text;
       entries.appendChild(span);
     }
     paneHeaderEl.classList.toggle('pane-header--auto-mode', autoModeKeys.has(key));
@@ -2811,8 +2821,29 @@ const handleSocketMessage = (event) => {
       for (const waiting of history.get(key)) if (waiting.kind !== 'queue') delete waiting.pending;
       break;
     }
+    case 'limit_notice': {
+      // Shown in the conversation it hit, until the next finished turn
+      // ('message' below) takes it away again; not stored.
+      const { line, warning } = limitNoticeText(update);
+      if (warning) {
+        limitWarnings.set(key, { text: warning, fresh: true });
+        if (key === activeConvKey()) renderPaneHeader();
+      } else {
+        history.set(key, (history.get(key) || []).filter((m) => !m.limitNotice));
+        history.get(key).push({ role: 'system', text: line, createdAt: new Date().toISOString(), limitNotice: true });
+      }
+      break;
+    }
     case 'message': {
       streaming.delete(key);
+      if (update.role === 'colleague') {
+        // A warning comes in during a turn that then succeeds: it lasts through
+        // that turn's end and goes with the next one.
+        const warned = limitWarnings.get(key);
+        if (warned?.fresh) warned.fresh = false;
+        else limitWarnings.delete(key);
+        history.set(key, (history.get(key) || []).filter((m) => !m.limitNotice));
+      }
       // The trail (thinking + tool calls) now comes straight from the
       // server (see index.js's own broadcast for 'message') instead of
       // being rebuilt from whatever tool_use/thinking_delta events this
