@@ -10,7 +10,7 @@ const BROWSERS = [
   ['Edge', /\b(?:Edg|EdgA|EdgiOS)\/(\d+)/],
   ['Opera', /\bOPR\/(\d+)/],
   ['Firefox', /\b(?:Firefox|FxiOS)\/(\d+)/],
-  ['Chrome', /\b(?:Chrome|CriOS)\/(\d+)/],
+  ['Chrome', /(?:Chrome|CriOS)\/(\d+)/],
   ['Safari', /\bVersion\/(\d+)[^]*\bSafari\//],
 ];
 
