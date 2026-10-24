@@ -20,6 +20,13 @@
 //     this, a server restart drops conversation context even though the
 //     chat transcript itself is still sitting in `messages`.
 //   adapter.sendMessage(text, attachments): Promise<void>
+//     Claude adapter only, optional third argument `{uuid, priority}`
+//     (priority 'later': a turn of its own after the running one), plus
+//     `canCancel` and `cancel(uuid): Promise<boolean>` to take a message
+//     back that has not been read yet. An adapter without them is simply
+//     not offered a "Withdraw" button.
+//   adapter.busy: boolean                           — a turn is in flight (read by the
+//     workforce switch, which keeps the old server alive until all are idle)
 //   adapter.close()
 //
 // `onUpdate`/`onPermissionRequest` are adapter-level properties the
@@ -49,6 +56,10 @@
 //   { type: 'subagent_start', id, subagentType, taskDescription }
 //   { type: 'subagent_delta', id, text }
 //   { type: 'subagent_tool_use', id, name, input }
+//   { type: 'subagent_message', id, text }          — a finished text block of
+//     the sub-agent between its tool calls (it streams no partial text)
+//   { type: 'subagent_sent', id, text }              — a message the colleague sent that sub-agent
+//     later with SendMessage (the window shows it next to the brief)
 //   { type: 'session_info', model, effort }         — sent once, as soon as
 //     the backend's session actually starts (the model/effort a colleague
 //     is really running on can differ from what her profile.md asks for —
@@ -93,6 +104,21 @@ import { readProfileBody } from './roster.js';
 // — the two are complementary, not duplicates.
 const CHAT_UI_SKILL = readFileSync(joinPath(dirname(fileURLToPath(import.meta.url)), 'skills', 'chat-ui.md'), 'utf8');
 
+// Chat instructions that only one colleague gets, by her id. The hiring-process
+// marker is for Juno alone: it only means something in the chat interface, so
+// it does not belong in her personnel file, which has to work on any platform.
+const SKILLS_DIR = joinPath(dirname(fileURLToPath(import.meta.url)), 'skills');
+const CHAT_SKILL_FOR_COLLEAGUE = {
+  juno: readFileSync(joinPath(SKILLS_DIR, 'hiring-mode.md'), 'utf8'),
+};
+
+// The system prompt of a colleague in the chat: her personnel file body, the
+// worktree notes, the chat instructions for everyone, and the one only she gets.
+export function buildSystemPrompt({ colleagueId, ownProfile, worktreeNote = '', offer = '' }) {
+  const own = CHAT_SKILL_FOR_COLLEAGUE[colleagueId];
+  return `${ownProfile}${worktreeNote}${offer}\n\n${CHAT_UI_SKILL}${own ? `\n\n${own}` : ''}`;
+}
+
 // Selects by the colleague's own `adapter:` frontmatter field. Note:
 // the installer's own tool list (src/tools.js) doesn't offer "Copilot"
 // as a choice yet, so no profile.md this repo writes today will
@@ -107,11 +133,40 @@ const CHAT_UI_SKILL = readFileSync(joinPath(dirname(fileURLToPath(import.meta.ur
 // for now. Not forwarded to CopilotAdapter: its ACP session's own resume
 // story hasn't been checked against this codebase, and passing an unused
 // option silently would be a claim about behavior nobody verified.
-export function createAdapter(colleague, { targetDir, resume, model }) {
+// `cwd` is where she works; it differs from `targetDir` (where her profile
+// is read from) when the conversation has its own git worktree of the
+// workforce folder's repo. `worktree` ({ path, branch }) is set when the
+// conversation has a worktree of another repo: `cwd` stays `targetDir` then
+// (her project settings and agents are read from there) and the prompt
+// names the worktree.
+// `useWorktree`: set when the conversation can have a worktree (see
+// useWorktree.js); it creates one and returns { ok, created, branch, path } or
+// { ok: false, message }. Claude only; it becomes her `use_worktree` tool.
+export function createAdapter(colleague, { targetDir, cwd = targetDir, resume, model, useWorktree, worktree }) {
   const ownProfile = readProfileBody(targetDir, colleague.id) ?? `You are ${colleague.name}.`;
-  const systemPrompt = `${ownProfile}\n\n${CHAT_UI_SKILL}`;
+  const worktreeNote =
+    worktree && cwd === targetDir
+      ? `\n\nThis conversation has a git worktree of another repository, on its own branch ${worktree.branch}, at ` +
+        `${worktree.path}. For work on that repository, work there by absolute path or cd into it, and do not ` +
+        `change files in the original checkout. Your own working directory stays ${cwd}.`
+      : cwd === targetDir
+      ? ''
+      : `\n\nYour working directory is ${cwd}, a git worktree on its own branch for this conversation. ` +
+        `Work only inside it and do not change files in ${targetDir}.`;
   const wantsCopilot = colleague.adapter.some((a) => a.toLowerCase().includes('copilot'));
+  const offer = useWorktree && !wantsCopilot ? `\n\n${WORKTREE_OFFER}` : '';
+  const systemPrompt = buildSystemPrompt({ colleagueId: colleague.id, ownProfile, worktreeNote, offer });
   return wantsCopilot
-    ? new CopilotAdapter(colleague, { cwd: targetDir })
-    : new ClaudeAdapter(colleague, { systemPrompt, cwd: targetDir, resume, model });
+    ? new CopilotAdapter(colleague, { cwd })
+    : new ClaudeAdapter(colleague, { systemPrompt, cwd, resume, model, useWorktree });
 }
+
+// Only added when the `use_worktree` tool exists for the conversation.
+export const WORKTREE_OFFER =
+  'You have a `use_worktree` tool that moves this conversation into its own git worktree ' +
+  'on a new branch. At the start of a larger task that changes files in a git repository, call it ' +
+  'before you change anything; the person confirms it. Do not call it for small changes. If you work in ' +
+  'a repository other than the one you started in, pass its top folder as `repoPath` (absolute path). ' +
+  'After it ran, work in the worktree by its absolute path for the rest of this turn; for the repository ' +
+  'you started in it is your working directory from the next turn on, for another one you keep working ' +
+  'there by absolute path or cd.';

@@ -5602,10 +5602,28 @@
     tokens[idx].tag = shiftedHeading(tokens[idx]);
     return self.renderToken(tokens, idx, options);
   };
+  var copyButton = '<button type="button" class="code-copy" aria-label="Copy code">Copy</button>';
+  for (const rule of ["fence", "code_block"]) {
+    const original = md.renderer.rules[rule];
+    md.renderer.rules[rule] = (...args) => `<div class="code-block">${copyButton}${original(...args)}</div>`;
+  }
   md.renderer.rules.table_open = () => '<div class="table-scroll"><table>\n';
   md.renderer.rules.table_close = () => "</table></div>\n";
   function renderMarkdown(text2) {
     return md.render(text2).replace(/>\n/g, ">");
+  }
+
+  // chat/src/send-kind.js
+  function pickSendKind({ typing, requested }) {
+    return typing && requested === "queue" ? "queue" : "send";
+  }
+  function nextMenuIndex(current, key, count) {
+    if (count <= 0) return null;
+    if (key === "ArrowDown") return (current + 1) % count;
+    if (key === "ArrowUp") return (current - 1 + count) % count;
+    if (key === "Home") return 0;
+    if (key === "End") return count - 1;
+    return null;
   }
 
   // chat/src/open-conversation.js
@@ -5636,6 +5654,58 @@
     return null;
   }
 
+  // chat/src/limit-notice.js
+  function formatTime(ms, now, locale) {
+    const date = new Date(ms);
+    const time = date.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" });
+    if (date.toDateString() === new Date(now).toDateString()) return time;
+    return `${date.toLocaleDateString(locale, { weekday: "short" })} ${time}`;
+  }
+  function limitNoticeText(update, { now = Date.now(), locale } = {}) {
+    if (update.status === "allowed_warning") {
+      const util = update.utilization;
+      const percent = typeof util === "number" ? Math.round(util <= 1 ? util * 100 : util) : null;
+      return { line: null, warning: percent === null ? "Usage limit close" : `Usage at ${percent} %` };
+    }
+    let line = "Usage limit reached.";
+    if (typeof update.resetsAt === "number") line += ` Resets at ${formatTime(update.resetsAt, now, locale)}.`;
+    else if (update.resetText) line += ` ${update.resetText.replace(/^resets\b/i, "Resets").replace(/\.?$/, ".")}`;
+    return { line, warning: null };
+  }
+
+  // chat/src/theme.js
+  var THEME_STORAGE_KEY = "hire-juno-chat:theme";
+  var THEME_CHOICES = ["system", "light", "dark"];
+  function normalizeThemePreference(value) {
+    return THEME_CHOICES.includes(value) ? value : "system";
+  }
+  function readThemePreference(storage = globalThis.localStorage) {
+    try {
+      return normalizeThemePreference(storage.getItem(THEME_STORAGE_KEY));
+    } catch {
+      return "system";
+    }
+  }
+  function writeThemePreference(value, storage = globalThis.localStorage) {
+    const choice = normalizeThemePreference(value);
+    try {
+      if (choice === "system") storage.removeItem(THEME_STORAGE_KEY);
+      else storage.setItem(THEME_STORAGE_KEY, choice);
+    } catch {
+    }
+    return choice;
+  }
+  function applyTheme(value, doc = globalThis.document) {
+    const choice = normalizeThemePreference(value);
+    const root = doc?.documentElement;
+    if (!root) return choice;
+    if (choice === "system") delete root.dataset.theme;
+    else root.dataset.theme = choice;
+    const meta = doc.querySelector?.('meta[name="color-scheme"]');
+    if (meta) meta.setAttribute("content", choice === "system" ? "light dark" : choice);
+    return choice;
+  }
+
   // chat/src/app.js
   var paneEl = document.getElementById("pane");
   var paneHeaderEl = document.getElementById("pane-header");
@@ -5651,7 +5721,7 @@
   var settingsCloseEl = document.getElementById("settings-close");
   var usageSummaryEl = document.getElementById("usage-summary");
   var usageTableEl = document.getElementById("usage-table");
-  var autoModeListEl = document.getElementById("auto-mode-list");
+  var permissionsListEl = document.getElementById("permissions-list");
   var workforceSwitcherEl = document.getElementById("workforce-switcher");
   var workforceMenuEl = document.getElementById("workforce-menu");
   var workforceListEl = document.getElementById("workforce-list");
@@ -5659,17 +5729,31 @@
   var workforceAddInputEl = document.getElementById("workforce-add-input");
   var workforceErrorEl = document.getElementById("workforce-error");
   var settingsNotifyRowEl = document.getElementById("settings-notify-row");
+  {
+    const themeChoiceEl = document.getElementById("theme-choice");
+    const stored = applyTheme(readThemePreference());
+    const checked = themeChoiceEl.querySelector(`input[value="${stored}"]`);
+    if (checked) checked.checked = true;
+    themeChoiceEl.addEventListener("change", (event) => {
+      applyTheme(writeThemePreference(event.target.value));
+    });
+  }
   var usageLimitsEl = document.getElementById("usage-limits");
   var sidebarSearchInputEl = document.getElementById("sidebar-search-input");
   var convSettingsBackdropEl = document.getElementById("conv-settings-backdrop");
   var convSettingsModalEl = document.getElementById("conv-settings-modal");
   var convSettingsTitleEl = document.getElementById("conv-settings-modal__title");
   var convSettingsCloseEl = document.getElementById("conv-settings-close");
-  var convSettingsAutoModeEl = document.getElementById("conv-settings-auto-mode");
+  var convSettingsPermissionsEl = document.getElementById("conv-settings-permissions");
   var convSettingsNewSessionSectionEl = document.getElementById("conv-settings-new-session-section");
   var convSettingsNewSessionEl = document.getElementById("conv-settings-new-session");
   var convSettingsModelSectionEl = document.getElementById("conv-settings-model-section");
   var convSettingsModelEl = document.getElementById("conv-settings-model");
+  var convSettingsWorktreeSectionEl = document.getElementById("conv-settings-worktree-section");
+  var convSettingsWorktreeEl = document.getElementById("conv-settings-worktree");
+  var convSettingsTerminalSectionEl = document.getElementById("conv-settings-terminal-section");
+  var convSettingsTerminalEl = document.getElementById("conv-settings-terminal");
+  var handoverNoticeEl = document.getElementById("handover-notice");
   var convSearchInputEl = document.getElementById("conv-search-input");
   var convSearchResultsEl = document.getElementById("conv-search-results");
   var convResetContextEl = document.getElementById("conv-reset-context");
@@ -5679,7 +5763,10 @@
   var input = document.getElementById("composer-input");
   var fileInput = document.getElementById("composer-file");
   var attachmentPreviewEl = document.getElementById("attachment-preview");
-  var sendButton = form.querySelector('button[type="submit"]');
+  var sendButton = document.getElementById("send-button");
+  var queueButtonEl = document.getElementById("queue-button");
+  var sendMenuButtonEl = document.getElementById("send-menu-button");
+  var sendMenuEl = document.getElementById("send-menu");
   var attachButtonEl = document.getElementById("attach-button");
   var imageLightboxEl = document.getElementById("image-lightbox");
   var imageLightboxImgEl = document.getElementById("image-lightbox-img");
@@ -5727,7 +5814,7 @@
     ];
   }
   var showSessionForm = /* @__PURE__ */ new Set();
-  var autoModeKeys = /* @__PURE__ */ new Set();
+  var permissionStates = /* @__PURE__ */ new Map();
   var unreadConversations = /* @__PURE__ */ new Set();
   var UNREAD_CHANNEL_PREFIX = "channel:";
   function channelConvKey(channelId) {
@@ -5750,6 +5837,7 @@
     document.title = unreadConversations.size > 0 ? `(${unreadConversations.size}) ${BASE_TITLE}` : BASE_TITLE;
   }
   var channelsById = /* @__PURE__ */ new Map();
+  var limitWarnings = /* @__PURE__ */ new Map();
   var channelMessages = /* @__PURE__ */ new Map();
   var channelTyping = /* @__PURE__ */ new Map();
   var channelStreaming = /* @__PURE__ */ new Map();
@@ -5776,6 +5864,7 @@
   function describeConvKey(key) {
     const [colleagueId, sessionId] = key.split("::");
     const name = colleaguesById.get(colleagueId)?.name || colleagueId;
+    if (channelsById.has(sessionId)) return `${name} in #${channelsById.get(sessionId).name}`;
     if (sessionId === DEFAULT_SESSION_ID) return name;
     const session = (colleagueSessions.get(colleagueId) || []).find((s2) => s2.id === sessionId);
     return `${name} \u2014 ${session?.title || sessionId}`;
@@ -5790,20 +5879,25 @@
     if (typeof stats.costUsd === "number") parts.push(formatCost(stats.costUsd));
     return parts.length ? parts.join(" \xB7 ") : null;
   }
-  function toggleAutoMode() {
-    const key = activeConvKey();
-    const enabled = !autoModeKeys.has(key);
-    if (enabled) autoModeKeys.add(key);
-    else autoModeKeys.delete(key);
-    socket.send(JSON.stringify({ type: "set_auto_mode", colleagueId: activeColleagueId, sessionId: activeSessionId, enabled }));
-    renderPaneHeader();
+  function allowAllOn(key) {
+    return Boolean(permissionStates.get(key)?.allowAll);
   }
-  function turnOnAutoMode() {
-    const key = activeConvKey();
-    if (autoModeKeys.has(key)) return;
-    autoModeKeys.add(key);
-    socket.send(JSON.stringify({ type: "set_auto_mode", colleagueId: activeColleagueId, sessionId: activeSessionId, enabled: true }));
-    renderPaneHeader();
+  function alwaysAllowedFor(key) {
+    return [...permissionStates.get(key)?.tools || []];
+  }
+  function applyPermissionState({ key, allowAll, tools }) {
+    if (!allowAll && !tools.length) permissionStates.delete(key);
+    else permissionStates.set(key, { allowAll, tools: new Set(tools) });
+  }
+  function permissionTarget(key) {
+    const [colleagueId, rest] = key.split("::");
+    return channelsById.has(rest) ? { colleagueId, channelId: rest } : { colleagueId, sessionId: rest };
+  }
+  function setAllowAll(key, enabled) {
+    socket.send(JSON.stringify({ type: "set_allow_all", ...permissionTarget(key), enabled }));
+  }
+  function setAlwaysAllow(key, tool, enabled) {
+    socket.send(JSON.stringify({ type: "set_always_allow", ...permissionTarget(key), tool, enabled }));
   }
   function resetContext() {
     if (activeChannelId) {
@@ -5812,48 +5906,62 @@
     }
     if (activeColleagueId && !isSubagentThread(activeColleagueId)) {
       socket.send(JSON.stringify({ type: "reset_context", colleagueId: activeColleagueId, sessionId: activeSessionId }));
-      removeAllSubagentPanels(activeColleagueId);
     }
   }
-  var alwaysAllowedTools = /* @__PURE__ */ new Map();
-  function isAlwaysAllowed(key, toolName) {
-    const allowed = alwaysAllowedTools.get(key);
-    return Boolean(allowed && (allowed.has("*") || allowed.has(toolName)));
-  }
-  function rememberAlwaysAllowed(key, toolName) {
-    if (!alwaysAllowedTools.has(key)) alwaysAllowedTools.set(key, /* @__PURE__ */ new Set());
-    alwaysAllowedTools.get(key).add(toolName);
-  }
-  function convSettingsAutoModeRowEl(colleague, checked, onChange) {
+  function convSettingsPermissionsBlock(key, colleague) {
+    const block2 = document.createElement("div");
+    block2.className = "permissions-block";
     const row = document.createElement("label");
     row.className = "auto-mode-toggle";
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
-    checkbox.checked = checked;
-    checkbox.addEventListener("change", () => onChange(checkbox.checked));
+    checkbox.checked = allowAllOn(key);
+    checkbox.addEventListener("change", () => setAllowAll(key, checkbox.checked));
     const nameSpan = document.createElement("span");
-    nameSpan.textContent = colleague ? ` ${colleague.name} \u2014 auto mode (allow all tools)` : " Auto mode (allow all tools)";
+    nameSpan.textContent = colleague ? ` ${colleague.name} \u2014 Allow all tools` : " Allow all tools";
     row.append(checkbox, nameSpan);
-    return row;
+    block2.appendChild(row);
+    const note = document.createElement("p");
+    note.className = "permissions-note";
+    note.textContent = "Edits files, runs commands and uses the web without asking.";
+    block2.appendChild(note);
+    const tools = alwaysAllowedFor(key);
+    const list2 = document.createElement("ul");
+    list2.className = "settings-list";
+    list2.setAttribute("aria-label", colleague ? `Always allowed for ${colleague.name}` : "Always allowed");
+    if (!tools.length) {
+      const li = document.createElement("li");
+      li.className = "empty-note";
+      li.textContent = 'No tool is always allowed. Use "Always allow" on a request to add one.';
+      list2.appendChild(li);
+    }
+    for (const tool of tools) {
+      const li = document.createElement("li");
+      const label = document.createElement("span");
+      label.className = "settings-list__label";
+      label.textContent = `Always allow ${tool}`;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = "Revoke";
+      button.setAttribute("aria-label", `Revoke always allow ${tool}`);
+      button.addEventListener("click", () => setAlwaysAllow(key, tool, false));
+      li.append(label, button);
+      list2.appendChild(li);
+    }
+    block2.appendChild(list2);
+    return block2;
   }
-  function renderConvSettingsAutoMode() {
-    convSettingsAutoModeEl.innerHTML = "";
+  function renderConvSettingsPermissions() {
+    convSettingsPermissionsEl.innerHTML = "";
     if (activeColleagueId && !isSubagentThread(activeColleagueId)) {
-      const key = activeConvKey();
-      convSettingsAutoModeEl.appendChild(
-        convSettingsAutoModeRowEl(null, autoModeKeys.has(key), () => toggleAutoMode())
-      );
+      convSettingsPermissionsEl.appendChild(convSettingsPermissionsBlock(activeConvKey(), null));
       return;
     }
     if (activeChannelId) {
       const channel = channelsById.get(activeChannelId);
       for (const id of channel?.memberIds || []) {
-        const autopilotKey = channelKey(id, activeChannelId);
-        convSettingsAutoModeEl.appendChild(
-          convSettingsAutoModeRowEl(colleaguesById.get(id), Boolean(alwaysAllowedTools.get(autopilotKey)?.has("*")), (checked) => {
-            if (checked) rememberAlwaysAllowed(autopilotKey, "*");
-            else alwaysAllowedTools.delete(autopilotKey);
-          })
+        convSettingsPermissionsEl.appendChild(
+          convSettingsPermissionsBlock(channelKey(id, activeChannelId), colleaguesById.get(id))
         );
       }
     }
@@ -6129,8 +6237,10 @@
     } else {
       convSettingsTitleEl.textContent = `${colleaguesById.get(activeColleagueId)?.name || activeColleagueId} settings`;
     }
-    renderConvSettingsAutoMode();
+    renderConvSettingsPermissions();
     renderConvSettingsNewSession();
+    renderConvSettingsWorktree();
+    renderConvSettingsTerminal();
     disarmClearChat();
     openDialog(convSettingsBackdropEl, convSettingsModalEl);
     renderConvSettingsModel();
@@ -6143,6 +6253,254 @@
   convSettingsBackdropEl.addEventListener("click", (event) => {
     if (event.target === convSettingsBackdropEl) closeConvSettingsModal();
   });
+  var worktreeInfo = /* @__PURE__ */ new Map();
+  var worktreeInfoLoading = /* @__PURE__ */ new Set();
+  async function loadWorktreeInfo(colleagueId, sessionId, { force = false } = {}) {
+    const key = convKey(colleagueId, sessionId);
+    if (worktreeInfoLoading.has(key) || worktreeInfo.has(key) && !force) return;
+    worktreeInfoLoading.add(key);
+    try {
+      const res = await fetch(
+        `api/worktree?colleagueId=${encodeURIComponent(colleagueId)}&sessionId=${encodeURIComponent(sessionId)}`
+      );
+      worktreeInfo.set(key, await res.json());
+    } catch {
+      worktreeInfo.set(key, { available: false, worktree: null });
+    } finally {
+      worktreeInfoLoading.delete(key);
+    }
+    if (key === activeConvKey()) {
+      renderPaneHeader();
+      if (!convSettingsBackdropEl.hidden) renderConvSettingsWorktree();
+    }
+  }
+  var worktreeForm = null;
+  async function renderConvSettingsWorktree() {
+    convSettingsWorktreeEl.innerHTML = "";
+    worktreeForm = null;
+    if (!activeColleagueId || isSubagentThread(activeColleagueId)) {
+      convSettingsWorktreeSectionEl.hidden = true;
+      return;
+    }
+    const colleagueId = activeColleagueId;
+    const sessionId = activeSessionId;
+    const key = convKey(colleagueId, sessionId);
+    if (!worktreeInfo.has(key)) {
+      await loadWorktreeInfo(colleagueId, sessionId);
+      return;
+    }
+    const info = worktreeInfo.get(key);
+    if (!info.available) {
+      convSettingsWorktreeSectionEl.hidden = true;
+      return;
+    }
+    convSettingsWorktreeSectionEl.hidden = false;
+    const hint = document.createElement("p");
+    hint.className = "model-picker__hint";
+    if (info.worktree) {
+      hint.textContent = `Repo: ${info.worktree.repoName || "unknown"}. Branch: ${info.worktree.branch}. Worktree folder: ${info.worktree.path}.`;
+      convSettingsWorktreeEl.append(hint);
+      return;
+    }
+    hint.textContent = "Creates a git worktree and a branch for this conversation. She keeps what she knows and works there from her next message on. There is no way back from here yet. One worktree per conversation. Leave the path empty for the folder this chat was started in; for another repo, enter its absolute path.";
+    const pathInput = document.createElement("input");
+    pathInput.type = "text";
+    pathInput.placeholder = "Repo path (empty: the folder this chat was started in)";
+    pathInput.setAttribute("aria-label", "Repo path");
+    pathInput.spellcheck = false;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = "Work in its own worktree";
+    const error2 = document.createElement("p");
+    error2.className = "model-picker__error";
+    error2.setAttribute("role", "alert");
+    error2.hidden = true;
+    button.addEventListener("click", () => {
+      error2.hidden = true;
+      button.disabled = true;
+      const repoPath = pathInput.value.trim();
+      socket.send(JSON.stringify({ type: "use_worktree", colleagueId, sessionId, ...repoPath ? { repoPath } : {} }));
+    });
+    convSettingsWorktreeEl.append(pathInput, button, hint, error2);
+    worktreeForm = { colleagueId, sessionId, button, error: error2 };
+  }
+  var cliInfo = /* @__PURE__ */ new Map();
+  async function loadCliInfo(colleagueId, sessionId) {
+    const key = convKey(colleagueId, sessionId);
+    try {
+      const res = await fetch(
+        `api/cli-session?colleagueId=${encodeURIComponent(colleagueId)}&sessionId=${encodeURIComponent(sessionId)}`
+      );
+      cliInfo.set(key, await res.json());
+    } catch {
+      cliInfo.set(key, { available: false, handedOver: false });
+    }
+    if (key === activeConvKey()) {
+      renderHandoverNotice();
+      if (!convSettingsBackdropEl.hidden) renderConvSettingsTerminal({ reload: false });
+    }
+  }
+  function renderHandoverNotice() {
+    handoverNoticeEl.innerHTML = "";
+    const colleagueId = activeColleagueId;
+    const sessionId = activeSessionId;
+    const info = colleagueId && !isSubagentThread(colleagueId) ? cliInfo.get(convKey(colleagueId, sessionId)) : null;
+    handoverNoticeEl.hidden = !info?.handedOver;
+    if (!info?.handedOver) return;
+    const text2 = document.createElement("span");
+    text2.textContent = "Handed over to the terminal";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = "Take back";
+    button.addEventListener("click", () => {
+      socket.send(JSON.stringify({ type: "take_back_terminal", colleagueId, sessionId }));
+    });
+    handoverNoticeEl.append(text2, button);
+  }
+  var terminalForm = null;
+  async function renderConvSettingsTerminal({ reload = true } = {}) {
+    convSettingsTerminalEl.innerHTML = "";
+    terminalForm = null;
+    if (!activeColleagueId || isSubagentThread(activeColleagueId)) {
+      convSettingsTerminalSectionEl.hidden = true;
+      return;
+    }
+    const colleagueId = activeColleagueId;
+    const sessionId = activeSessionId;
+    const key = convKey(colleagueId, sessionId);
+    if (reload) {
+      await loadCliInfo(colleagueId, sessionId);
+      return;
+    }
+    const info = cliInfo.get(key);
+    if (!info) return;
+    convSettingsTerminalSectionEl.hidden = false;
+    const status = document.createElement("p");
+    status.className = "model-picker__hint";
+    status.setAttribute("role", "status");
+    const error2 = document.createElement("p");
+    error2.className = "model-picker__error";
+    error2.setAttribute("role", "alert");
+    error2.hidden = true;
+    const commandEl = document.createElement("code");
+    commandEl.className = "terminal-command";
+    commandEl.hidden = true;
+    terminalForm = { colleagueId, sessionId, status, error: error2, commandEl };
+    const wrap = document.createElement("div");
+    wrap.className = "terminal-menu";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.id = "terminal-menu-button";
+    button.textContent = "Continue in terminal";
+    button.setAttribute("aria-haspopup", "menu");
+    button.setAttribute("aria-expanded", "false");
+    button.setAttribute("aria-controls", "terminal-menu-list");
+    const list2 = document.createElement("ul");
+    list2.id = "terminal-menu-list";
+    list2.className = "terminal-menu__list";
+    list2.setAttribute("role", "menu");
+    list2.setAttribute("aria-labelledby", "terminal-menu-button");
+    list2.hidden = true;
+    const closeMenu = ({ refocus = false } = {}) => {
+      list2.hidden = true;
+      button.setAttribute("aria-expanded", "false");
+      if (refocus) button.focus();
+    };
+    const items = [];
+    const addItem = (label, onChoose) => {
+      const li = document.createElement("li");
+      li.setAttribute("role", "none");
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "terminal-menu__item";
+      item.setAttribute("role", "menuitem");
+      item.tabIndex = -1;
+      item.textContent = label;
+      item.addEventListener("click", () => {
+        closeMenu({ refocus: true });
+        onChoose();
+      });
+      li.appendChild(item);
+      list2.appendChild(li);
+      items.push(item);
+    };
+    const show = (command, message) => {
+      error2.hidden = true;
+      commandEl.textContent = command;
+      commandEl.hidden = false;
+      status.textContent = message;
+    };
+    addItem("Transfer to terminal", async () => {
+      if (isTyping(key)) {
+        error2.textContent = "She is still answering. Hand over once she is done.";
+        error2.hidden = false;
+        return;
+      }
+      const ok = await copyToClipboard(info.resumeCommand);
+      show(info.resumeCommand, `${ok ? "Copied." : "Copy failed, select it by hand."} Run it in a terminal. The chat lets go of the session meanwhile.`);
+      socket.send(JSON.stringify({ type: "handover_terminal", colleagueId, sessionId }));
+    });
+    addItem("Fork into terminal", async () => {
+      const ok = await copyToClipboard(info.forkCommand);
+      show(info.forkCommand, `${ok ? "Copied." : "Copy failed, select it by hand."} The terminal works on a copy; this chat goes on unchanged.`);
+    });
+    const focusItem = (index) => items[(index + items.length) % items.length].focus();
+    const openMenu = (index) => {
+      list2.hidden = false;
+      button.setAttribute("aria-expanded", "true");
+      focusItem(index);
+    };
+    button.addEventListener("click", () => list2.hidden ? openMenu(0) : closeMenu());
+    button.addEventListener("keydown", (event) => {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        openMenu(0);
+      } else if (event.key === "ArrowUp") {
+        event.preventDefault();
+        openMenu(-1);
+      }
+    });
+    list2.addEventListener("keydown", (event) => {
+      const at = items.indexOf(document.activeElement);
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        focusItem(at + 1);
+      } else if (event.key === "ArrowUp") {
+        event.preventDefault();
+        focusItem(at - 1);
+      } else if (event.key === "Home") {
+        event.preventDefault();
+        focusItem(0);
+      } else if (event.key === "End") {
+        event.preventDefault();
+        focusItem(-1);
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        closeMenu({ refocus: true });
+      } else if (event.key === "Tab") closeMenu();
+    });
+    wrap.addEventListener("focusout", (event) => {
+      if (!wrap.contains(event.relatedTarget)) closeMenu();
+    });
+    wrap.append(button, list2);
+    const hint = document.createElement("p");
+    hint.className = "model-picker__hint";
+    if (!info.available) {
+      button.disabled = true;
+      hint.textContent = "Available once she has answered at least once.";
+    } else {
+      hint.textContent = "Copies a command for a terminal on this machine; nothing is opened for you. Transfer: the chat stops using the session until you take it back. Fork: the terminal works on a copy and this chat goes on unchanged.";
+    }
+    convSettingsTerminalEl.append(wrap);
+    if (info.handedOver) {
+      const handed = document.createElement("p");
+      handed.className = "model-picker__hint";
+      handed.textContent = "Handed over to the terminal. Take it back above the message box.";
+      convSettingsTerminalEl.append(handed);
+    }
+    convSettingsTerminalEl.append(hint, commandEl, status, error2);
+  }
   function renderPaneHeader() {
     paneHeaderEl.innerHTML = "";
     let hasContent = false;
@@ -6161,6 +6519,15 @@
         chip.addEventListener("click", openConvSettingsModal);
         entries.appendChild(chip);
       }
+      const info = worktreeInfo.get(key);
+      if (!info) loadWorktreeInfo(activeColleagueId, activeSessionId);
+      if (info?.worktree) {
+        const chip = document.createElement("span");
+        chip.className = "pane-header__branch";
+        chip.textContent = info.worktree.branch;
+        chip.title = info.worktree.repoName ? `Branch of this conversation's own worktree in ${info.worktree.repoName}` : "Branch of this conversation's own worktree";
+        entries.appendChild(chip);
+      }
       const line = statsLine(key);
       if (line) {
         const span = document.createElement("span");
@@ -6168,7 +6535,19 @@
         span.appendChild(document.createTextNode(line));
         entries.appendChild(span);
       }
-      paneHeaderEl.classList.toggle("pane-header--auto-mode", autoModeKeys.has(key));
+      if (limitWarnings.has(key)) {
+        const span = document.createElement("span");
+        span.className = "pane-header__entry";
+        span.textContent = limitWarnings.get(key).text;
+        entries.appendChild(span);
+      }
+      if (allowAllOn(key)) {
+        const span = document.createElement("span");
+        span.className = "pane-header__entry";
+        span.textContent = "All tools allowed";
+        entries.appendChild(span);
+      }
+      paneHeaderEl.classList.toggle("pane-header--auto-mode", allowAllOn(key));
       hasContent = true;
     } else {
       paneHeaderEl.classList.remove("pane-header--auto-mode");
@@ -6286,6 +6665,7 @@
       (entry) => entry.kind === "tool_use" ? { kind: "tool_use", text: toolUseLine(entry.name, entry.input), toolName: entry.name, toolInput: entry.input, approval: entry.approval } : entry
     );
   }
+  var loadedHistory = /* @__PURE__ */ new Set();
   var pendingPermission = /* @__PURE__ */ new Map();
   var HIRING_MODE_START = /^:::mode hiring-process:start\s*$/m;
   var HIRING_MODE_END = /^:::mode hiring-process:end\s*$/m;
@@ -6401,34 +6781,36 @@
     costBig.textContent = formatCost(totalCost);
     usageSummaryEl.append(tokensBig, document.createTextNode(" \xB7 "), costBig);
   }
-  function renderAutoModeList() {
-    autoModeListEl.innerHTML = "";
-    if (autoModeKeys.size === 0) {
+  function renderPermissionsList() {
+    permissionsListEl.innerHTML = "";
+    const rows = [];
+    for (const [key, state] of permissionStates) {
+      if (state.allowAll) rows.push({ key, text: "Allow all tools", off: () => setAllowAll(key, false), action: "Turn off" });
+      for (const tool of state.tools) {
+        rows.push({ key, text: `Always allow ${tool}`, off: () => setAlwaysAllow(key, tool, false), action: "Revoke" });
+      }
+    }
+    if (!rows.length) {
       const li = document.createElement("li");
       li.className = "empty-note";
-      li.textContent = "No one-to-one conversation has auto mode on right now. Channel autopilot is not listed here.";
-      autoModeListEl.appendChild(li);
+      li.textContent = "Nothing is allowed ahead of time. Everything that asks will ask.";
+      permissionsListEl.appendChild(li);
       return;
     }
-    for (const key of autoModeKeys) {
+    for (const { key, text: text2, off, action } of rows) {
       const [colleagueId] = key.split("::");
       const li = document.createElement("li");
       li.appendChild(avatarEl(colleaguesById.get(colleagueId)));
       const label = document.createElement("span");
       label.className = "settings-list__label";
-      label.textContent = describeConvKey(key);
+      label.textContent = `${describeConvKey(key)}: ${text2}`;
       const button = document.createElement("button");
       button.type = "button";
-      button.textContent = "Turn off";
-      button.addEventListener("click", () => {
-        const [colleagueId2, sessionId] = key.split("::");
-        autoModeKeys.delete(key);
-        socket.send(JSON.stringify({ type: "set_auto_mode", colleagueId: colleagueId2, sessionId, enabled: false }));
-        renderAutoModeList();
-        if (key === activeConvKey()) renderPaneHeader();
-      });
+      button.textContent = action;
+      button.setAttribute("aria-label", `${action}: ${describeConvKey(key)}, ${text2}`);
+      button.addEventListener("click", off);
       li.append(label, button);
-      autoModeListEl.appendChild(li);
+      permissionsListEl.appendChild(li);
     }
   }
   function renderSettingsNotifyRow() {
@@ -6545,11 +6927,42 @@
   function refreshSettingsModalIfOpen() {
     if (settingsBackdropEl.hidden) return;
     renderUsageTable();
-    renderAutoModeList();
+    renderPermissionsList();
   }
+  var otherWorkforcesWaiting = /* @__PURE__ */ new Map();
+  var workforceWaitingBadgeEl = document.getElementById("workforce-waiting-badge");
+  async function refreshWorkforceStatus() {
+    try {
+      const [statusRes, listRes] = await Promise.all([fetch("api/workforces-status"), fetch("api/workforces")]);
+      if (!statusRes.ok || !listRes.ok) return;
+      const [status, list2] = await Promise.all([statusRes.json(), listRes.json()]);
+      const current = list2.find((w2) => w2.current)?.path;
+      otherWorkforcesWaiting = new Map(
+        status.filter((w2) => w2.path !== current && w2.waiting > 0).map((w2) => [w2.path, w2.waiting])
+      );
+    } catch {
+      return;
+    }
+    let total = 0;
+    for (const n3 of otherWorkforcesWaiting.values()) total += n3;
+    workforceWaitingBadgeEl.hidden = total === 0;
+    if (total > 0) {
+      const text2 = `${total} ${total === 1 ? "message" : "messages"} waiting in other workforces`;
+      workforceWaitingBadgeEl.title = text2;
+      workforceSwitcherEl.setAttribute("aria-label", `${brandNameEl.textContent}: switch workforce, ${text2}`);
+    } else {
+      workforceSwitcherEl.removeAttribute("aria-label");
+    }
+  }
+  setInterval(() => {
+    if (!document.hidden) refreshWorkforceStatus();
+  }, 5e3);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) refreshWorkforceStatus();
+  });
   async function renderWorkforceList() {
     workforceListEl.innerHTML = "";
-    const res = await fetch("api/workforces");
+    const [res] = await Promise.all([fetch("api/workforces"), refreshWorkforceStatus()]);
     const workforces = await res.json();
     for (const workforce of workforces) {
       const li = document.createElement("li");
@@ -6568,6 +6981,14 @@
         tag.className = "workforce-row__tag";
         tag.textContent = "current";
         nameRow.appendChild(tag);
+      }
+      const waitingCount = otherWorkforcesWaiting.get(workforce.path);
+      if (waitingCount && !workforce.current) {
+        const waiting = document.createElement("span");
+        waiting.className = "workforce-row__waiting";
+        waiting.textContent = String(waitingCount);
+        waiting.title = `${waitingCount} ${waitingCount === 1 ? "message" : "messages"} waiting`;
+        nameRow.appendChild(waiting);
       }
       pick.appendChild(nameRow);
       const path = document.createElement("span");
@@ -6638,7 +7059,7 @@
   }, true);
   function openSettingsModal() {
     renderUsageTable();
-    renderAutoModeList();
+    renderPermissionsList();
     renderSettingsNotifyRow();
     renderUsageLimits();
     brandingLogoPreviewEl.src = "logo.png";
@@ -6804,12 +7225,18 @@
       diffContentEl.appendChild(lineEl);
     }
   }
+  function diffScopeParams() {
+    if (!activeColleagueId || isSubagentThread(activeColleagueId) || !activeSessionId) return "";
+    return `colleagueId=${encodeURIComponent(activeColleagueId)}&sessionId=${encodeURIComponent(activeSessionId)}`;
+  }
+  var diffLoadSeq = 0;
   async function loadDiffContent(path) {
     diffContentEl.textContent = "Loading\u2026";
+    const seq = diffLoadSeq;
     try {
-      const res = await fetch(`api/git-diff?path=${encodeURIComponent(path)}`);
+      const res = await fetch(`api/git-diff?path=${encodeURIComponent(path)}&${diffScopeParams()}`);
       const data = await res.json();
-      if (activeDiffPath !== path) return;
+      if (activeDiffPath !== path || seq !== diffLoadSeq) return;
       renderDiffContent(data.diff);
     } catch {
       if (activeDiffPath === path) diffContentEl.textContent = "Could not load diff.";
@@ -6821,20 +7248,24 @@
     loadDiffContent(path);
   }
   async function loadDiffFiles() {
+    const seq = ++diffLoadSeq;
     diffFileListEl.innerHTML = '<li class="empty-note">Loading\u2026</li>';
     diffContentEl.textContent = "";
     let data;
     try {
-      const res = await fetch("api/git-status");
+      const res = await fetch(`api/git-status?${diffScopeParams()}`);
       data = await res.json();
     } catch {
+      if (seq !== diffLoadSeq) return;
       diffFiles = null;
       renderDiffFileList();
       return;
     }
-    if (diffBackdropEl.hidden) return;
+    if (diffBackdropEl.hidden || seq !== diffLoadSeq) return;
     diffFiles = data.files;
-    diffModalCwdEl.textContent = data.cwd || "";
+    const where = `${data.worktree ? "Worktree" : "Workforce folder"}: ${data.cwd || ""}${data.branch ? ` (${data.branch})` : ""}`;
+    diffModalCwdEl.textContent = where;
+    diffModalCwdEl.title = where;
     if (diffFiles && diffFiles.length > 0) {
       if (!activeDiffPath || !diffFiles.some((f2) => f2.path === activeDiffPath)) activeDiffPath = diffFiles[0].path;
     } else {
@@ -6842,6 +7273,11 @@
     }
     renderDiffFileList();
     if (activeDiffPath) loadDiffContent(activeDiffPath);
+  }
+  function refreshDiffIfOpen() {
+    if (diffBackdropEl.hidden) return;
+    activeDiffPath = null;
+    loadDiffFiles();
   }
   function openDiffModal() {
     openDialog(diffBackdropEl, diffModalEl);
@@ -6887,6 +7323,12 @@
     if (opener?.isConnected) opener.focus?.();
   }
   messagesEl.addEventListener("click", (event) => {
+    const button = event.target.closest?.(".code-copy");
+    if (!button) return;
+    const code2 = button.parentElement?.querySelector("code");
+    if (code2) copyWithFeedback(code2.textContent, button);
+  });
+  messagesEl.addEventListener("click", (event) => {
     if (!event.target.classList.contains("attachment-thumb")) return;
     openImageLightbox(event.target);
   });
@@ -6914,30 +7356,112 @@
       avatarId: known ? known.id : null
     });
   }
-  function removeSubagentPanel(ownerColleagueId, subagentId) {
+  function removeSubagentPanel(ownerColleagueId, subagentId, { notify: notify2 = true } = {}) {
     const panels = subagentPanels.get(ownerColleagueId);
     const panel = panels?.get(subagentId);
     if (!panel) return;
     panels.delete(subagentId);
     colleaguesById.delete(panel.syntheticId);
+    history.delete(panel.syntheticId);
+    loadedHistory.delete(panel.syntheticId);
+    if (notify2) socket.send(JSON.stringify({ type: "close_subagent", id: subagentId }));
     if (activeColleagueId === panel.syntheticId) {
       const owner = colleaguesById.get(ownerColleagueId);
-      if (owner) selectColleague(owner);
+      if (owner) selectColleague(owner, panel.sessionId || lastSessionByColleague.get(owner.id) || DEFAULT_SESSION_ID);
     }
     renderSidebar();
   }
-  function removeAllSubagentPanels(ownerColleagueId) {
-    const panels = subagentPanels.get(ownerColleagueId);
-    if (!panels) return;
-    for (const subagentId of [...panels.keys()]) removeSubagentPanel(ownerColleagueId, subagentId);
+  function restoreSubagentPanels(threads) {
+    for (const thread of threads) {
+      if (!subagentPanels.has(thread.ownerId)) subagentPanels.set(thread.ownerId, /* @__PURE__ */ new Map());
+      const panels = subagentPanels.get(thread.ownerId);
+      const existing = panels.get(thread.id);
+      if (existing) {
+        existing.closed = thread.status === "done";
+        continue;
+      }
+      const panel = {
+        id: thread.id,
+        ownerColleagueId: thread.ownerId,
+        syntheticId: `sub:${thread.id}`,
+        knownColleagueId: colleaguesById.has(thread.subagentType) ? thread.subagentType : null,
+        subagentType: thread.subagentType,
+        taskDescription: thread.description || void 0,
+        sessionId: thread.sessionId || DEFAULT_SESSION_ID,
+        closed: thread.status === "done"
+      };
+      panels.set(thread.id, panel);
+      registerSubagentColleague(panel);
+    }
   }
   var handleSocketMessage = (event) => {
     const update = JSON.parse(event.data);
+    if (update.type === "subagent_removed") {
+      for (const id of update.ids || []) {
+        for (const [ownerId, panels] of subagentPanels) {
+          if (panels.has(id)) removeSubagentPanel(ownerId, id, { notify: false });
+        }
+      }
+      return;
+    }
     if (update.type === "channel_created") {
       channelsById.set(update.channel.id, update.channel);
       channelMessages.set(update.channel.id, []);
       renderSidebar();
       selectChannel(update.channel);
+      return;
+    }
+    if (update.type === "live_state") {
+      for (const turn of update.turns || []) {
+        const key2 = convKey(turn.colleagueId, turn.sessionId);
+        if (turn.thinking) thinkingStreaming.set(key2, turn.thinking);
+        else thinkingStreaming.delete(key2);
+        if (turn.text) streaming.set(key2, turn.text);
+        else streaming.delete(key2);
+        const trail = reconstructTrail(turn.trail);
+        if (trail) pendingTrail.set(key2, trail);
+        else pendingTrail.delete(key2);
+        for (const w2 of turn.waiting || []) markWaiting(key2, w2);
+      }
+      renderSidebar();
+      if (activeConvKey()) renderMessages();
+      return;
+    }
+    if (update.type === "message_waiting") {
+      markWaiting(convKey(update.colleagueId, update.sessionId), update);
+      if (activeConvKey()) renderMessages();
+      return;
+    }
+    if (update.type === "message_read") {
+      const items = history.get(convKey(update.colleagueId, update.sessionId)) || [];
+      const item = items.find((m3) => m3.clientId === update.id);
+      if (item) {
+        delete item.pending;
+        delete item.withdrawing;
+        if (activeConvKey()) renderMessages();
+      }
+      return;
+    }
+    if (update.type === "message_cancelled") {
+      const key2 = convKey(update.colleagueId, update.sessionId);
+      const items = history.get(key2) || [];
+      const i2 = items.findIndex((m3) => m3.clientId === update.id);
+      if (i2 >= 0) {
+        const item = items[i2];
+        if (update.cancelled) {
+          items.splice(i2, 1);
+          if (key2 === activeConvKey() && !input.value && !pendingAttachment) {
+            input.value = item.text || "";
+            autoResizeComposer();
+          }
+        } else if (update.error) {
+          delete item.withdrawing;
+        } else {
+          delete item.pending;
+          delete item.withdrawing;
+        }
+        if (activeConvKey()) renderMessages();
+      }
       return;
     }
     if (update.type === "session_created") {
@@ -6950,12 +7474,47 @@
       if (colleague) selectColleague(colleague, update.session.id);
       return;
     }
-    if (update.type === "auto_mode_changed") {
-      const key2 = convKey(update.colleagueId, update.sessionId);
-      if (update.enabled) autoModeKeys.add(key2);
-      else autoModeKeys.delete(key2);
-      if (key2 === activeConvKey()) renderPaneHeader();
+    if (update.type === "permissions_changed") {
+      applyPermissionState(update);
+      renderPaneHeader();
+      renderConvSettingsPermissions();
       refreshSettingsModalIfOpen();
+      return;
+    }
+    if (update.type === "worktree_changed") {
+      const key2 = convKey(update.colleagueId, update.sessionId);
+      const info = worktreeInfo.get(key2) || { available: true };
+      worktreeInfo.set(key2, { ...info, available: true, worktree: { branch: update.branch, path: update.path, repoName: update.repoName } });
+      if (key2 === activeConvKey()) {
+        renderPaneHeader();
+        refreshDiffIfOpen();
+        if (!convSettingsBackdropEl.hidden) renderConvSettingsWorktree();
+      }
+      return;
+    }
+    if (update.type === "terminal_handover") {
+      const key2 = convKey(update.colleagueId, update.sessionId);
+      cliInfo.set(key2, { ...cliInfo.get(key2) || { available: true }, handedOver: Boolean(update.handedOver) });
+      const form2 = terminalForm;
+      if (update.failed && form2 && form2.colleagueId === update.colleagueId && form2.sessionId === update.sessionId) {
+        form2.commandEl.hidden = true;
+        form2.status.textContent = "";
+        form2.error.textContent = `Not handed over: ${update.message || "failed"} Do not use the copied command.`;
+        form2.error.hidden = false;
+      }
+      if (key2 === activeConvKey()) {
+        renderHandoverNotice();
+        if (!update.failed && !convSettingsBackdropEl.hidden && !update.handedOver) renderConvSettingsTerminal({ reload: false });
+      }
+      return;
+    }
+    if (update.type === "worktree_failed") {
+      const form2 = worktreeForm;
+      if (form2 && form2.colleagueId === update.colleagueId && form2.sessionId === update.sessionId) {
+        form2.button.disabled = false;
+        form2.error.textContent = update.message || "Could not create the worktree.";
+        form2.error.hidden = false;
+      }
       return;
     }
     if (update.type === "model_changed" || update.type === "model_change_failed") {
@@ -6983,6 +7542,7 @@
     if (update.type === "chat_cleared") {
       const key2 = update.channelId ? channelConvKey(update.channelId) : convKey(update.colleagueId, update.sessionId);
       history.set(key2, []);
+      loadedHistory.add(key2);
       if (!update.channelId) {
         const rosterColleague = colleaguesById.get(update.colleagueId);
         if (rosterColleague) rosterColleague.lastMessage = null;
@@ -7148,11 +7708,6 @@
           break;
         }
         case "permission_request":
-          if (isAlwaysAllowed(channelKey(colleagueId2, channelId), update.toolName)) {
-            const via = alwaysAllowedTools.get(channelKey(colleagueId2, channelId))?.has("*") ? "autopilot" : "allow always";
-            socket.send(JSON.stringify({ type: "permission_response", requestId: update.requestId, allow: true, via }));
-            break;
-          }
           channelPendingPermission.set(channelKey(colleagueId2, channelId), { channelId, ...update });
           break;
         default:
@@ -7179,11 +7734,18 @@
           knownColleagueId: colleaguesById.has(update.subagentType) ? update.subagentType : null,
           subagentType: update.subagentType || "subagent",
           taskDescription: update.taskDescription,
+          // The conversation of the owner it was started in: closing the window
+          // goes back there, not to her main conversation.
+          sessionId: update.sessionId || DEFAULT_SESSION_ID,
           closed: false
         };
         subagentPanels.get(ownerColleagueId).set(update.id, panel2);
         registerSubagentColleague(panel2);
-        history.set(panel2.syntheticId, []);
+        history.set(
+          panel2.syntheticId,
+          update.prompt ? [{ role: "you", text: update.prompt, createdAt: (/* @__PURE__ */ new Date()).toISOString() }] : []
+        );
+        loadedHistory.add(panel2.syntheticId);
         renderSidebar();
         return;
       }
@@ -7194,12 +7756,39 @@
         update.type = "tool_use";
       } else if (update.type === "subagent_delta") {
         update.type = "delta";
+      } else if (update.type === "subagent_sent") {
+        history.get(key) || history.set(key, []);
+        history.get(key).push({ role: "you", text: update.text, createdAt: (/* @__PURE__ */ new Date()).toISOString() });
+        if (key === activeConvKey()) renderMessages();
+        return;
+      } else if (update.type === "subagent_message") {
+        history.get(key) || history.set(key, []);
+        history.get(key).push({
+          role: "colleague",
+          text: update.text,
+          createdAt: (/* @__PURE__ */ new Date()).toISOString(),
+          trail: reconstructTrail(update.trail)
+        });
+        streaming.delete(key);
+        pendingTrail.delete(key);
+        if (key === activeConvKey()) renderMessages();
+        return;
       } else if (update.type === "subagent_end") {
         panel.closed = true;
         update.type = "message";
         update.role = "colleague";
         update.text = update.report || "";
         renderSidebar();
+        const shown = history.get(key) || [];
+        const last = shown[shown.length - 1];
+        if (last?.role === "colleague" && last.text === update.text && !update.trail?.length) {
+          streaming.delete(key);
+          pendingTrail.delete(key);
+          thinkingStreaming.delete(key);
+          renderSidebar();
+          if (key === activeConvKey()) renderMessages();
+          return;
+        }
       }
     }
     if (!history.has(key)) history.set(key, []);
@@ -7232,14 +7821,38 @@
       case "tool_done": {
         const entry = (pendingTrail.get(key) || []).find((e2) => e2.id && e2.id === update.id);
         if (entry) entry.approval = update.approval;
+        for (const waiting of history.get(key)) if (waiting.kind !== "queue") delete waiting.pending;
+        break;
+      }
+      case "limit_notice": {
+        const { line, warning } = limitNoticeText(update);
+        if (warning) {
+          limitWarnings.set(key, { text: warning, fresh: true });
+          if (key === activeConvKey()) renderPaneHeader();
+        } else {
+          history.set(key, (history.get(key) || []).filter((m3) => !m3.limitNotice));
+          history.get(key).push({ role: "system", text: line, createdAt: (/* @__PURE__ */ new Date()).toISOString(), limitNotice: true });
+        }
         break;
       }
       case "message": {
         streaming.delete(key);
+        if (update.role === "colleague") {
+          const warned = limitWarnings.get(key);
+          if (warned?.fresh) warned.fresh = false;
+          else limitWarnings.delete(key);
+          history.set(key, (history.get(key) || []).filter((m3) => !m3.limitNotice));
+        }
         pendingTrail.delete(key);
         thinkingStreaming.delete(key);
         renderSidebar();
         const text2 = applyHiringModeMarkers(key, update.text);
+        const stillWaiting = history.get(key).filter((m3) => m3.pending);
+        if (stillWaiting.length) {
+          delete stillWaiting[0].pending;
+          delete stillWaiting[0].withdrawing;
+        }
+        history.set(key, history.get(key).filter((m3) => !stillWaiting.includes(m3)));
         history.get(key).push({
           role: update.role,
           text: text2,
@@ -7254,7 +7867,7 @@
           // doesn't have.
           trail: reconstructTrail(update.trail)
         });
-        settleWaiting(history.get(key));
+        history.get(key).push(...stillWaiting);
         if (sessionId === DEFAULT_SESSION_ID && key === convKey(colleagueId, sessionId)) {
           const rosterColleague = colleaguesById.get(colleagueId);
           if (rosterColleague) rosterColleague.lastMessage = { role: update.role, text: text2 };
@@ -7271,11 +7884,6 @@
         break;
       }
       case "permission_request":
-        if (isAlwaysAllowed(key, update.toolName)) {
-          const via = alwaysAllowedTools.get(key)?.has("*") ? "autopilot" : "allow always";
-          socket.send(JSON.stringify({ type: "permission_response", requestId: update.requestId, allow: true, via }));
-          return;
-        }
         pendingPermission.set(key, update);
         break;
       default:
@@ -7325,18 +7933,26 @@
     }
     socket.send(JSON.stringify({ type: "permission_response", requestId, allow }));
   }
+  var confirmingAllowAll = /* @__PURE__ */ new Set();
   function PermissionCard({ permission, colleagueId, isChannel }) {
     const key = isChannel ? channelKey(colleagueId, permission.channelId) : colleagueId;
+    const confirming = confirmingAllowAll.has(permission.requestId);
+    const setConfirming = (on) => {
+      if (on) confirmingAllowAll.add(permission.requestId);
+      else confirmingAllowAll.delete(permission.requestId);
+      if (isChannel) renderChannelMessages();
+      else renderMessages();
+    };
+    const name = colleaguesById.get(key.split("::")[0])?.name || "She";
+    const where = isChannel ? "this channel" : "this chat";
     const allow = () => respondToPermission(key, permission.requestId, true, isChannel);
     const allowAlways = () => {
-      rememberAlwaysAllowed(key, permission.toolName);
+      setAlwaysAllow(key, permission.toolName, true);
       respondToPermission(key, permission.requestId, true, isChannel);
     };
     const deny = () => respondToPermission(key, permission.requestId, false, isChannel);
-    const autopilot = () => {
-      rememberAlwaysAllowed(key, "*");
-      if (!isChannel) turnOnAutoMode();
-      if (isChannel && permission.channelId === activeChannelId) renderPaneHeader();
+    const allowAllTools = () => {
+      setAllowAll(key, true);
       respondToPermission(key, permission.requestId, true, isChannel);
     };
     return m2`
@@ -7345,10 +7961,18 @@
       ${permission.description ? m2`<p class="permission-card__description">${permission.description}</p>` : null}
       <div class="permission-card__actions">
         <button type="button" onClick=${allow}>Allow</button>
-        <button type="button" class="permission-card__allow-always" onClick=${allowAlways}>Allow always</button>
+        <button type="button" class="permission-card__allow-always" onClick=${allowAlways}
+          title=${`Stops asking for ${permission.toolName} in ${where}. Applies to every ${permission.toolName} call, not just this one.`}>Always allow ${permission.toolName}</button>
         <button type="button" class="permission-card__deny" onClick=${deny}>Deny</button>
-        <button type="button" class="permission-card__autopilot" onClick=${autopilot}>Turn on autopilot</button>
       </div>
+      ${confirming ? m2`<div class="permission-card__confirm" role="group" aria-label="Allow all tools">
+            <p>Allow all tools in ${where}?</p>
+            <p class="permission-card__description">${name} will edit files, run commands and use the web without asking, until you turn this off in Conversation settings.</p>
+            <div class="permission-card__actions">
+              <button type="button" onClick=${allowAllTools}>Allow all tools</button>
+              <button type="button" class="permission-card__deny" onClick=${() => setConfirming(false)}>Cancel</button>
+            </div>
+          </div>` : m2`<button type="button" class="permission-card__link" onClick=${() => setConfirming(true)}>Allow all tools in ${where}…</button>`}
     </div>
   `;
   }
@@ -7397,7 +8021,43 @@
     </div>
   `;
   }
-  function MessageRow({ role, avatarColleague, nameTag, item, toolText, onToggle, onToggleTrailEntry }) {
+  async function copyToClipboard(text2) {
+    if (navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(text2);
+        return true;
+      } catch {
+      }
+    }
+    const previous = document.activeElement;
+    const area = document.createElement("textarea");
+    area.value = text2;
+    area.setAttribute("readonly", "");
+    area.style.cssText = "position:fixed;top:0;left:0;opacity:0;";
+    document.body.appendChild(area);
+    area.select();
+    area.setSelectionRange(0, text2.length);
+    let ok = false;
+    try {
+      ok = document.execCommand("copy");
+    } catch {
+      ok = false;
+    }
+    area.remove();
+    previous?.focus?.();
+    return ok;
+  }
+  async function copyWithFeedback(text2, button) {
+    const label = button.dataset.label || button.textContent;
+    button.dataset.label = label;
+    const ok = await copyToClipboard(text2);
+    button.textContent = ok ? "Copied" : "Copy failed";
+    clearTimeout(Number(button.dataset.timer));
+    button.dataset.timer = String(setTimeout(() => {
+      button.textContent = label;
+    }, 1500));
+  }
+  function MessageRow({ role, avatarColleague, nameTag, item, toolText, onToggle, onToggleTrailEntry, onWithdraw }) {
     const isToolUse = item.toolInput !== void 0;
     const time = formatMessageTime(item.createdAt);
     return m2`
@@ -7415,7 +8075,11 @@
                 ${(item.attachments || []).map(
       (attachment, i2) => m2`<img key=${i2} class="attachment-thumb" src=${attachment.dataUrl} alt=${attachment.name} role="button" tabindex="0" />`
     )}
-                ${item.pending ? m2`<time class="message__time">Waiting, not read yet</time>` : time ? m2`<time class="message__time">${time}</time>` : null}
+                <span class="message__footer">
+                  ${item.text ? m2`<button type="button" class="copy-button" aria-label="Copy message as Markdown" onClick=${(event) => copyWithFeedback(item.text, event.currentTarget)}>Copy</button>` : null}
+                  ${item.pending ? m2`<time class="message__time">${item.kind === "queue" ? "Queued, answered after this turn" : "Waiting, not read yet"}</time>
+                        ${item.canCancel && item.clientId ? m2`<button type="button" class="withdraw-button" disabled=${Boolean(item.withdrawing)} aria-label="Withdraw this message, it has not been read yet" onClick=${onWithdraw}>Withdraw</button>` : null}` : time ? m2`<time class="message__time">${time}</time>` : null}
+                </span>
               </span>
             `}
       </div>
@@ -7477,6 +8141,11 @@
       item.trail[entryIndex].expanded = !item.trail[entryIndex].expanded;
       renderMessages();
     }}
+    onWithdraw=${() => {
+      item.withdrawing = true;
+      renderMessages();
+      socket.send(JSON.stringify({ type: "cancel_message", id: item.clientId, colleagueId: activeColleagueId, sessionId: activeSessionId }));
+    }}
   />`;
     R(
       m2`<${S}>
@@ -7492,7 +8161,8 @@
           />` : null}
       ${permission ? m2`<${PermissionCard} permission=${permission} colleagueId=${key} isChannel=${false} />` : null}
       ${items.map((item, i2) => item.pending ? row(item, i2) : null)}
-      ${!items.length && !thinkingText && !partialText && !permission ? m2`<${EmptyConversation}
+      ${isTyping(key) && !permission ? m2`<div class="typing-indicator" role="status">typing…</div>` : null}
+      ${!items.length && !thinkingText && !partialText && !permission && !liveTrail.length ? m2`<${EmptyConversation}
             text=${`No messages with ${colleaguesById.get(activeColleagueId)?.name || "this colleague"} yet. Write the first one below.`}
           />` : null}
     <//>`,
@@ -7500,10 +8170,62 @@
     );
     refreshHiringModeStyling(key);
     followThinkingTail();
+    updateSendMenu();
     if (stickToBottom) scrollMessagesToBottom();
     else updateScrollToBottomButton();
   }
+  function updateSendMenu() {
+    const available = Boolean(activeColleagueId && !activeChannelId && !input.disabled && isTyping(activeConvKey()));
+    sendMenuButtonEl.hidden = !available;
+    if (!available) closeSendMenu();
+  }
+  function sendMenuItems() {
+    return [...sendMenuEl.querySelectorAll('[role="menuitem"]')];
+  }
+  function openSendMenu() {
+    sendMenuEl.hidden = false;
+    sendMenuButtonEl.setAttribute("aria-expanded", "true");
+    sendMenuItems()[0].focus();
+  }
+  function closeSendMenu({ restoreFocus = false } = {}) {
+    const wasOpen = !sendMenuEl.hidden;
+    sendMenuEl.hidden = true;
+    sendMenuButtonEl.setAttribute("aria-expanded", "false");
+    if (wasOpen && restoreFocus && !sendMenuButtonEl.hidden) sendMenuButtonEl.focus();
+  }
+  sendMenuButtonEl.addEventListener("click", () => {
+    if (sendMenuEl.hidden) openSendMenu();
+    else closeSendMenu({ restoreFocus: true });
+  });
+  sendMenuButtonEl.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+      event.preventDefault();
+      if (sendMenuEl.hidden) openSendMenu();
+    }
+  });
+  sendMenuEl.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeSendMenu({ restoreFocus: true });
+      return;
+    }
+    if (event.key === "Tab") {
+      closeSendMenu();
+      return;
+    }
+    const items = sendMenuItems();
+    const next = nextMenuIndex(items.indexOf(document.activeElement), event.key, items.length);
+    if (next !== null) {
+      event.preventDefault();
+      items[next].focus();
+    }
+  });
+  document.addEventListener("click", (event) => {
+    if (!sendMenuEl.hidden && !sendMenuEl.contains(event.target) && !sendMenuButtonEl.contains(event.target)) closeSendMenu();
+  });
   function renderChannelMessages({ forceScrollToBottom = false } = {}) {
+    sendMenuButtonEl.hidden = true;
+    closeSendMenu();
     const stickToBottom = forceScrollToBottom || isNearBottom();
     const items = channelMessages.get(activeChannelId) || [];
     const typingEntries = [];
@@ -7597,6 +8319,7 @@
     activeSessionId = null;
     rememberOpenConversation({ channelId: channel.id });
     closeMentionAutocomplete();
+    closeSendMenu();
     if (unreadConversations.delete(UNREAD_CHANNEL_PREFIX + channel.id)) refreshUnreadTitle();
     renderSidebar();
     input.disabled = false;
@@ -7606,6 +8329,7 @@
     input.value = drafts.get(channelConvKey(channel.id)) || "";
     autoResizeComposer();
     renderPaneHeader();
+    refreshDiffIfOpen();
     await loadChannelHistory(channel.id);
     if (activeChannelId === channel.id) renderChannelMessages({ forceScrollToBottom: true });
   }
@@ -7615,7 +8339,12 @@
     const rows = await res.json();
     channelMessages.set(
       channelId,
-      rows.map((row) => ({ senderId: row.sender_id, text: row.text, createdAt: row.created_at }))
+      rows.map((row) => ({
+        senderId: row.sender_id,
+        text: row.text,
+        createdAt: row.created_at,
+        attachments: storedAttachments(row.attachments)
+      }))
     );
   }
   function isSubagentThread(colleagueId) {
@@ -7630,6 +8359,7 @@
     if (activeSessionId !== null) rememberOpenConversation({ colleagueId: colleague.id, sessionId: activeSessionId });
     activeChannelId = null;
     closeMentionAutocomplete();
+    closeSendMenu();
     if (unreadConversations.delete(activeConvKey())) refreshUnreadTitle();
     renderSidebar();
     const canReply = !isSubagentThread(colleague.id);
@@ -7640,20 +8370,41 @@
     input.value = canReply ? drafts.get(convKey(colleague.id, activeSessionId)) || "" : "";
     autoResizeComposer();
     renderPaneHeader();
+    refreshDiffIfOpen();
+    renderHandoverNotice();
+    if (canReply) loadCliInfo(colleague.id, activeSessionId);
     const key = activeConvKey();
     await loadColleagueHistory(colleague.id, activeSessionId, key);
     if (activeConvKey() === key) renderMessages({ forceScrollToBottom: true });
   }
+  function storedAttachments(list2) {
+    return (list2 || []).map((a2) => ({ ...a2, dataUrl: `api/attachment?id=${a2.id}` }));
+  }
+  function markWaiting(key, w2) {
+    const item = (history.get(key) || []).find((m3) => m3.clientId === w2.id);
+    if (!item) return;
+    item.pending = true;
+    item.kind = w2.kind;
+    item.canCancel = Boolean(w2.canCancel);
+  }
   async function loadColleagueHistory(colleagueId, sessionId, key, { force = false } = {}) {
-    if (isSubagentThread(colleagueId)) return;
-    if (history.has(key) && !force) return;
+    sessionId = sessionId || DEFAULT_SESSION_ID;
+    if (loadedHistory.has(key) && !force) return;
     const res = await fetch(
       `api/history?colleagueId=${encodeURIComponent(colleagueId)}&sessionId=${encodeURIComponent(sessionId)}`
     );
     const rows = await res.json();
+    loadedHistory.add(key);
     history.set(
       key,
-      rows.map((row) => ({ role: row.role, text: row.text, createdAt: row.created_at, trail: reconstructTrail(row.trail) }))
+      rows.map((row) => ({
+        role: row.role,
+        text: row.text,
+        createdAt: row.created_at,
+        trail: reconstructTrail(row.trail),
+        attachments: storedAttachments(row.attachments),
+        ...row.waiting ? { pending: true, clientId: row.waiting.id, kind: row.waiting.kind, canCancel: row.waiting.canCancel } : {}
+      }))
     );
   }
   function appendUnreadBadge(button, key) {
@@ -7839,7 +8590,6 @@
       button.addEventListener("click", () => selectColleague(colleague, lastSessionByColleague.get(colleague.id) || DEFAULT_SESSION_ID));
       sidebarEl.appendChild(button);
       for (const panel of subagentPanels.get(colleague.id)?.values() ?? []) {
-        if (!panel.knownColleagueId) continue;
         const synthetic = colleaguesById.get(panel.syntheticId);
         const nested = document.createElement("button");
         nested.type = "button";
@@ -7993,16 +8743,20 @@
       if (!isSubagentThread(id) && !rosterIds.has(id)) colleaguesById.delete(id);
     }
     for (const colleague of colleaguesList) colleaguesById.set(colleague.id, colleague);
+    try {
+      const subRes = await fetch("api/subagent-threads");
+      if (subRes.ok) restoreSubagentPanels(await subRes.json());
+    } catch {
+    }
     const channelsRes = await fetch("api/channels");
     const channels = await channelsRes.json();
     channelsById.clear();
     for (const channel of channels) channelsById.set(channel.id, channel);
     const statsRes = await fetch("api/colleague-stats");
     for (const [key, stats] of Object.entries(await statsRes.json())) colleagueStats.set(key, stats);
-    const autoModeRes = await fetch("api/auto-mode-sessions");
-    const autoModeSessions = await autoModeRes.json();
-    autoModeKeys.clear();
-    for (const key of autoModeSessions) autoModeKeys.add(key);
+    const permissionsRes = await fetch("api/permissions");
+    permissionStates.clear();
+    for (const state of await permissionsRes.json()) applyPermissionState(state);
     const gatekeeperUsageRes = await fetch("api/gatekeeper-usage");
     gatekeeperUsage = await gatekeeperUsageRes.json();
     await Promise.all(
@@ -8172,13 +8926,22 @@
     }
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
-      form.requestSubmit();
+      if (event.altKey && !sendMenuButtonEl.hidden) form.requestSubmit(queueButtonEl);
+      else form.requestSubmit();
     }
   });
   input.addEventListener("blur", () => closeMentionAutocomplete());
+  function newMessageId() {
+    if (globalThis.crypto?.randomUUID) return crypto.randomUUID();
+    return `m-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  }
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     closeMentionAutocomplete();
+    if (!sendMenuEl.hidden) {
+      closeSendMenu();
+      input.focus();
+    }
     const text2 = input.value.trim();
     if (!text2 && !pendingAttachment) return;
     if (activeChannelId) {
@@ -8199,9 +8962,18 @@
     }
     if (!activeColleagueId) return;
     const key = activeConvKey();
+    if (cliInfo.get(key)?.handedOver) {
+      if (!window.confirm("The terminal may be using this session. Take it back and send?")) return;
+      cliInfo.set(key, { ...cliInfo.get(key), handedOver: false });
+      renderHandoverNotice();
+      socket.send(JSON.stringify({ type: "take_back_terminal", colleagueId: activeColleagueId, sessionId: activeSessionId }));
+    }
     if (!history.has(key)) history.set(key, []);
     const attachments = pendingAttachment ? [pendingAttachment] : [];
-    history.get(key).push({ role: "you", text: text2, attachments, createdAt: (/* @__PURE__ */ new Date()).toISOString(), pending: isTyping(key) });
+    const typing = isTyping(key);
+    const kind = pickSendKind({ typing, requested: event.submitter?.dataset.kind });
+    const clientId = newMessageId();
+    history.get(key).push({ role: "you", text: text2, attachments, createdAt: (/* @__PURE__ */ new Date()).toISOString(), pending: typing, clientId, kind });
     renderMessages({ forceScrollToBottom: true });
     if (activeSessionId === DEFAULT_SESSION_ID) {
       const rosterColleague = colleaguesById.get(activeColleagueId);
@@ -8213,6 +8985,8 @@
     socket.send(JSON.stringify({
       colleagueId: activeColleagueId,
       sessionId: activeSessionId,
+      id: clientId,
+      kind,
       text: text2,
       attachments: attachments.map((a2) => ({ name: a2.name, mimeType: a2.mimeType, data: a2.data }))
     }));
@@ -8315,6 +9089,7 @@
   attachPullToRefresh(messagesEl, refreshActiveConversation, "var(--bg)");
   attachPullToRefresh(sidebarEl, () => loadRoster({ preserveSelection: true }), "var(--bg-sidebar)");
   loadRoster();
+  refreshWorkforceStatus();
 })();
 /*! Bundled license information:
 

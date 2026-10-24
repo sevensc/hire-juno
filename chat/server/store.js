@@ -25,6 +25,18 @@ import DatabaseConstructor from 'better-sqlite3';
 // nothing about a pre-upgrade chat.db needs to change to keep working.
 export const DEFAULT_SESSION_ID = 'default';
 
+// A sub-agent window is stored under the synthetic id `sub:<tool_use-id>`
+// (the same one the client uses) in the messages table, under this session
+// id — not the default one, so the main-thread preview and the search never
+// pick its rows up.
+export const SUBAGENT_SESSION_ID = 'subagent';
+const SUBAGENT_PREFIX = 'sub:';
+
+// The only attachment types the chat accepts (see agentAdapter.js) — also
+// the only ones ever stored or served back, so a client can't get e.g.
+// text/html served from the chat's own origin.
+export const ATTACHMENT_MIME_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -42,6 +54,50 @@ const SCHEMA = `
     -- a legacy row (this column didn't exist before) reads back exactly
     -- the same way.
     trail TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  );
+
+  -- Images sent along with a message, kept apart from the message rows so
+  -- reading a history never drags the bytes along: the history only lists
+  -- {id, name, mimeType}, the bytes come from one request per image
+  -- (api/attachment). "kind" says which table "message_id" points into
+  -- ('message' or 'channel_message'); removed together with that history.
+  CREATE TABLE IF NOT EXISTS attachments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    message_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    data BLOB NOT NULL
+  );
+
+  -- A conversation that works in its own git worktree, on its own branch
+  -- (see worktree.js). A row only exists once the worktree has been
+  -- created; no row means the conversation works in the workforce folder.
+  CREATE TABLE IF NOT EXISTS conversation_worktrees (
+    colleague_id TEXT NOT NULL,
+    session_id TEXT NOT NULL DEFAULT 'default',
+    path TEXT NOT NULL,
+    branch TEXT NOT NULL,
+    -- The git repo the worktree belongs to (NULL: saved before this column
+    -- existed, which always meant the workforce folder's repo).
+    repo_path TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    PRIMARY KEY (colleague_id, session_id)
+  );
+
+  -- One row per sub-agent window of a colleague (the Agent/Task call she
+  -- made): who owns it, in which of her sessions, what it is, and whether it
+  -- still runs. Its brief, tool lines and report are rows of "messages"
+  -- under the synthetic colleague_id 'sub:<id>'. Kept until the window is
+  -- closed, or its owner's context is reset or chat cleared.
+  CREATE TABLE IF NOT EXISTS subagent_threads (
+    id TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL,
+    session_id TEXT NOT NULL DEFAULT 'default',
+    subagent_type TEXT NOT NULL,
+    description TEXT,
+    status TEXT NOT NULL DEFAULT 'running',
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
   );
 
@@ -92,6 +148,22 @@ const SCHEMA = `
   -- choice is set — no row means "the default". Deliberately not removed
   -- by a context reset: that clears what a colleague remembers, not how
   -- she was set up.
+  -- The last model/effort and token/cost figures reported for a
+  -- conversation's session, so the header still shows them after a server
+  -- restart. A snapshot, not a ledger: it is replaced whenever the adapter
+  -- reports again, and the adapter counts from zero after a restart.
+  CREATE TABLE IF NOT EXISTS conversation_stats (
+    colleague_id TEXT NOT NULL,
+    session_id TEXT NOT NULL DEFAULT 'default',
+    model TEXT,
+    effort TEXT,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    total_tokens INTEGER,
+    cost_usd REAL,
+    PRIMARY KEY (colleague_id, session_id)
+  );
+
   CREATE TABLE IF NOT EXISTS model_choices (
     colleague_id TEXT NOT NULL,
     session_id TEXT NOT NULL DEFAULT 'default',
@@ -137,11 +209,18 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
     if (!/duplicate column/i.test(err.message)) throw err;
   }
 
+  // Same again for the repo a conversation's worktree belongs to.
+  try {
+    db.exec('ALTER TABLE conversation_worktrees ADD COLUMN repo_path TEXT');
+  } catch (err) {
+    if (!/duplicate column/i.test(err.message)) throw err;
+  }
+
   const insertStmt = db.prepare(
     'INSERT INTO messages (colleague_id, session_id, role, text, trail) VALUES (?, ?, ?, ?, ?)'
   );
   const historyStmt = db.prepare(
-    'SELECT role, text, trail, created_at FROM messages WHERE colleague_id = ? AND session_id = ? ORDER BY id ASC'
+    'SELECT id, role, text, trail, created_at FROM messages WHERE colleague_id = ? AND session_id = ? ORDER BY id ASC'
   );
   // One row per colleague's *main* thread only (session_id = 'default')
   // — the sidebar preview is about "what's the latest in this
@@ -153,6 +232,39 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
      WHERE session_id = ? AND id IN (
        SELECT MAX(id) FROM messages WHERE session_id = ? GROUP BY colleague_id
      )`
+  );
+  const insertAttachmentStmt = db.prepare(
+    'INSERT INTO attachments (kind, message_id, name, mime_type, data) VALUES (?, ?, ?, ?, ?)'
+  );
+  const messageAttachmentsStmt = db.prepare(
+    `SELECT id, message_id, name, mime_type FROM attachments
+     WHERE kind = 'message' AND message_id IN (
+       SELECT id FROM messages WHERE colleague_id = ? AND session_id = ?
+     )`
+  );
+  const channelAttachmentsStmt = db.prepare(
+    `SELECT id, message_id, name, mime_type FROM attachments
+     WHERE kind = 'channel_message' AND message_id IN (
+       SELECT id FROM channel_messages WHERE channel_id = ?
+     )`
+  );
+  const getAttachmentStmt = db.prepare('SELECT mime_type, data FROM attachments WHERE id = ?');
+  const deleteMessageAttachmentsStmt = db.prepare(
+    `DELETE FROM attachments WHERE kind = 'message' AND message_id IN (
+       SELECT id FROM messages WHERE colleague_id = ? AND session_id = ?
+     )`
+  );
+  const deleteChannelAttachmentsStmt = db.prepare(
+    `DELETE FROM attachments WHERE kind = 'channel_message' AND message_id IN (
+       SELECT id FROM channel_messages WHERE channel_id = ?
+     )`
+  );
+  const getWorktreeStmt = db.prepare(
+    'SELECT path, branch, repo_path AS repoPath FROM conversation_worktrees WHERE colleague_id = ? AND session_id = ?'
+  );
+  const setWorktreeStmt = db.prepare(
+    `INSERT INTO conversation_worktrees (colleague_id, session_id, path, branch, repo_path) VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(colleague_id, session_id) DO UPDATE SET path = excluded.path, branch = excluded.branch, repo_path = excluded.repo_path`
   );
   const insertSessionStmt = db.prepare('INSERT INTO sessions (id, colleague_id, title) VALUES (?, ?, ?)');
   const listSessionsStmt = db.prepare(
@@ -166,7 +278,7 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
     'INSERT INTO channel_messages (channel_id, sender_id, text) VALUES (?, ?, ?)'
   );
   const channelHistoryStmt = db.prepare(
-    'SELECT sender_id, text, created_at FROM channel_messages WHERE channel_id = ? ORDER BY id ASC'
+    'SELECT id, sender_id, text, created_at FROM channel_messages WHERE channel_id = ? ORDER BY id ASC'
   );
   const saveAdapterSessionStmt = db.prepare(
     `INSERT INTO adapter_sessions (colleague_id, session_id, sdk_session_id, updated_at)
@@ -176,6 +288,15 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
   const getAdapterSessionStmt = db.prepare(
     'SELECT sdk_session_id FROM adapter_sessions WHERE colleague_id = ? AND session_id = ?'
   );
+  const saveStatsStmt = db.prepare(
+    `INSERT INTO conversation_stats
+       (colleague_id, session_id, model, effort, input_tokens, output_tokens, total_tokens, cost_usd)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(colleague_id, session_id) DO UPDATE SET
+       model = excluded.model, effort = excluded.effort, input_tokens = excluded.input_tokens,
+       output_tokens = excluded.output_tokens, total_tokens = excluded.total_tokens, cost_usd = excluded.cost_usd`
+  );
+  const allStatsStmt = db.prepare('SELECT * FROM conversation_stats');
   const getModelChoiceStmt = db.prepare('SELECT model FROM model_choices WHERE colleague_id = ? AND session_id = ?');
   const setModelChoiceStmt = db.prepare(
     `INSERT INTO model_choices (colleague_id, session_id, model) VALUES (?, ?, ?)
@@ -201,6 +322,63 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
      WHERE text LIKE ? ESCAPE '\\' ORDER BY id DESC LIMIT 50`
   );
 
+  const insertSubagentStmt = db.prepare(
+    'INSERT OR IGNORE INTO subagent_threads (id, owner_id, session_id, subagent_type, description) VALUES (?, ?, ?, ?, ?)'
+  );
+  const finishSubagentStmt = db.prepare("UPDATE subagent_threads SET status = 'done' WHERE id = ?");
+  const listSubagentsStmt = db.prepare(
+    'SELECT id, owner_id, session_id, subagent_type, description, status, created_at FROM subagent_threads ORDER BY created_at ASC, rowid ASC'
+  );
+  const ownerSubagentIdsStmt = db.prepare('SELECT id FROM subagent_threads WHERE owner_id = ? AND session_id = ?');
+  const deleteSubagentStmt = db.prepare('DELETE FROM subagent_threads WHERE id = ?');
+
+  const maxMessageIdStmt = db.prepare('SELECT MAX(id) AS id FROM messages');
+  const moveMessageStmt = db.prepare('UPDATE messages SET id = ? WHERE id = ?');
+  const moveAttachmentsStmt = db.prepare(
+    "UPDATE attachments SET message_id = ? WHERE kind = 'message' AND message_id = ?"
+  );
+  const deleteOneMessageStmt = db.prepare('DELETE FROM messages WHERE id = ?');
+  const deleteOneMessageAttachmentsStmt = db.prepare(
+    "DELETE FROM attachments WHERE kind = 'message' AND message_id = ?"
+  );
+  const deleteMessageTx = db.transaction((id) => {
+    deleteOneMessageAttachmentsStmt.run(id);
+    return deleteOneMessageStmt.run(id).changes > 0;
+  });
+  const moveToEndTx = db.transaction((ids) =>
+    ids.map((oldId) => {
+      const newId = maxMessageIdStmt.get().id + 1;
+      moveMessageStmt.run(newId, oldId);
+      moveAttachmentsStmt.run(newId, oldId);
+      return newId;
+    })
+  );
+
+  // Stores the valid images of one message (see ATTACHMENT_MIME_TYPES);
+  // anything else in the list is skipped, not stored.
+  function saveAttachments(kind, messageId, attachments) {
+    for (const a of Array.isArray(attachments) ? attachments : []) {
+      if (!a || !ATTACHMENT_MIME_TYPES.includes(a.mimeType) || typeof a.data !== 'string' || !a.data) continue;
+      insertAttachmentStmt.run(
+        kind,
+        messageId,
+        String(a.name || 'image').slice(0, 200),
+        a.mimeType,
+        Buffer.from(a.data, 'base64')
+      );
+    }
+  }
+
+  // message_id -> [{id, name, mimeType}] for one history.
+  function groupAttachments(rows) {
+    const byMessage = new Map();
+    for (const r of rows) {
+      if (!byMessage.has(r.message_id)) byMessage.set(r.message_id, []);
+      byMessage.get(r.message_id).push({ id: r.id, name: r.name, mimeType: r.mime_type });
+    }
+    return byMessage;
+  }
+
   return {
     persisted: Boolean(workforceId),
     // `trail` (optional): the same [{kind:'tool_use'|'thinking', ...}]
@@ -208,19 +386,40 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
     // table's own comment above) — stored as JSON, `null` when omitted or
     // empty so a plain message keeps reading back exactly as before this
     // column existed.
-    appendMessage(colleagueId, sessionId, role, text, trail) {
-      insertStmt.run(
+    // `attachments` (optional): [{name, mimeType, data}] as sent by the
+    // client (data is base64) — only images, see saveAttachments.
+    appendMessage(colleagueId, sessionId, role, text, trail, attachments) {
+      const { lastInsertRowid } = insertStmt.run(
         colleagueId,
-        sessionId || DEFAULT_SESSION_ID,
+        sessionKey(colleagueId, sessionId),
         role,
         text,
         trail?.length ? JSON.stringify(trail) : null
       );
+      saveAttachments('message', lastInsertRowid, attachments);
+      return Number(lastInsertRowid);
+    },
+    // Puts the given messages behind everything stored so far, in the
+    // order given, and returns their new ids. For a message that arrived
+    // while the colleague was still answering an earlier one: it is saved
+    // on arrival, but belongs after that earlier reply, which is stored
+    // later. History is ordered by id, so the row takes a new, higher one
+    // (its images follow).
+    moveToEnd(ids) {
+      return moveToEndTx(ids);
+    },
+    // Removes one stored message and its images (a withdrawn message).
+    // Returns whether there was such a row.
+    deleteMessage(id) {
+      return deleteMessageTx(id);
     },
     getHistory(colleagueId, sessionId) {
-      return historyStmt.all(colleagueId, sessionId || DEFAULT_SESSION_ID).map((row) => ({
+      const sid = sessionKey(colleagueId, sessionId);
+      const attachments = groupAttachments(messageAttachmentsStmt.all(colleagueId, sid));
+      return historyStmt.all(colleagueId, sid).map((row) => ({
         ...row,
         trail: row.trail ? JSON.parse(row.trail) : undefined,
+        attachments: attachments.get(row.id),
       }));
     },
     // colleagueId -> {role, text, createdAt} for the sidebar preview —
@@ -264,15 +463,58 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
         memberIds: JSON.parse(row.member_ids),
       }));
     },
-    appendChannelMessage(channelId, senderId, text) {
-      insertChannelMessageStmt.run(channelId, senderId, text);
+    appendChannelMessage(channelId, senderId, text, attachments) {
+      const { lastInsertRowid } = insertChannelMessageStmt.run(channelId, senderId, text);
+      saveAttachments('channel_message', lastInsertRowid, attachments);
     },
     getChannelHistory(channelId) {
-      return channelHistoryStmt.all(channelId);
+      const attachments = groupAttachments(channelAttachmentsStmt.all(channelId));
+      return channelHistoryStmt.all(channelId).map((row) => ({ ...row, attachments: attachments.get(row.id) }));
+    },
+    // The bytes of one stored image, or null.
+    getAttachment(id) {
+      const row = getAttachmentStmt.get(id);
+      return row ? { mimeType: row.mime_type, data: row.data } : null;
     },
     // See the adapter_sessions table comment above — the SDK's own
     // resumable session id for one (colleague, our session) adapter.
     // The model chosen for this conversation, or null for "the default".
+    // The worktree this conversation works in, {path, branch, repoPath}
+    // (repoPath null for rows from before it was saved), or null.
+    getWorktree(colleagueId, sessionId) {
+      return getWorktreeStmt.get(colleagueId, sessionId || DEFAULT_SESSION_ID) ?? null;
+    },
+    setWorktree(colleagueId, sessionId, path, branch, repoPath = null) {
+      setWorktreeStmt.run(colleagueId, sessionId || DEFAULT_SESSION_ID, path, branch, repoPath);
+    },
+    // `stats` is the object index.js keeps per conversation: {model, effort,
+    // inputTokens, outputTokens, totalTokens, costUsd}, any of them may be unset.
+    saveStats(colleagueId, sessionId, stats) {
+      saveStatsStmt.run(
+        colleagueId,
+        sessionId || DEFAULT_SESSION_ID,
+        stats.model ?? null,
+        stats.effort ?? null,
+        stats.inputTokens ?? null,
+        stats.outputTokens ?? null,
+        stats.totalTokens ?? null,
+        stats.costUsd ?? null
+      );
+    },
+    // [[colleagueId, sessionId, stats], ...] for every conversation with a
+    // snapshot; fields that were never reported are left out of `stats`.
+    getAllStats() {
+      return allStatsStmt.all().map((row) => {
+        const stats = {};
+        if (row.model != null) stats.model = row.model;
+        if (row.effort != null) stats.effort = row.effort;
+        if (row.input_tokens != null) stats.inputTokens = row.input_tokens;
+        if (row.output_tokens != null) stats.outputTokens = row.output_tokens;
+        if (row.total_tokens != null) stats.totalTokens = row.total_tokens;
+        if (row.cost_usd != null) stats.costUsd = row.cost_usd;
+        return [row.colleague_id, row.session_id, stats];
+      });
+    },
     getModelChoice(colleagueId, sessionId) {
       return getModelChoiceStmt.get(colleagueId, sessionId || DEFAULT_SESSION_ID)?.model ?? null;
     },
@@ -307,11 +549,13 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
     // let a later reply silently resume the SDK session whose transcript
     // was just deleted.
     clearHistory(colleagueId, sessionId) {
-      const sid = sessionId || DEFAULT_SESSION_ID;
+      const sid = sessionKey(colleagueId, sessionId);
+      deleteMessageAttachmentsStmt.run(colleagueId, sid);
       deleteMessagesStmt.run(colleagueId, sid);
       deleteAdapterSessionStmt.run(colleagueId, sid);
     },
     clearChannelHistory(channelId) {
+      deleteChannelAttachmentsStmt.run(channelId);
       deleteChannelMessagesStmt.run(channelId);
     },
     // Main-thread messages only (session_id = 'default'), same scope as
@@ -335,10 +579,53 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
         createdAt: row.created_at,
       }));
     },
+    // Sub-agent windows. `createSubagentThread` returns false when the id
+    // exists already (a repeated start), so the brief is not stored twice.
+    createSubagentThread({ id, ownerId, sessionId, subagentType, description }) {
+      const { changes } = insertSubagentStmt.run(
+        id,
+        ownerId,
+        sessionId || DEFAULT_SESSION_ID,
+        subagentType || 'subagent',
+        description || null
+      );
+      return changes > 0;
+    },
+    finishSubagentThread(id) {
+      finishSubagentStmt.run(id);
+    },
+    listSubagentThreads() {
+      return listSubagentsStmt.all().map((row) => ({
+        id: row.id,
+        ownerId: row.owner_id,
+        sessionId: row.session_id,
+        subagentType: row.subagent_type,
+        description: row.description,
+        status: row.status,
+        createdAt: row.created_at,
+      }));
+    },
+    // Removes the window and everything stored for it.
+    deleteSubagentThread(id) {
+      const syntheticId = `${SUBAGENT_PREFIX}${id}`;
+      deleteMessageAttachmentsStmt.run(syntheticId, SUBAGENT_SESSION_ID);
+      deleteMessagesStmt.run(syntheticId, SUBAGENT_SESSION_ID);
+      deleteSubagentStmt.run(id);
+    },
+    // All windows one conversation of a colleague has; returns their ids.
+    deleteSubagentThreadsOf(ownerId, sessionId) {
+      const ids = ownerSubagentIdsStmt.all(ownerId, sessionId || DEFAULT_SESSION_ID).map((row) => row.id);
+      for (const id of ids) this.deleteSubagentThread(id);
+      return ids;
+    },
     close() {
       db.close();
     },
   };
+}
+
+function sessionKey(colleagueId, sessionId) {
+  return String(colleagueId).startsWith(SUBAGENT_PREFIX) ? SUBAGENT_SESSION_ID : sessionId || DEFAULT_SESSION_ID;
 }
 
 function escapeLike(text) {

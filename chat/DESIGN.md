@@ -44,6 +44,20 @@ All colours are CSS custom properties on `:root`, each declared with
 carries `color-scheme: light dark`. Never hard-code a colour in a rule;
 add a token.
 
+Which side of each pair is shown is the user's choice under Settings >
+Appearance: System (default, follows the device), Light or Dark. A
+forced choice sets `data-theme="light"|"dark"` on `<html>`, which pins
+`color-scheme` and so every `light-dark()` token at once; System removes
+the attribute. The choice is kept in the browser's localStorage
+(`hire-juno-chat:theme`) and applied by an inline script in `<head>`
+before the first paint, together with `<meta name="color-scheme">`. A
+new colour therefore needs no extra rule for the switch, only its
+`light-dark()` pair. The control is a segmented row of native radios:
+44px-high labels, selected state as a 2px `--accent` border plus bold
+text on `--bg-message` (measured 5.26:1 light and 5.86:1 dark against
+that fill; label text `--fg` on it 15.08:1 and 12.66:1), focus ring
+drawn on the label.
+
 | Token | Light | Dark | Used for |
 | --- | --- | --- | --- |
 | `--bg` | `#ffffff` | `#16171a` | Page and conversation background |
@@ -52,7 +66,8 @@ add a token.
 | `--bg-message-you` | `#dbe6ff` | `#2a3a5c` | Own bubbles |
 | `--fg` | `#1b1b1f` | `#e8e8ec` | Body text |
 | `--fg-muted` | `#6b6b74` | `#8b8b96` | Timestamps, roles, secondary text |
-| `--accent` | `#3358d6` | `#7a9bff` | Selection, focus, primary button |
+| `--accent` | `#3358d6` | `#7a9bff` | Selection, focus, text and borders |
+| `--accent-fill` | `#3358d6` | `#4a6ae6` | Filled surfaces with white text: active row, primary buttons, initials (white on it: 5.99:1 light, 4.67:1 dark) |
 | `--border` | `#e2e2e6` | `#2c2d33` | Hairlines and control borders |
 | `--auto-mode-bg` / `--auto-mode-border` | `#fff3d6` / `#e0b34d` | `#3a2f14` / `#6b5220` | Auto-mode banner |
 | `--hiring-mode-bg` / `--hiring-mode-border` | `#eee6ff` / `#8a63d2` | `#2c2445` / `#8a63d2` | Hiring-mode banner |
