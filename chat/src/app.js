@@ -330,7 +330,13 @@ function toggleAutoMode() {
   const key = activeConvKey();
   const enabled = !autoModeKeys.has(key);
   if (enabled) autoModeKeys.add(key);
-  else autoModeKeys.delete(key);
+  else {
+    autoModeKeys.delete(key);
+    // "Turn on autopilot" on a permission card also remembers "every tool" for
+    // this conversation in this tab; switching Auto mode off has to withdraw
+    // that too, or the tab keeps answering every request with "allow".
+    withdrawAllowEverything(key);
+  }
   socket.send(JSON.stringify({ type: 'set_auto_mode', colleagueId: activeColleagueId, sessionId: activeSessionId, enabled }));
   renderPaneHeader();
 }
@@ -392,6 +398,15 @@ function isAlwaysAllowed(key, toolName) {
   return Boolean(allowed && (allowed.has('*') || allowed.has(toolName)));
 }
 
+// Drops the "every tool" entry ('*') of a conversation, which "Turn on
+// autopilot" adds next to Auto mode; single tools allowed with "Allow always"
+// stay.
+function withdrawAllowEverything(key) {
+  const allowed = alwaysAllowedTools.get(key);
+  if (!allowed) return;
+  allowed.delete('*');
+  if (!allowed.size) alwaysAllowedTools.delete(key);
+}
 function rememberAlwaysAllowed(key, toolName) {
   if (!alwaysAllowedTools.has(key)) alwaysAllowedTools.set(key, new Set());
   alwaysAllowedTools.get(key).add(toolName);
@@ -2217,7 +2232,10 @@ const handleSocketMessage = (event) => {
   if (update.type === 'auto_mode_changed') {
     const key = convKey(update.colleagueId, update.sessionId);
     if (update.enabled) autoModeKeys.add(key);
-    else autoModeKeys.delete(key);
+    else {
+      autoModeKeys.delete(key);
+      withdrawAllowEverything(key);
+    }
     if (key === activeConvKey()) renderPaneHeader();
     refreshSettingsModalIfOpen();
     return;
