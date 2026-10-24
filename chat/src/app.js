@@ -2496,6 +2496,19 @@ const handleSocketMessage = (event) => {
     return;
   }
 
+  // The session took up the message sent under `update.id`: it was read, at
+  // this moment, so it stops being drawn as waiting (and cannot be withdrawn).
+  if (update.type === 'message_read') {
+    const items = history.get(convKey(update.colleagueId, update.sessionId)) || [];
+    const item = items.find((m) => m.clientId === update.id);
+    if (item) {
+      delete item.pending;
+      delete item.withdrawing;
+      if (activeConvKey()) renderMessages();
+    }
+    return;
+  }
+
   // Answer to a withdrawal (sent to every tab). Withdrawn: the bubble goes
   // and its text returns to an empty composer. Not withdrawn: the message
   // was read already, it stays and stops waiting. An error changes nothing.

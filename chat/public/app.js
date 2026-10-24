@@ -7332,6 +7332,16 @@
       if (activeConvKey()) renderMessages();
       return;
     }
+    if (update.type === "message_read") {
+      const items = history.get(convKey(update.colleagueId, update.sessionId)) || [];
+      const item = items.find((m3) => m3.clientId === update.id);
+      if (item) {
+        delete item.pending;
+        delete item.withdrawing;
+        if (activeConvKey()) renderMessages();
+      }
+      return;
+    }
     if (update.type === "message_cancelled") {
       const key2 = convKey(update.colleagueId, update.sessionId);
       const items = history.get(key2) || [];
