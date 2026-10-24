@@ -7633,8 +7633,8 @@
       }}
           />` : null}
       ${permission ? m2`<${PermissionCard} permission=${permission} colleagueId=${key} isChannel=${false} />` : null}
-      ${isTyping(key) && !permission ? m2`<div class="typing-indicator" role="status">typing…</div>` : null}
       ${items.map((item, i2) => item.pending ? row(item, i2) : null)}
+      ${isTyping(key) && !permission ? m2`<div class="typing-indicator" role="status">typing…</div>` : null}
       ${!items.length && !thinkingText && !partialText && !permission ? m2`<${EmptyConversation}
             text=${`No messages with ${colleaguesById.get(activeColleagueId)?.name || "this colleague"} yet. Write the first one below.`}
           />` : null}
