@@ -32,7 +32,8 @@ memory are the basis of the conversation).
    entries whose title starts with `Outside the assignment:` (the
    colleague's own, and the other colleagues' when the pattern may spread
    across them). Sort each case:
-   - **One-off:** it stays in the colleague's memory, nothing more.
+   - **One-off:** it stays in the colleague's memory, nothing more (a
+     one-off stays a one-off, constitution §3).
    - **Twice or more for the same colleague, close to their assignment,
      doable with the access they have:** a skill candidate, handled as in
      step 2.
@@ -42,6 +43,9 @@ memory are the basis of the conversation).
      several colleagues:** a needs assessment as in `hr/hiring.md`
      (phase 1): a new role or a wider assignment for an existing one. The
      span of control in the constitution (§2) counts.
+
+   A misjudged case (carried out although a condition was missing) is
+   treated like any other correction: as a rule.
 4. **Condense the memory:** summarize journal insights in `memory.md`
    (keep it short and current; delete what is outdated).
 5. **Update the personnel file** — only with the supervisor's explicit
