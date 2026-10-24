@@ -32,7 +32,7 @@ const settingsModalEl = document.getElementById('settings-modal');
 const settingsCloseEl = document.getElementById('settings-close');
 const usageSummaryEl = document.getElementById('usage-summary');
 const usageTableEl = document.getElementById('usage-table');
-const autoModeListEl = document.getElementById('auto-mode-list');
+const permissionsListEl = document.getElementById('permissions-list');
 const workforceSwitcherEl = document.getElementById('workforce-switcher');
 const workforceMenuEl = document.getElementById('workforce-menu');
 const workforceListEl = document.getElementById('workforce-list');
@@ -59,13 +59,16 @@ const convSettingsBackdropEl = document.getElementById('conv-settings-backdrop')
 const convSettingsModalEl = document.getElementById('conv-settings-modal');
 const convSettingsTitleEl = document.getElementById('conv-settings-modal__title');
 const convSettingsCloseEl = document.getElementById('conv-settings-close');
-const convSettingsAutoModeEl = document.getElementById('conv-settings-auto-mode');
+const convSettingsPermissionsEl = document.getElementById('conv-settings-permissions');
 const convSettingsNewSessionSectionEl = document.getElementById('conv-settings-new-session-section');
 const convSettingsNewSessionEl = document.getElementById('conv-settings-new-session');
 const convSettingsModelSectionEl = document.getElementById('conv-settings-model-section');
 const convSettingsModelEl = document.getElementById('conv-settings-model');
 const convSettingsWorktreeSectionEl = document.getElementById('conv-settings-worktree-section');
 const convSettingsWorktreeEl = document.getElementById('conv-settings-worktree');
+const convSettingsTerminalSectionEl = document.getElementById('conv-settings-terminal-section');
+const convSettingsTerminalEl = document.getElementById('conv-settings-terminal');
+const handoverNoticeEl = document.getElementById('handover-notice');
 const convSearchInputEl = document.getElementById('conv-search-input');
 const convSearchResultsEl = document.getElementById('conv-search-results');
 const convResetContextEl = document.getElementById('conv-reset-context');
@@ -140,10 +143,10 @@ function convKey(colleagueId, sessionId) {
 
 // Same idea as convKey, for channel-only state that needs to tell apart
 // which channel a colleague's turn belongs to — pending permission cards
-// and the "*" autopilot wildcard (see channelPendingPermission and
-// alwaysAllowedTools below). Before this existed, both were keyed by
+// and the standing permissions (see channelPendingPermission and
+// permissionStates below). Before this existed, both were keyed by
 // colleagueId alone: a second channel silently clobbered a pending
-// request from the first, and "autopilot" for her in one channel quietly
+// request from the first, and a permission for her in one channel quietly
 // applied in every channel she's in.
 function channelKey(colleagueId, channelId) {
   return `${colleagueId}::${channelId}`;
@@ -175,12 +178,16 @@ function sessionKeysFor(colleagueId) {
   ];
 }
 const showSessionForm = new Set(); // colleagueId currently showing its "+ New session" form
-const autoModeKeys = new Set(); // convKey-shaped strings currently running with tool-permission auto-approve on
+// Standing tool permissions, as the server holds them (see
+// server/permissions.js): key -> { allowAll, tools: Set }. Keys are
+// convKey-shaped for a 1:1 and channelKey-shaped for a channel member.
+// Entries with nothing set are dropped.
+const permissionStates = new Map();
 // In-app unread markers: the desktop Notification is OS-gated, so it
 // can't be the only sign that something new landed while you were
 // looking elsewhere. `unreadConversations` holds convKey-shaped strings for
 // a 1:1/session (`convKey(colleagueId, sessionId)`, matching
-// autoModeKeys' own scheme) and `channel:<channelId>` for a channel —
+// permissionStates' own scheme) and `channel:<channelId>` for a channel —
 // prefixed so a colleague id and a channel id can never collide in the
 // same Set. Marked on arrival when that conversation isn't the one
 // currently open (see the 'message'/'channel_message' handlers below),
@@ -320,6 +327,7 @@ function formatCost(usd) {
 function describeConvKey(key) {
   const [colleagueId, sessionId] = key.split('::');
   const name = colleaguesById.get(colleagueId)?.name || colleagueId;
+  if (channelsById.has(sessionId)) return `${name} in #${channelsById.get(sessionId).name}`;
   if (sessionId === DEFAULT_SESSION_ID) return name;
   const session = (colleagueSessions.get(colleagueId) || []).find((s) => s.id === sessionId);
   return `${name} — ${session?.title || sessionId}`;
@@ -340,36 +348,30 @@ function statsLine(colleagueId) {
   return parts.length ? parts.join(' · ') : null;
 }
 
-// Toggles auto mode ("Allow-all") for whatever 1:1
-// conversation is currently open. Server-authoritative: this only
-// sends the request and updates local state optimistically: the
-// 'auto_mode_changed' echo (see socket handler above) is what actually
-// confirms it, same pattern as everything else here.
-function toggleAutoMode() {
-  const key = activeConvKey();
-  const enabled = !autoModeKeys.has(key);
-  if (enabled) autoModeKeys.add(key);
-  else {
-    autoModeKeys.delete(key);
-    // "Turn on autopilot" on a permission card also remembers "every tool" for
-    // this conversation in this tab; switching Auto mode off has to withdraw
-    // that too, or the tab keeps answering every request with "allow".
-    withdrawAllowEverything(key);
-  }
-  socket.send(JSON.stringify({ type: 'set_auto_mode', colleagueId: activeColleagueId, sessionId: activeSessionId, enabled }));
-  renderPaneHeader();
+// Standing permissions live on the server; these only send the request.
+// The 'permissions_changed' broadcast (see the socket handler) is what
+// updates local state, so every tab, this one included, shows the same.
+function allowAllOn(key) {
+  return Boolean(permissionStates.get(key)?.allowAll);
 }
-
-// Explicit "turn it on" for the active 1:1 conversation, as opposed to
-// the header checkbox's toggle — used by the permission card's
-// "Turn on autopilot" button (see permissionCardEl), which should
-// never accidentally switch auto mode back off.
-function turnOnAutoMode() {
-  const key = activeConvKey();
-  if (autoModeKeys.has(key)) return;
-  autoModeKeys.add(key);
-  socket.send(JSON.stringify({ type: 'set_auto_mode', colleagueId: activeColleagueId, sessionId: activeSessionId, enabled: true }));
-  renderPaneHeader();
+function alwaysAllowedFor(key) {
+  return [...(permissionStates.get(key)?.tools || [])];
+}
+function applyPermissionState({ key, allowAll, tools }) {
+  if (!allowAll && !tools.length) permissionStates.delete(key);
+  else permissionStates.set(key, { allowAll, tools: new Set(tools) });
+}
+// Where a key points, in the shape the server's messages take: a channel
+// member (the second half is a channel id) or a 1:1 session.
+function permissionTarget(key) {
+  const [colleagueId, rest] = key.split('::');
+  return channelsById.has(rest) ? { colleagueId, channelId: rest } : { colleagueId, sessionId: rest };
+}
+function setAllowAll(key, enabled) {
+  socket.send(JSON.stringify({ type: 'set_allow_all', ...permissionTarget(key), enabled }));
+}
+function setAlwaysAllow(key, tool, enabled) {
+  socket.send(JSON.stringify({ type: 'set_always_allow', ...permissionTarget(key), tool, enabled }));
 }
 
 // "Kontext zurücksetzen" — the counterpart to the channel backfill
@@ -395,81 +397,69 @@ function resetContext() {
   }
 }
 
-// Tool names a conversation has been told to stop asking about — keyed
-// the same way pendingPermission/channelPendingPermission are (convKey
-// for a 1:1, channelKey(colleagueId, channelId) for a channel — bare
-// colleagueId would have made "autopilot" for her in one channel
-// silently also apply in every other channel she's in). A `'*'` entry means "everything", set by the
-// permission card's "Turn on autopilot" button — the channel-side
-// equivalent of auto mode, since auto mode itself is only wired
-// server-side for 1:1 sessions (see server/index.js's autoModeSessions —
-// a channel turn always prompts). Client-only and per-tab: doesn't
-// survive a reload, same as the rest of a tool call's ephemeral detail
-// (see toolDetailEl) — and unlike real auto mode, has no visible on/off
-// state anywhere in the UI (Settings' Auto Mode list only ever reads
-// the server-side 1:1 kind); left as-is for now, tracked separately.
-const alwaysAllowedTools = new Map();
-
-function isAlwaysAllowed(key, toolName) {
-  const allowed = alwaysAllowedTools.get(key);
-  return Boolean(allowed && (allowed.has('*') || allowed.has(toolName)));
-}
-
-// Drops the "every tool" entry ('*') of a conversation, which "Turn on
-// autopilot" adds next to Auto mode; single tools allowed with "Allow always"
-// stay.
-function withdrawAllowEverything(key) {
-  const allowed = alwaysAllowedTools.get(key);
-  if (!allowed) return;
-  allowed.delete('*');
-  if (!allowed.size) alwaysAllowedTools.delete(key);
-}
-function rememberAlwaysAllowed(key, toolName) {
-  if (!alwaysAllowedTools.has(key)) alwaysAllowedTools.set(key, new Set());
-  alwaysAllowedTools.get(key).add(toolName);
-}
-
 // --- Conversation settings modal --------------------------------------
-// Everything that would otherwise clutter the pane header (Auto mode,
-// per-member Autopilot, Reset context, search within this one
+// Everything that would otherwise clutter the pane header (Permissions,
+// Reset context, search within this one
 // conversation, and a destructive "Clear chat") lives behind the ⋮
 // button in its own dialog.
 
-function convSettingsAutoModeRowEl(colleague, checked, onChange) {
+function convSettingsPermissionsBlock(key, colleague) {
+  const block = document.createElement('div');
+  block.className = 'permissions-block';
   const row = document.createElement('label');
   row.className = 'auto-mode-toggle';
   const checkbox = document.createElement('input');
   checkbox.type = 'checkbox';
-  checkbox.checked = checked;
-  checkbox.addEventListener('change', () => onChange(checkbox.checked));
+  checkbox.checked = allowAllOn(key);
+  checkbox.addEventListener('change', () => setAllowAll(key, checkbox.checked));
   const nameSpan = document.createElement('span');
-  nameSpan.textContent = colleague ? ` ${colleague.name} — auto mode (allow all tools)` : ' Auto mode (allow all tools)';
+  nameSpan.textContent = colleague ? ` ${colleague.name} — Allow all tools` : ' Allow all tools';
   row.append(checkbox, nameSpan);
-  return row;
+  block.appendChild(row);
+  const note = document.createElement('p');
+  note.className = 'permissions-note';
+  note.textContent = 'Edits files, runs commands and uses the web without asking.';
+  block.appendChild(note);
+  const tools = alwaysAllowedFor(key);
+  const list = document.createElement('ul');
+  list.className = 'settings-list';
+  list.setAttribute('aria-label', colleague ? `Always allowed for ${colleague.name}` : 'Always allowed');
+  if (!tools.length) {
+    const li = document.createElement('li');
+    li.className = 'empty-note';
+    li.textContent = 'No tool is always allowed. Use "Always allow" on a request to add one.';
+    list.appendChild(li);
+  }
+  for (const tool of tools) {
+    const li = document.createElement('li');
+    const label = document.createElement('span');
+    label.className = 'settings-list__label';
+    label.textContent = `Always allow ${tool}`;
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = 'Revoke';
+    button.setAttribute('aria-label', `Revoke always allow ${tool}`);
+    button.addEventListener('click', () => setAlwaysAllow(key, tool, false));
+    li.append(label, button);
+    list.appendChild(li);
+  }
+  block.appendChild(list);
+  return block;
 }
 
-// Rebuilds the modal's Auto-mode section for whichever conversation is
-// open right now — a single row+toggle for a 1:1 (was the header's own
-// checkbox), one row per member for a channel (was each member's own
-// inline "Autopilot" checkbox in the pane header).
-function renderConvSettingsAutoMode() {
-  convSettingsAutoModeEl.innerHTML = '';
+// Rebuilds the modal's Permissions section for whichever conversation is
+// open right now: one block for a 1:1, one per member for a channel.
+function renderConvSettingsPermissions() {
+  convSettingsPermissionsEl.innerHTML = '';
   if (activeColleagueId && !isSubagentThread(activeColleagueId)) {
-    const key = activeConvKey();
-    convSettingsAutoModeEl.appendChild(
-      convSettingsAutoModeRowEl(null, autoModeKeys.has(key), () => toggleAutoMode())
-    );
+    convSettingsPermissionsEl.appendChild(convSettingsPermissionsBlock(activeConvKey(), null));
     return;
   }
   if (activeChannelId) {
     const channel = channelsById.get(activeChannelId);
     for (const id of channel?.memberIds || []) {
-      const autopilotKey = channelKey(id, activeChannelId);
-      convSettingsAutoModeEl.appendChild(
-        convSettingsAutoModeRowEl(colleaguesById.get(id), Boolean(alwaysAllowedTools.get(autopilotKey)?.has('*')), (checked) => {
-          if (checked) rememberAlwaysAllowed(autopilotKey, '*');
-          else alwaysAllowedTools.delete(autopilotKey);
-        })
+      convSettingsPermissionsEl.appendChild(
+        convSettingsPermissionsBlock(channelKey(id, activeChannelId), colleaguesById.get(id))
       );
     }
   }
@@ -848,9 +838,10 @@ function openConvSettingsModal() {
   } else {
     convSettingsTitleEl.textContent = `${colleaguesById.get(activeColleagueId)?.name || activeColleagueId} settings`;
   }
-  renderConvSettingsAutoMode();
+  renderConvSettingsPermissions();
   renderConvSettingsNewSession();
   renderConvSettingsWorktree();
+  renderConvSettingsTerminal();
   disarmClearChat();
   openDialog(convSettingsBackdropEl, convSettingsModalEl);
   // After the dialog is open, not before: it fetches, and checks on its
@@ -869,7 +860,7 @@ convSettingsBackdropEl.addEventListener('click', (event) => {
 });
 
 // One entry per colleague, active in the current view — a single line
-// for a 1:1 thread (plus the auto-mode toggle, which only makes sense
+// for a 1:1 thread (plus the permissions, which only makes sense
 // for a real, standing 1:1 session — not a channel, not a one-off
 // subagent exchange), one line per member for a channel (several
 // colleagues' stats are relevant there at once).
@@ -956,6 +947,187 @@ async function renderConvSettingsWorktree() {
   worktreeForm = { colleagueId, sessionId, button, error };
 }
 
+// --- Continue in the terminal ----------------------------------------
+// What `api/cli-session` says per 1:1 conversation key: {available,
+// resumeCommand, forkCommand, handedOver, ...}. Loaded on demand, and
+// refreshed whenever the dialog opens (the first reply makes it available).
+const cliInfo = new Map();
+async function loadCliInfo(colleagueId, sessionId) {
+  const key = convKey(colleagueId, sessionId);
+  try {
+    const res = await fetch(
+      `api/cli-session?colleagueId=${encodeURIComponent(colleagueId)}&sessionId=${encodeURIComponent(sessionId)}`
+    );
+    cliInfo.set(key, await res.json());
+  } catch {
+    cliInfo.set(key, { available: false, handedOver: false });
+  }
+  if (key === activeConvKey()) {
+    renderHandoverNotice();
+    if (!convSettingsBackdropEl.hidden) renderConvSettingsTerminal({ reload: false });
+  }
+}
+
+// The line above the composer while the terminal has the conversation.
+function renderHandoverNotice() {
+  handoverNoticeEl.innerHTML = '';
+  const colleagueId = activeColleagueId;
+  const sessionId = activeSessionId;
+  const info = colleagueId && !isSubagentThread(colleagueId) ? cliInfo.get(convKey(colleagueId, sessionId)) : null;
+  handoverNoticeEl.hidden = !info?.handedOver;
+  if (!info?.handedOver) return;
+  const text = document.createElement('span');
+  text.textContent = 'Handed over to the terminal';
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.textContent = 'Take back';
+  button.addEventListener('click', () => {
+    socket.send(JSON.stringify({ type: 'take_back_terminal', colleagueId, sessionId }));
+  });
+  handoverNoticeEl.append(text, button);
+}
+
+// The settings section: one menu button ("Continue in terminal") with
+// "Transfer to terminal" (the chat lets go of the session) and "Fork into
+// terminal" (a copy; the chat goes on unchanged). Both copy the command and
+// show it here. Nothing is opened or run for you.
+let terminalForm = null; // { colleagueId, sessionId, status } while the section is shown
+async function renderConvSettingsTerminal({ reload = true } = {}) {
+  convSettingsTerminalEl.innerHTML = '';
+  terminalForm = null;
+  if (!activeColleagueId || isSubagentThread(activeColleagueId)) {
+    convSettingsTerminalSectionEl.hidden = true;
+    return;
+  }
+  const colleagueId = activeColleagueId;
+  const sessionId = activeSessionId;
+  const key = convKey(colleagueId, sessionId);
+  if (reload) {
+    await loadCliInfo(colleagueId, sessionId); // re-renders this section once it has the answer
+    return;
+  }
+  const info = cliInfo.get(key);
+  if (!info) return;
+  convSettingsTerminalSectionEl.hidden = false;
+
+  const status = document.createElement('p');
+  status.className = 'model-picker__hint';
+  status.setAttribute('role', 'status');
+  const error = document.createElement('p');
+  error.className = 'model-picker__error';
+  error.setAttribute('role', 'alert');
+  error.hidden = true;
+  const commandEl = document.createElement('code');
+  commandEl.className = 'terminal-command';
+  commandEl.hidden = true;
+  terminalForm = { colleagueId, sessionId, status, error, commandEl };
+
+  const wrap = document.createElement('div');
+  wrap.className = 'terminal-menu';
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.id = 'terminal-menu-button';
+  button.textContent = 'Continue in terminal';
+  button.setAttribute('aria-haspopup', 'menu');
+  button.setAttribute('aria-expanded', 'false');
+  button.setAttribute('aria-controls', 'terminal-menu-list');
+  const list = document.createElement('ul');
+  list.id = 'terminal-menu-list';
+  list.className = 'terminal-menu__list';
+  list.setAttribute('role', 'menu');
+  list.setAttribute('aria-labelledby', 'terminal-menu-button');
+  list.hidden = true;
+
+  const closeMenu = ({ refocus = false } = {}) => {
+    list.hidden = true;
+    button.setAttribute('aria-expanded', 'false');
+    if (refocus) button.focus();
+  };
+  const items = [];
+  const addItem = (label, onChoose) => {
+    const li = document.createElement('li');
+    li.setAttribute('role', 'none');
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'terminal-menu__item';
+    item.setAttribute('role', 'menuitem');
+    item.tabIndex = -1;
+    item.textContent = label;
+    item.addEventListener('click', () => {
+      closeMenu({ refocus: true });
+      onChoose();
+    });
+    li.appendChild(item);
+    list.appendChild(li);
+    items.push(item);
+  };
+  const show = (command, message) => {
+    error.hidden = true;
+    commandEl.textContent = command;
+    commandEl.hidden = false;
+    status.textContent = message;
+  };
+  addItem('Transfer to terminal', async () => {
+    if (isTyping(key)) {
+      error.textContent = 'She is still answering. Hand over once she is done.';
+      error.hidden = false;
+      return;
+    }
+    // Copied right away, while the click still counts as the gesture the
+    // clipboard asks for; the server may still refuse (then the message below says so).
+    const ok = await copyToClipboard(info.resumeCommand);
+    show(info.resumeCommand, `${ok ? 'Copied.' : 'Copy failed, select it by hand.'} Run it in a terminal. The chat lets go of the session meanwhile.`);
+    socket.send(JSON.stringify({ type: 'handover_terminal', colleagueId, sessionId }));
+  });
+  addItem('Fork into terminal', async () => {
+    const ok = await copyToClipboard(info.forkCommand);
+    show(info.forkCommand, `${ok ? 'Copied.' : 'Copy failed, select it by hand.'} The terminal works on a copy; this chat goes on unchanged.`);
+  });
+
+  const focusItem = (index) => items[(index + items.length) % items.length].focus();
+  const openMenu = (index) => {
+    list.hidden = false;
+    button.setAttribute('aria-expanded', 'true');
+    focusItem(index);
+  };
+  button.addEventListener('click', () => (list.hidden ? openMenu(0) : closeMenu()));
+  button.addEventListener('keydown', (event) => {
+    if (event.key === 'ArrowDown') { event.preventDefault(); openMenu(0); }
+    else if (event.key === 'ArrowUp') { event.preventDefault(); openMenu(-1); }
+  });
+  list.addEventListener('keydown', (event) => {
+    const at = items.indexOf(document.activeElement);
+    if (event.key === 'ArrowDown') { event.preventDefault(); focusItem(at + 1); }
+    else if (event.key === 'ArrowUp') { event.preventDefault(); focusItem(at - 1); }
+    else if (event.key === 'Home') { event.preventDefault(); focusItem(0); }
+    else if (event.key === 'End') { event.preventDefault(); focusItem(-1); }
+    else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeMenu({ refocus: true }); }
+    else if (event.key === 'Tab') closeMenu();
+  });
+  wrap.addEventListener('focusout', (event) => {
+    if (!wrap.contains(event.relatedTarget)) closeMenu();
+  });
+  wrap.append(button, list);
+
+  const hint = document.createElement('p');
+  hint.className = 'model-picker__hint';
+  if (!info.available) {
+    button.disabled = true;
+    hint.textContent = 'Available once she has answered at least once.';
+  } else {
+    hint.textContent =
+      'Copies a command for a terminal on this machine; nothing is opened for you. Transfer: the chat stops using the session until you take it back. Fork: the terminal works on a copy and this chat goes on unchanged.';
+  }
+  convSettingsTerminalEl.append(wrap);
+  if (info.handedOver) {
+    const handed = document.createElement('p');
+    handed.className = 'model-picker__hint';
+    handed.textContent = 'Handed over to the terminal. Take it back above the message box.';
+    convSettingsTerminalEl.append(handed);
+  }
+  convSettingsTerminalEl.append(hint, commandEl, status, error);
+}
+
 function renderPaneHeader() {
   paneHeaderEl.innerHTML = '';
   let hasContent = false;
@@ -1019,7 +1191,14 @@ function renderPaneHeader() {
       span.textContent = limitWarnings.get(key).text;
       entries.appendChild(span);
     }
-    paneHeaderEl.classList.toggle('pane-header--auto-mode', autoModeKeys.has(key));
+    // Colour alone is no signal for everyone: say it in words too.
+    if (allowAllOn(key)) {
+      const span = document.createElement('span');
+      span.className = 'pane-header__entry';
+      span.textContent = 'All tools allowed';
+      entries.appendChild(span);
+    }
+    paneHeaderEl.classList.toggle('pane-header--auto-mode', allowAllOn(key));
     hasContent = true;
   } else {
     paneHeaderEl.classList.remove('pane-header--auto-mode');
@@ -1083,10 +1262,10 @@ function renderPaneHeader() {
     });
     actions.appendChild(searchToggle);
 
-    // Opens the conversation settings dialog, which holds the Auto-mode
-    // checkbox and Reset context button (see openConvSettingsModal/
-    // renderConvSettingsAutoMode below; the channel's per-member
-    // Autopilot checkboxes live there too).
+    // Opens the conversation settings dialog, which holds the Permissions
+    // section and Reset context button (see openConvSettingsModal/
+    // renderConvSettingsPermissions below; the channel's per-member
+    // permissions live there too).
     const menuButton = document.createElement('button');
     menuButton.type = 'button';
     menuButton.className = 'pane-header__menu';
@@ -1321,8 +1500,8 @@ function refreshNotifyPermissionButton() {
 // --- Settings & usage modal ----------------------------------------
 // One modal, three sections: token/cost usage per colleague (+ the
 // gatekeeper's own, which isn't a colleague),
-// which sessions currently have auto mode on (with a way to turn one
-// off without having to go find that conversation first), and the
+// which conversations have tools allowed ahead of time (with a way to
+// revoke one without having to go find that conversation first), and the
 // notification-permission status. Re-rendered on open and again
 // whenever the underlying data changes while it's open (see the
 // `!settingsBackdropEl.hidden` checks at each call site below).
@@ -1435,40 +1614,36 @@ function renderUsageTable() {
   usageSummaryEl.append(tokensBig, document.createTextNode(' · '), costBig);
 }
 
-function renderAutoModeList() {
-  autoModeListEl.innerHTML = '';
-  if (autoModeKeys.size === 0) {
+function renderPermissionsList() {
+  permissionsListEl.innerHTML = '';
+  const rows = [];
+  for (const [key, state] of permissionStates) {
+    if (state.allowAll) rows.push({ key, text: 'Allow all tools', off: () => setAllowAll(key, false), action: 'Turn off' });
+    for (const tool of state.tools) {
+      rows.push({ key, text: `Always allow ${tool}`, off: () => setAlwaysAllow(key, tool, false), action: 'Revoke' });
+    }
+  }
+  if (!rows.length) {
     const li = document.createElement('li');
     li.className = 'empty-note';
-    // Deliberately narrower than "nothing is on autopilot": this list
-    // only ever reads the server-side 1:1 auto mode (autoModeKeys). A
-    // channel's own "Turn on autopilot" lives in alwaysAllowedTools and
-    // has no representation here at all, so a blanket "nothing is on
-    // autopilot" would claim something about the whole app that this
-    // list cannot back.
-    li.textContent = 'No one-to-one conversation has auto mode on right now. Channel autopilot is not listed here.';
-    autoModeListEl.appendChild(li);
+    li.textContent = 'Nothing is allowed ahead of time. Everything that asks will ask.';
+    permissionsListEl.appendChild(li);
     return;
   }
-  for (const key of autoModeKeys) {
+  for (const { key, text, off, action } of rows) {
     const [colleagueId] = key.split('::');
     const li = document.createElement('li');
     li.appendChild(avatarEl(colleaguesById.get(colleagueId)));
     const label = document.createElement('span');
     label.className = 'settings-list__label';
-    label.textContent = describeConvKey(key);
+    label.textContent = `${describeConvKey(key)}: ${text}`;
     const button = document.createElement('button');
     button.type = 'button';
-    button.textContent = 'Turn off';
-    button.addEventListener('click', () => {
-      const [colleagueId, sessionId] = key.split('::');
-      autoModeKeys.delete(key);
-      socket.send(JSON.stringify({ type: 'set_auto_mode', colleagueId, sessionId, enabled: false }));
-      renderAutoModeList();
-      if (key === activeConvKey()) renderPaneHeader();
-    });
+    button.textContent = action;
+    button.setAttribute('aria-label', `${action}: ${describeConvKey(key)}, ${text}`);
+    button.addEventListener('click', off);
     li.append(label, button);
-    autoModeListEl.appendChild(li);
+    permissionsListEl.appendChild(li);
   }
 }
 
@@ -1623,7 +1798,7 @@ async function renderUsageLimits() {
 function refreshSettingsModalIfOpen() {
   if (settingsBackdropEl.hidden) return;
   renderUsageTable();
-  renderAutoModeList();
+  renderPermissionsList();
   // Not renderUsageLimits() here on purpose: this is called on every
   // stats-changing socket update (frequent, mid-conversation), and each
   // call round-trips through a live Claude session to the claude.ai
@@ -1637,9 +1812,41 @@ function refreshSettingsModalIfOpen() {
 // add/switch/remove are mutations and go over the socket, same split
 // as everything else in this app (see server/index.js's own comment on
 // its api/workforces route).
+// Messages of yours waiting in the *other* workforces (their turn runs on in
+// their own server, see switch_workforce). Polled lightly, see below.
+let otherWorkforcesWaiting = new Map(); // path -> count, only counts above 0
+const workforceWaitingBadgeEl = document.getElementById('workforce-waiting-badge');
+
+async function refreshWorkforceStatus() {
+  try {
+    const [statusRes, listRes] = await Promise.all([fetch('api/workforces-status'), fetch('api/workforces')]);
+    if (!statusRes.ok || !listRes.ok) return;
+    const [status, list] = await Promise.all([statusRes.json(), listRes.json()]);
+    const current = list.find((w) => w.current)?.path;
+    otherWorkforcesWaiting = new Map(
+      status.filter((w) => w.path !== current && w.waiting > 0).map((w) => [w.path, w.waiting])
+    );
+  } catch {
+    return; // a failed poll leaves the last answer standing; the next one corrects it
+  }
+  let total = 0;
+  for (const n of otherWorkforcesWaiting.values()) total += n;
+  workforceWaitingBadgeEl.hidden = total === 0;
+  if (total > 0) {
+    const text = `${total} ${total === 1 ? 'message' : 'messages'} waiting in other workforces`;
+    workforceWaitingBadgeEl.title = text;
+    workforceSwitcherEl.setAttribute('aria-label', `${brandNameEl.textContent}: switch workforce, ${text}`);
+  } else {
+    workforceSwitcherEl.removeAttribute('aria-label');
+  }
+}
+
+setInterval(() => { if (!document.hidden) refreshWorkforceStatus(); }, 5000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshWorkforceStatus(); });
+
 async function renderWorkforceList() {
   workforceListEl.innerHTML = '';
-  const res = await fetch('api/workforces');
+  const [res] = await Promise.all([fetch('api/workforces'), refreshWorkforceStatus()]);
   const workforces = await res.json();
   for (const workforce of workforces) {
     const li = document.createElement('li');
@@ -1665,6 +1872,14 @@ async function renderWorkforceList() {
       tag.className = 'workforce-row__tag';
       tag.textContent = 'current';
       nameRow.appendChild(tag);
+    }
+    const waitingCount = otherWorkforcesWaiting.get(workforce.path);
+    if (waitingCount && !workforce.current) {
+      const waiting = document.createElement('span');
+      waiting.className = 'workforce-row__waiting';
+      waiting.textContent = String(waitingCount);
+      waiting.title = `${waitingCount} ${waitingCount === 1 ? 'message' : 'messages'} waiting`;
+      nameRow.appendChild(waiting);
     }
     pick.appendChild(nameRow);
 
@@ -1780,7 +1995,7 @@ document.addEventListener('keydown', (event) => {
 
 function openSettingsModal() {
   renderUsageTable();
-  renderAutoModeList();
+  renderPermissionsList();
   renderSettingsNotifyRow();
   renderUsageLimits();
   // Not `brandLogoEl.src` as the source of truth here — an unset <img>
@@ -2373,14 +2588,10 @@ const handleSocketMessage = (event) => {
     return;
   }
 
-  if (update.type === 'auto_mode_changed') {
-    const key = convKey(update.colleagueId, update.sessionId);
-    if (update.enabled) autoModeKeys.add(key);
-    else {
-      autoModeKeys.delete(key);
-      withdrawAllowEverything(key);
-    }
-    if (key === activeConvKey()) renderPaneHeader();
+  if (update.type === 'permissions_changed') {
+    applyPermissionState(update);
+    renderPaneHeader();
+    renderConvSettingsPermissions();
     refreshSettingsModalIfOpen();
     return;
   }
@@ -2393,6 +2604,23 @@ const handleSocketMessage = (event) => {
       renderPaneHeader();
       refreshDiffIfOpen();
       if (!convSettingsBackdropEl.hidden) renderConvSettingsWorktree();
+    }
+    return;
+  }
+
+  if (update.type === 'terminal_handover') {
+    const key = convKey(update.colleagueId, update.sessionId);
+    cliInfo.set(key, { ...(cliInfo.get(key) || { available: true }), handedOver: Boolean(update.handedOver) });
+    const form = terminalForm;
+    if (update.failed && form && form.colleagueId === update.colleagueId && form.sessionId === update.sessionId) {
+      form.commandEl.hidden = true;
+      form.status.textContent = '';
+      form.error.textContent = `Not handed over: ${update.message || 'failed'} Do not use the copied command.`;
+      form.error.hidden = false;
+    }
+    if (key === activeConvKey()) {
+      renderHandoverNotice();
+      if (!update.failed && !convSettingsBackdropEl.hidden && !update.handedOver) renderConvSettingsTerminal({ reload: false });
     }
     return;
   }
@@ -2679,11 +2907,6 @@ const handleSocketMessage = (event) => {
         break;
       }
       case 'permission_request':
-        if (isAlwaysAllowed(channelKey(colleagueId, channelId), update.toolName)) {
-          const via = alwaysAllowedTools.get(channelKey(colleagueId, channelId))?.has('*') ? 'autopilot' : 'allow always';
-          socket.send(JSON.stringify({ type: 'permission_response', requestId: update.requestId, allow: true, via }));
-          break;
-        }
         channelPendingPermission.set(channelKey(colleagueId, channelId), { channelId, ...update });
         break;
       default:
@@ -2910,11 +3133,6 @@ const handleSocketMessage = (event) => {
       break;
     }
     case 'permission_request':
-      if (isAlwaysAllowed(key, update.toolName)) {
-        const via = alwaysAllowedTools.get(key)?.has('*') ? 'autopilot' : 'allow always';
-        socket.send(JSON.stringify({ type: 'permission_response', requestId: update.requestId, allow: true, via }));
-        return;
-      }
       pendingPermission.set(key, update);
       break;
     default:
@@ -3002,49 +3220,40 @@ function respondToPermission(key, requestId, allow, isChannel) {
 // see the file header for scope. The rest of this file, above and
 // below this section, is unchanged, hand-written DOM code.
 
+// Request ids whose card is showing the "Allow all tools" confirmation.
+const confirmingAllowAll = new Set();
+
 // Shared by the 1:1 view and the channel view — same card, same
 // Allow/Deny behavior, wherever the request came from. `isChannel`
 // only decides which pending-permission map the response clears.
-// `respondToPermission`/`rememberAlwaysAllowed`/`turnOnAutoMode` are
-// the same plain functions the old vanilla version called — porting
-// the markup didn't need to touch the behavior they implement.
+// `respondToPermission` is the same plain function the old vanilla
+// version called — porting the markup didn't need to touch it.
 function PermissionCard({ permission, colleagueId, isChannel }) {
   // For a channel, the `colleagueId` prop is the bare id (see
-  // renderChannelMessages) — combined here with the channel so per-tool
-  // memory and "autopilot" don't leak into her other channels the way
-  // they used to (colleagueId alone was the whole key). For a 1:1, the
-  // prop is already the full convKey its caller passes in — nothing to
-  // combine.
+  // renderChannelMessages) — combined here with the channel so
+  // permissions don't leak into her other channels. For a 1:1, the
+  // prop is already the full convKey its caller passes in.
   const key = isChannel ? channelKey(colleagueId, permission.channelId) : colleagueId;
+  const confirming = confirmingAllowAll.has(permission.requestId);
+  const setConfirming = (on) => {
+    if (on) confirmingAllowAll.add(permission.requestId);
+    else confirmingAllowAll.delete(permission.requestId);
+    if (isChannel) renderChannelMessages();
+    else renderMessages();
+  };
+  const name = colleaguesById.get(key.split('::')[0])?.name || 'She';
+  const where = isChannel ? 'this channel' : 'this chat';
   const allow = () => respondToPermission(key, permission.requestId, true, isChannel);
-  // "Allow always" — stop asking about this one tool (e.g. every
-  // future Read) for the rest of this conversation, short of full
-  // autopilot. Purely client-side (see alwaysAllowedTools): later
-  // matching permission_request updates are auto-answered before a
-  // card ever gets built for them.
+  // "Always allow <tool>": the server stops asking about this one tool
+  // for this conversation (every call of it, not just this one).
   const allowAlways = () => {
-    rememberAlwaysAllowed(key, permission.toolName);
+    setAlwaysAllow(key, permission.toolName, true);
     respondToPermission(key, permission.requestId, true, isChannel);
   };
   const deny = () => respondToPermission(key, permission.requestId, false, isChannel);
-  // "Turn on autopilot" — allow everything, not just this one tool.
-  // For a 1:1 conversation this is the real, server-backed auto mode
-  // (same mechanism as the pane-header checkbox — see turnOnAutoMode);
-  // a channel turn has no server-side auto mode to flip (see
-  // server/index.js's autoModeSessions), so it gets the client-side "*"
-  // wildcard in alwaysAllowedTools instead, scoped to this one channel
-  // (see `key` above) — same practical effect, no more cards shown for
-  // her in this channel, just not enforced on the server the way 1:1
-  // auto mode is, and not remembered anywhere visible (there's
-  // nowhere in the UI that shows it's on — tracked separately).
-  const autopilot = () => {
-    rememberAlwaysAllowed(key, '*');
-    if (!isChannel) turnOnAutoMode();
-    // respondToPermission below already re-renders the message list
-    // (which drops this card) — pane-header's own autopilot badge (see
-    // renderPaneHeader) needs its own nudge since it isn't part of that
-    // re-render, only when this channel is actually the one on screen.
-    if (isChannel && permission.channelId === activeChannelId) renderPaneHeader();
+  // "Allow all tools": every tool, not just this one; the server holds it.
+  const allowAllTools = () => {
+    setAllowAll(key, true);
     respondToPermission(key, permission.requestId, true, isChannel);
   };
 
@@ -3054,10 +3263,20 @@ function PermissionCard({ permission, colleagueId, isChannel }) {
       ${permission.description ? html`<p class="permission-card__description">${permission.description}</p>` : null}
       <div class="permission-card__actions">
         <button type="button" onClick=${allow}>Allow</button>
-        <button type="button" class="permission-card__allow-always" onClick=${allowAlways}>Allow always</button>
+        <button type="button" class="permission-card__allow-always" onClick=${allowAlways}
+          title=${`Stops asking for ${permission.toolName} in ${where}. Applies to every ${permission.toolName} call, not just this one.`}>Always allow ${permission.toolName}</button>
         <button type="button" class="permission-card__deny" onClick=${deny}>Deny</button>
-        <button type="button" class="permission-card__autopilot" onClick=${autopilot}>Turn on autopilot</button>
       </div>
+      ${confirming
+        ? html`<div class="permission-card__confirm" role="group" aria-label="Allow all tools">
+            <p>Allow all tools in ${where}?</p>
+            <p class="permission-card__description">${name} will edit files, run commands and use the web without asking, until you turn this off in Conversation settings.</p>
+            <div class="permission-card__actions">
+              <button type="button" onClick=${allowAllTools}>Allow all tools</button>
+              <button type="button" class="permission-card__deny" onClick=${() => setConfirming(false)}>Cancel</button>
+            </div>
+          </div>`
+        : html`<button type="button" class="permission-card__link" onClick=${() => setConfirming(true)}>Allow all tools in ${where}…</button>`}
     </div>
   `;
 }
@@ -3106,8 +3325,7 @@ function ToolDetailBox({ input }) {
 // a thinking entry is just its accumulated text.
 // How a tool call got its go-ahead, shown next to the call when it was NOT
 // a prompt the human answered: allowed by a settings rule or by default
-// ('not asked'), by auto mode, by an earlier "Allow always", or by the
-// channel autopilot. Reading files and searching need no approval at all
+// ('not asked'), by "allow all tools", or by "always allow". Reading files and searching need no approval at all
 // (Claude Code's permission docs: read-only tools require none within the
 // working directory), so those stay unlabelled.
 const NO_APPROVAL_TOOLS = new Set(['Read', 'Grep', 'Glob']);
@@ -3577,6 +3795,8 @@ async function selectColleague(colleague, sessionId = DEFAULT_SESSION_ID) {
   autoResizeComposer();
   renderPaneHeader();
   refreshDiffIfOpen();
+  renderHandoverNotice();
+  if (canReply) loadCliInfo(colleague.id, activeSessionId);
 
   const key = activeConvKey();
   await loadColleagueHistory(colleague.id, activeSessionId, key);
@@ -4173,7 +4393,7 @@ async function loadRoster({ preserveSelection = false } = {}) {
   channelsById.clear();
   for (const channel of channels) channelsById.set(channel.id, channel);
 
-  // colleague-stats and auto-mode-sessions are already keyed the same
+  // colleague-stats and permissions are already keyed the same
   // way convKey() produces locally (see server/index.js's adapterKey())
   // — no reshaping needed, just load them straight in.
   const statsRes = await fetch('api/colleague-stats');
@@ -4181,12 +4401,11 @@ async function loadRoster({ preserveSelection = false } = {}) {
 
   // Replaced wholesale rather than added to: this is the one piece of
   // roster state where the interesting change is a key *disappearing*
-  // (auto-mode switched off elsewhere), and adding-only would leave the
+  // (a permission revoked elsewhere), and adding-only would leave the
   // sidebar showing it as still on after a refresh.
-  const autoModeRes = await fetch('api/auto-mode-sessions');
-  const autoModeSessions = await autoModeRes.json();
-  autoModeKeys.clear();
-  for (const key of autoModeSessions) autoModeKeys.add(key);
+  const permissionsRes = await fetch('api/permissions');
+  permissionStates.clear();
+  for (const state of await permissionsRes.json()) applyPermissionState(state);
 
   const gatekeeperUsageRes = await fetch('api/gatekeeper-usage');
   gatekeeperUsage = await gatekeeperUsageRes.json();
@@ -4496,6 +4715,13 @@ form.addEventListener('submit', (event) => {
 
   if (!activeColleagueId) return;
   const key = activeConvKey();
+  if (cliInfo.get(key)?.handedOver) {
+    // No quiet second writer: ask, and take the session back first.
+    if (!window.confirm('The terminal may be using this session. Take it back and send?')) return;
+    cliInfo.set(key, { ...cliInfo.get(key), handedOver: false });
+    renderHandoverNotice();
+    socket.send(JSON.stringify({ type: 'take_back_terminal', colleagueId: activeColleagueId, sessionId: activeSessionId }));
+  }
   if (!history.has(key)) history.set(key, []);
   const attachments = pendingAttachment ? [pendingAttachment] : [];
   // Written while she is still mid-turn: it stays below her live block,
@@ -4685,3 +4911,4 @@ attachPullToRefresh(messagesEl, refreshActiveConversation, 'var(--bg)');
 attachPullToRefresh(sidebarEl, () => loadRoster({ preserveSelection: true }), 'var(--bg-sidebar)');
 
 loadRoster();
+refreshWorkforceStatus();

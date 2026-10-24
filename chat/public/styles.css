@@ -777,7 +777,7 @@ button.workforce-row__pick:disabled { cursor: default; opacity: 0.55; }
    plain block-flow section, and multiple per-member rows (a channel)
    need one full-width line each, not inline-flex's default shrink-to-
    content sitting side by side. */
-#conv-settings-auto-mode .auto-mode-toggle {
+#conv-settings-permissions .auto-mode-toggle {
   display: flex;
   margin: 0 0 0.4rem;
 }
@@ -798,6 +798,57 @@ button.workforce-row__pick:disabled { cursor: default; opacity: 0.55; }
 #conv-model-select:disabled { opacity: 0.6; }
 .model-picker__hint { margin: 0.4rem 0 0; font-size: 0.85rem; color: var(--fg-muted); }
 .model-picker__error { margin: 0.4rem 0 0; font-size: 0.85rem; color: #d64545; }
+
+/* Terminal section (conversation settings) and the handover notice. */
+.terminal-menu { position: relative; display: inline-block; }
+.terminal-menu__list {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 0.25rem);
+  z-index: 2;
+  min-width: 100%;
+  margin: 0;
+  padding: 0.25rem;
+  list-style: none;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 0.4rem;
+}
+.terminal-menu__list[hidden] { display: none; }
+.terminal-menu__item {
+  display: block;
+  width: 100%;
+  min-height: 2.5rem;
+  text-align: left;
+  white-space: nowrap;
+  background: none;
+  border: none;
+  color: var(--fg);
+  padding: 0.4rem 0.6rem;
+  font: inherit;
+  cursor: pointer;
+  border-radius: 0.3rem;
+}
+.terminal-menu__item:hover, .terminal-menu__item:focus-visible { background: var(--border); }
+.terminal-command {
+  display: block;
+  margin: 0.5rem 0 0;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 0.4rem;
+  font-size: 0.8rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+#handover-notice {
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 1rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.85rem;
+}
+#handover-notice:not([hidden]) { display: flex; }
 
 #conv-search-input {
   width: 100%;
@@ -1302,6 +1353,11 @@ button.workforce-row__pick:disabled { cursor: default; opacity: 0.55; }
   margin-left: auto;
 }
 .colleague--active .unread-badge { background: #fff; }
+/* On the workforce switcher: a message waits in another workforce. Sits
+   right after the chevron instead of at the row's edge. */
+#workforce-waiting-badge { margin-left: 0.1rem; }
+#workforce-waiting-badge[hidden] { display: none; }
+.workforce-row__waiting { color: var(--accent); font-weight: 600; margin-left: 0.4rem; }
 
 .draft-badge {
   flex-shrink: 0;
@@ -1943,9 +1999,23 @@ button.workforce-row__pick:disabled { cursor: default; opacity: 0.55; }
   color: var(--accent) !important;
 }
 
-/* Ties visually into the auto-mode header toggle's own color (see
-   .pane-header--auto-mode) — same "unattended from here on" idea. */
-.permission-card__autopilot { background: var(--auto-mode-border) !important; color: #1b1b1f !important; }
+/* "Allow all tools" is the widest grant, so it is only a text link, not a
+   button on a par with the others. */
+.permission-card__link {
+  margin-top: 0.5rem;
+  padding: 0.25rem 0;
+  background: none;
+  border: 0;
+  color: var(--accent);
+  font: inherit;
+  font-size: 0.85rem;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.permission-card__confirm { margin-top: 0.75rem; padding-top: 0.5rem; border-top: 1px solid var(--border); }
+
+#conv-settings-permissions .permissions-block { margin: 0 0 0.8rem; }
+.permissions-note { margin: 0 0 0.4rem 1.65rem; color: var(--fg-muted); font-size: 0.85rem; }
 
 /* `max-width: 16rem` alone is wider than the bubble at phone widths
    (bubble is min(60ch, 80%)), and html/body's overflow-x: hidden turned

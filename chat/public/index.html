@@ -60,6 +60,7 @@ try {
       <button id="workforce-switcher" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="workforce-menu" title="Switch workforce">
         <span id="brand-name">hire-juno</span>
         <svg class="icon icon--chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
+        <span id="workforce-waiting-badge" class="unread-badge" hidden></span>
       </button>
       <button id="diff-button" type="button" title="Changed files" aria-label="Changed files">
         <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="2"/><line x1="7" y1="8" x2="9" y2="8"/><line x1="8" y1="7" x2="8" y2="9"/><line x1="11" y1="8" x2="16" y2="8"/><line x1="7" y1="14" x2="9" y2="14"/><line x1="11" y1="14" x2="16" y2="14"/></svg>
@@ -156,6 +157,7 @@ try {
       <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="5" y1="3" x2="5" y2="21"/><path d="M5 4h13l-3 4 3 4H5"/></svg>
       Einstellungsprozess läuft
     </div>
+    <div id="handover-notice" role="status" hidden></div>
     <div id="messages" role="log" aria-live="polite"></div>
     <div id="attachment-preview" hidden></div>
     <form id="composer">
@@ -272,8 +274,8 @@ try {
       <div id="usage-limits"></div>
     </section>
     <section>
-      <h3>Auto mode</h3>
-      <ul id="auto-mode-list" class="settings-list"></ul>
+      <h3>Permissions</h3>
+      <ul id="permissions-list" class="settings-list"></ul>
     </section>
     <section>
       <h3>Notifications</h3>
@@ -307,7 +309,7 @@ try {
      Reset-context button (per conversation) with this dialog, opened
      via the ⋮ button renderPaneHeader now builds instead. Separate from
      #settings-backdrop above on purpose: that one is app-wide (usage,
-     branding, every conversation's auto mode at once); this one is
+     branding, every conversation's permissions at once); this one is
      scoped to whichever colleague/channel is open right now. -->
 <div id="conv-settings-backdrop" hidden>
   <div id="conv-settings-modal" role="dialog" aria-modal="true" aria-label="Conversation settings">
@@ -316,8 +318,8 @@ try {
       <button id="conv-settings-close" type="button" data-dialog-close aria-label="Close conversation settings"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="5" y1="5" x2="19" y2="19"/><line x1="19" y1="5" x2="5" y2="19"/></svg></button>
     </div>
     <section>
-      <h3>Auto mode</h3>
-      <div id="conv-settings-auto-mode"></div>
+      <h3>Permissions</h3>
+      <div id="conv-settings-permissions"></div>
     </section>
     <!-- Model choice, 1:1 only for now (a channel turn runs on each
          member's own main-conversation session, whose model is set in
@@ -332,12 +334,19 @@ try {
          its own branch (see server/worktree.js). Shown when the workforce
          has an id to keep it under; app.js's renderConvSettingsWorktree
          fills it in. -->
+    <!-- Terminal: continue this 1:1 conversation in the Claude Code CLI
+         (see server/cliSession.js). app.js's renderConvSettingsTerminal
+         fills it in. -->
+    <section id="conv-settings-terminal-section" hidden>
+      <h3>Terminal</h3>
+      <div id="conv-settings-terminal"></div>
+    </section>
     <section id="conv-settings-worktree-section" hidden>
       <h3>Worktree</h3>
       <div id="conv-settings-worktree"></div>
     </section>
     <!-- "New session" lives here alongside the other per-conversation
-         controls (Auto mode, Reset context), not in the sidebar (see
+         controls (Permissions, Reset context), not in the sidebar (see
          chat/README.md/app.js's newSessionFormEl). 1:1-only (a session is
          always "another conversation with this colleague", channels
          don't have the concept), so app.js's renderConvSettingsNewSession
