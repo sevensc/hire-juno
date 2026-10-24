@@ -594,6 +594,20 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
     finishSubagentThread(id) {
       finishSubagentStmt.run(id);
     },
+    // A window still marked running whose owner has no live session any more
+    // (server restarted, session closed) can never get its end: nothing is
+    // running it. Marks those done, so they can be closed like any other;
+    // returns their ids. `hasLiveOwner(ownerId, sessionId)` says whether a
+    // session that could still be running it exists.
+    finishOrphanedSubagentThreads(hasLiveOwner) {
+      const ids = [];
+      for (const row of listSubagentsStmt.all()) {
+        if (row.status !== 'running' || hasLiveOwner(row.owner_id, row.session_id)) continue;
+        finishSubagentStmt.run(row.id);
+        ids.push(row.id);
+      }
+      return ids;
+    },
     listSubagentThreads() {
       return listSubagentsStmt.all().map((row) => ({
         id: row.id,
