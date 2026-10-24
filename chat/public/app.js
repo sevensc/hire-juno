@@ -5843,7 +5843,10 @@
     const key = activeConvKey();
     const enabled = !autoModeKeys.has(key);
     if (enabled) autoModeKeys.add(key);
-    else autoModeKeys.delete(key);
+    else {
+      autoModeKeys.delete(key);
+      withdrawAllowEverything(key);
+    }
     socket.send(JSON.stringify({ type: "set_auto_mode", colleagueId: activeColleagueId, sessionId: activeSessionId, enabled }));
     renderPaneHeader();
   }
@@ -5868,6 +5871,12 @@
   function isAlwaysAllowed(key, toolName) {
     const allowed = alwaysAllowedTools.get(key);
     return Boolean(allowed && (allowed.has("*") || allowed.has(toolName)));
+  }
+  function withdrawAllowEverything(key) {
+    const allowed = alwaysAllowedTools.get(key);
+    if (!allowed) return;
+    allowed.delete("*");
+    if (!allowed.size) alwaysAllowedTools.delete(key);
   }
   function rememberAlwaysAllowed(key, toolName) {
     if (!alwaysAllowedTools.has(key)) alwaysAllowedTools.set(key, /* @__PURE__ */ new Set());
@@ -7103,7 +7112,10 @@
     if (update.type === "auto_mode_changed") {
       const key2 = convKey(update.colleagueId, update.sessionId);
       if (update.enabled) autoModeKeys.add(key2);
-      else autoModeKeys.delete(key2);
+      else {
+        autoModeKeys.delete(key2);
+        withdrawAllowEverything(key2);
+      }
       if (key2 === activeConvKey()) renderPaneHeader();
       refreshSettingsModalIfOpen();
       return;
