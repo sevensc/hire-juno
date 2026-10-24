@@ -64,6 +64,7 @@ const attachmentPreviewEl = document.getElementById('attachment-preview');
 // #attach-button is a real <button> now (it was a <label for> before,
 // which no keyboard could reach) and it comes first in the markup.
 const sendButton = form.querySelector('button[type="submit"]');
+const queueButtonEl = document.getElementById('queue-button');
 const attachButtonEl = document.getElementById('attach-button');
 const imageLightboxEl = document.getElementById('image-lightbox');
 const imageLightboxImgEl = document.getElementById('image-lightbox-img');
@@ -2195,9 +2196,46 @@ const handleSocketMessage = (event) => {
       const trail = reconstructTrail(turn.trail);
       if (trail) pendingTrail.set(key, trail);
       else pendingTrail.delete(key);
+      // Messages that still wait (history may or may not be loaded yet; if
+      // not, the history rows carry the same mark).
+      for (const w of turn.waiting || []) markWaiting(key, w);
     }
     renderSidebar();
     if (activeConvKey()) renderMessages();
+    return;
+  }
+
+  // The server took a message that arrived mid-turn: it waits, and may be
+  // withdrawn if the server says so.
+  if (update.type === 'message_waiting') {
+    markWaiting(convKey(update.colleagueId, update.sessionId), update);
+    if (activeConvKey()) renderMessages();
+    return;
+  }
+
+  // Answer to a withdrawal (sent to every tab). Withdrawn: the bubble goes
+  // and its text returns to an empty composer. Not withdrawn: the message
+  // was read already, it stays and stops waiting. An error changes nothing.
+  if (update.type === 'message_cancelled') {
+    const key = convKey(update.colleagueId, update.sessionId);
+    const items = history.get(key) || [];
+    const i = items.findIndex((m) => m.clientId === update.id);
+    if (i >= 0) {
+      const item = items[i];
+      if (update.cancelled) {
+        items.splice(i, 1);
+        if (key === activeConvKey() && !input.value && !pendingAttachment) {
+          input.value = item.text || '';
+          autoResizeComposer();
+        }
+      } else if (update.error) {
+        delete item.withdrawing;
+      } else {
+        delete item.pending;
+        delete item.withdrawing;
+      }
+      if (activeConvKey()) renderMessages();
+    }
     return;
   }
 
@@ -2615,7 +2653,8 @@ const handleSocketMessage = (event) => {
       // A tool result is where a message sent during her turn is folded into
       // that turn (measured against the SDK, see server/waiting.js): she has
       // read it now, so it stops being drawn as "waiting".
-      for (const waiting of history.get(key)) delete waiting.pending;
+      // (A queued message is never folded: it stays a turn of its own.)
+      for (const waiting of history.get(key)) if (waiting.kind !== 'queue') delete waiting.pending;
       break;
     }
     case 'message': {
@@ -2639,7 +2678,14 @@ const handleSocketMessage = (event) => {
       // Her turn is over: whatever was written meanwhile counts as read
       // now and takes its place in the transcript, above this reply
       // (the order the server stored it in).
-      for (const waiting of history.get(key)) delete waiting.pending;
+      // What still waits (not folded) is stored behind this reply: the
+      // oldest one starts now, the others keep waiting.
+      const stillWaiting = history.get(key).filter((m) => m.pending);
+      if (stillWaiting.length) {
+        delete stillWaiting[0].pending;
+        delete stillWaiting[0].withdrawing;
+      }
+      history.set(key, history.get(key).filter((m) => !stillWaiting.includes(m)));
       history.get(key).push({
         role: update.role,
         text,
@@ -2654,6 +2700,7 @@ const handleSocketMessage = (event) => {
         // doesn't have.
         trail: reconstructTrail(update.trail),
       });
+      history.get(key).push(...stillWaiting);
       // Sidebar preview mirrors what the server's getLastMessages()
       // would now report (main thread only — see its own comment) —
       // updated locally instead of re-fetching the whole roster on
@@ -2966,7 +3013,7 @@ async function copyWithFeedback(text, button) {
   button.dataset.timer = String(setTimeout(() => { button.textContent = label; }, 1500));
 }
 
-function MessageRow({ role, avatarColleague, nameTag, item, toolText, onToggle, onToggleTrailEntry }) {
+function MessageRow({ role, avatarColleague, nameTag, item, toolText, onToggle, onToggleTrailEntry, onWithdraw }) {
   const isToolUse = item.toolInput !== undefined;
   const time = formatMessageTime(item.createdAt);
   return html`
@@ -2991,7 +3038,10 @@ function MessageRow({ role, avatarColleague, nameTag, item, toolText, onToggle, 
                     ? html`<button type="button" class="copy-button" aria-label="Copy message as Markdown" onClick=${(event) => copyWithFeedback(item.text, event.currentTarget)}>Copy</button>`
                     : null}
                   ${item.pending
-                    ? html`<time class="message__time">Waiting, not read yet</time>`
+                    ? html`<time class="message__time">${item.kind === 'queue' ? 'Queued, answered after this turn' : 'Waiting, not read yet'}</time>
+                        ${item.canCancel && item.clientId
+                          ? html`<button type="button" class="withdraw-button" disabled=${Boolean(item.withdrawing)} aria-label="Withdraw this message, it has not been read yet" onClick=${onWithdraw}>Withdraw</button>`
+                          : null}`
                     : time ? html`<time class="message__time">${time}</time>` : null}
                 </span>
               </span>
@@ -3103,6 +3153,11 @@ function renderMessages({ forceScrollToBottom = false } = {}) {
       item.trail[entryIndex].expanded = !item.trail[entryIndex].expanded;
       renderMessages();
     }}
+    onWithdraw=${() => {
+      item.withdrawing = true;
+      renderMessages();
+      socket.send(JSON.stringify({ type: 'cancel_message', id: item.clientId, colleagueId: activeColleagueId, sessionId: activeSessionId }));
+    }}
   />`;
 
   render(
@@ -3133,8 +3188,16 @@ function renderMessages({ forceScrollToBottom = false } = {}) {
 
   refreshHiringModeStyling(key);
   followThinkingTail();
+  updateQueueButton();
   if (stickToBottom) scrollMessagesToBottom();
   else updateScrollToBottomButton();
+}
+
+// "Queue message" next to Send: only in a 1:1 conversation whose colleague
+// is working on a turn right now (without one there is nothing to queue
+// behind, Send does the same).
+function updateQueueButton() {
+  queueButtonEl.hidden = !(activeColleagueId && !activeChannelId && !input.disabled && isTyping(activeConvKey()));
 }
 
 // A channel's message list, one bubble per sender — the part a 1:1
@@ -3144,6 +3207,7 @@ function renderMessages({ forceScrollToBottom = false } = {}) {
 // carry a name tag, since which colleague spoke changes message to
 // message here.
 function renderChannelMessages({ forceScrollToBottom = false } = {}) {
+  queueButtonEl.hidden = true;
   // Same reasoning as renderMessages' own stickToBottom — measured
   // before render() below, not after.
   const stickToBottom = forceScrollToBottom || isNearBottom();
@@ -3337,6 +3401,15 @@ function storedAttachments(list) {
   return (list || []).map((a) => ({ ...a, dataUrl: `api/attachment?id=${a.id}` }));
 }
 
+// Marks the bubble sent under `w.id` as waiting (see message_waiting).
+function markWaiting(key, w) {
+  const item = (history.get(key) || []).find((m) => m.clientId === w.id);
+  if (!item) return;
+  item.pending = true;
+  item.kind = w.kind;
+  item.canCancel = Boolean(w.canCancel);
+}
+
 // Same split, same reason as loadChannelHistory above.
 // Subagent threads never had a server-side history to fetch — they exist
 // only for this browser session (see chat/README.md) — so this fetch only
@@ -3362,6 +3435,9 @@ async function loadColleagueHistory(colleagueId, sessionId, key, { force = false
       createdAt: row.created_at,
       trail: reconstructTrail(row.trail),
       attachments: storedAttachments(row.attachments),
+      ...(row.waiting
+        ? { pending: true, clientId: row.waiting.id, kind: row.waiting.kind, canCancel: row.waiting.canCancel }
+        : {}),
     }))
   );
 }
@@ -4178,11 +4254,20 @@ input.addEventListener('keydown', (event) => {
   // held, not required.
   if (event.key === 'Enter' && !event.shiftKey) {
     event.preventDefault();
-    form.requestSubmit();
+    // Alt+Enter: "Queue message" (only while that button is there).
+    if (event.altKey && !queueButtonEl.hidden) form.requestSubmit(queueButtonEl);
+    else form.requestSubmit();
   }
 });
 
 input.addEventListener('blur', () => closeMentionAutocomplete());
+
+// Names a message so the server can withdraw it later (crypto.randomUUID
+// only exists in secure contexts; a LAN address over http is not one).
+function newMessageId() {
+  if (globalThis.crypto?.randomUUID) return crypto.randomUUID();
+  return `m-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
 
 form.addEventListener('submit', (event) => {
   event.preventDefault();
@@ -4218,7 +4303,11 @@ form.addEventListener('submit', (event) => {
   const attachments = pendingAttachment ? [pendingAttachment] : [];
   // Written while she is still mid-turn: it stays below her live block,
   // marked as waiting, until her turn ends (see the 'message' update).
-  history.get(key).push({ role: 'you', text, attachments, createdAt: new Date().toISOString(), pending: isTyping(key) });
+  // "Queue message" only counts while her turn runs; otherwise it is a plain send.
+  const typing = isTyping(key);
+  const kind = typing && event.submitter === queueButtonEl ? 'queue' : 'send';
+  const clientId = newMessageId();
+  history.get(key).push({ role: 'you', text, attachments, createdAt: new Date().toISOString(), pending: typing, clientId, kind });
   // Forced — sending your own message should always land you at the
   // bottom, same as every other chat app, regardless of where you'd
   // scrolled to read something older first.
@@ -4233,6 +4322,8 @@ form.addEventListener('submit', (event) => {
   socket.send(JSON.stringify({
     colleagueId: activeColleagueId,
     sessionId: activeSessionId,
+    id: clientId,
+    kind,
     text,
     attachments: attachments.map((a) => ({ name: a.name, mimeType: a.mimeType, data: a.data })),
   }));

@@ -295,6 +295,14 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
   const moveAttachmentsStmt = db.prepare(
     "UPDATE attachments SET message_id = ? WHERE kind = 'message' AND message_id = ?"
   );
+  const deleteOneMessageStmt = db.prepare('DELETE FROM messages WHERE id = ?');
+  const deleteOneMessageAttachmentsStmt = db.prepare(
+    "DELETE FROM attachments WHERE kind = 'message' AND message_id = ?"
+  );
+  const deleteMessageTx = db.transaction((id) => {
+    deleteOneMessageAttachmentsStmt.run(id);
+    return deleteOneMessageStmt.run(id).changes > 0;
+  });
   const moveToEndTx = db.transaction((ids) =>
     ids.map((oldId) => {
       const newId = maxMessageIdStmt.get().id + 1;
@@ -357,6 +365,11 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
     // (its images follow).
     moveToEnd(ids) {
       return moveToEndTx(ids);
+    },
+    // Removes one stored message and its images (a withdrawn message).
+    // Returns whether there was such a row.
+    deleteMessage(id) {
+      return deleteMessageTx(id);
     },
     getHistory(colleagueId, sessionId) {
       const sid = sessionId || DEFAULT_SESSION_ID;

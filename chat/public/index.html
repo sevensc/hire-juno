@@ -177,6 +177,9 @@
       <input id="composer-file" type="file" accept="image/png,image/jpeg,image/gif,image/webp" hidden />
       <textarea id="composer-input" rows="1" autocomplete="off" placeholder="Message…" disabled></textarea>
       <button type="submit" disabled>Send</button>
+      <!-- Only while the colleague's turn runs (app.js, updateQueueButton):
+           sends the message as a turn of its own after hers ends. -->
+      <button id="queue-button" type="submit" class="secondary-button" hidden aria-keyshortcuts="Alt+Enter" title="Answered after the current turn ends (Alt+Enter)">Queue message</button>
     </form>
   </main>
   <!-- Mobile only: a persistent bottom tab
