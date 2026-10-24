@@ -32,6 +32,7 @@ import { createAdapter } from './agentAdapter.js';
 import { waitUntilIdle } from './drain.js';
 import { createPermissions, VIA_ALLOW_ALL, VIA_ALWAYS_ALLOW } from './permissions.js';
 import { validateModelChoice } from './modelChoice.js';
+import { writeLimitLog } from './limitLog.js';
 import { WaitingMessages } from './waiting.js';
 import { decideRelevance } from './gatekeeper.js';
 import { extractMentions, extractVocativeAddresses } from './mentions.js';
@@ -349,6 +350,13 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
     }
     const workforce = resolveWorkforce(targetDir);
     const store = openStore({ workforceId: workforce?.id, baseDir: workforce?.baseDir });
+    // A recognised usage limit: its structural fields go to the limit log
+    // (see limitLog.js); what is sent on to the tabs is the notice without them.
+    const limitLogFile = workforce?.id ? joinPath(workforce.baseDir, workforce.id, 'chat', 'limit-log.jsonl') : null;
+    const takeLimitNotice = ({ log, ...notice }) => {
+      writeLimitLog(limitLogFile, log);
+      return notice;
+    };
     if (!store.persisted) {
       console.log(
         '\nNo workforce ID found (CONSTITUTION.md/verfassung.md missing or still unfilled) — chat history will not survive a restart.'
@@ -949,6 +957,10 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
         const bindAdapter = (adapter, colleagueId, sessionId) => {
           const key = adapterKey(colleagueId, sessionId);
           adapter.onUpdate = (update) => {
+            if (update.type === 'limit_notice') {
+              broadcast({ colleagueId, sessionId, ...takeLimitNotice(update) });
+              return;
+            }
             // The session took up a waiting message (the exact moment, not an
             // estimate from a tool result): it stops waiting everywhere.
             if (update.type === 'message_read') {
@@ -1204,6 +1216,10 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
             // reply, persisted and dispatched exactly like the human's own
             // channel message was above.
             adapter.onUpdate = (update) => {
+              if (update.type === 'limit_notice') {
+                broadcast({ channelId, colleagueId, ...takeLimitNotice(update) });
+                return;
+              }
               if (update.type === 'message') {
                 relayChannelMessage(channelId, colleagueId, update.text, depth + 1);
                 return;

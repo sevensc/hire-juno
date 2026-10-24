@@ -29,6 +29,7 @@
 import { createSdkMcpServer, query, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 
+import { limitFromEvent, limitFromResult, limitLogFields } from './limit.js';
 import { isStaleResumeError, STALE_RESUME_MESSAGE } from './staleResume.js';
 import { SubagentTracker } from './subagents.js';
 import { TextBlockSeparator } from './textBlocks.js';
@@ -402,8 +403,17 @@ export class ClaudeAdapter {
         }
         return;
       }
+      case 'rate_limit_event': {
+        const notice = limitFromEvent(message);
+        if (notice) this.onUpdate?.({ type: 'limit_notice', ...notice, log: limitLogFields(message) });
+        return;
+      }
       case 'result': {
-        if (message.subtype === 'success') {
+        const limit = limitFromResult(message);
+        if (limit) {
+          // The quota ended the turn: said as a notice, not as her answer.
+          this.onUpdate?.({ type: 'limit_notice', ...limit, log: limitLogFields(message) });
+        } else if (message.subtype === 'success') {
           // The SDK's `result` is only the last text block of the turn;
           // what was written before a tool call is kept (see textBlocks.js).
           this.onUpdate?.({ type: 'message', role: 'colleague', text: this._textBlocks.turnText(message.result) });
