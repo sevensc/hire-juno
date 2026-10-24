@@ -120,3 +120,21 @@ test('the adapter passes a sub-agent text block on as subagent_message, between 
   ]);
   assert.ok(updates.every((u) => u.id === 't1'));
 });
+
+test('a SubagentHandback call is shown as a tool line and as a message at once', () => {
+  const adapter = Object.create(ClaudeAdapter.prototype);
+  adapter._openSubagents = new Set();
+  adapter._subagents = new SubagentTracker();
+  const updates = [];
+  adapter.onUpdate = (u) => updates.push(u);
+  adapter._handleMessage({
+    type: 'assistant',
+    parent_tool_use_id: 't1',
+    message: { content: [{ type: 'tool_use', name: 'SubagentHandback', input: { message: 'The real report' } }] },
+  });
+  assert.deepEqual(updates.map((u) => [u.type, u.text ?? u.name]), [
+    ['subagent_start', undefined],
+    ['subagent_tool_use', 'SubagentHandback'],
+    ['subagent_message', 'The real report'],
+  ]);
+});
