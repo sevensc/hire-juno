@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { ClaudeAdapter } from '../chat/server/adapters/claude.js';
+import { SubagentTracker } from '../chat/server/adapters/subagents.js';
 import { WaitingMessages } from '../chat/server/waiting.js';
 import { openStore } from '../chat/server/store.js';
 
@@ -9,6 +10,7 @@ function adapter() {
   const a = Object.create(ClaudeAdapter.prototype);
   a._openSubagents = new Set();
   a._approvals = new Map();
+  a._subagents = new SubagentTracker();
   a.updates = [];
   a.onUpdate = (u) => a.updates.push(u);
   return a;
