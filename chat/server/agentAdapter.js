@@ -110,14 +110,22 @@ const CHAT_UI_SKILL = readFileSync(joinPath(dirname(fileURLToPath(import.meta.ur
 // story hasn't been checked against this codebase, and passing an unused
 // option silently would be a claim about behavior nobody verified.
 // `cwd` is where she works; it differs from `targetDir` (where her profile
-// is read from) when the conversation has its own git worktree.
+// is read from) when the conversation has its own git worktree of the
+// workforce folder's repo. `worktree` ({ path, branch }) is set when the
+// conversation has a worktree of another repo: `cwd` stays `targetDir` then
+// (her project settings and agents are read from there) and the prompt
+// names the worktree.
 // `useWorktree`: set when the conversation can have a worktree (see
 // useWorktree.js); it creates one and returns { ok, created, branch, path } or
 // { ok: false, message }. Claude only; it becomes her `use_worktree` tool.
-export function createAdapter(colleague, { targetDir, cwd = targetDir, resume, model, useWorktree }) {
+export function createAdapter(colleague, { targetDir, cwd = targetDir, resume, model, useWorktree, worktree }) {
   const ownProfile = readProfileBody(targetDir, colleague.id) ?? `You are ${colleague.name}.`;
   const worktreeNote =
-    cwd === targetDir
+    worktree && cwd === targetDir
+      ? `\n\nThis conversation has a git worktree of another repository, on its own branch ${worktree.branch}, at ` +
+        `${worktree.path}. For work on that repository, work there by absolute path or cd into it, and do not ` +
+        `change files in the original checkout. Your own working directory stays ${cwd}.`
+      : cwd === targetDir
       ? ''
       : `\n\nYour working directory is ${cwd}, a git worktree on its own branch for this conversation. ` +
         `Work only inside it and do not change files in ${targetDir}.`;
@@ -131,8 +139,10 @@ export function createAdapter(colleague, { targetDir, cwd = targetDir, resume, m
 
 // Only added when the `use_worktree` tool exists for the conversation.
 export const WORKTREE_OFFER =
-  'You have a `use_worktree` tool (no arguments) that moves this conversation into its own git worktree ' +
-  'on a new branch. At the start of a larger task that changes files in this git repository, call it ' +
-  'before you change anything; the person confirms it. Do not call it for small changes. After it ran, ' +
-  'work in the worktree by its absolute path for the rest of this turn; from the next turn on it is ' +
-  'your working directory.';
+  'You have a `use_worktree` tool that moves this conversation into its own git worktree ' +
+  'on a new branch. At the start of a larger task that changes files in a git repository, call it ' +
+  'before you change anything; the person confirms it. Do not call it for small changes. If you work in ' +
+  'a repository other than the one you started in, pass its top folder as `repoPath` (absolute path). ' +
+  'After it ran, work in the worktree by its absolute path for the rest of this turn; for the repository ' +
+  'you started in it is your working directory from the next turn on, for another one you keep working ' +
+  'there by absolute path or cd.';

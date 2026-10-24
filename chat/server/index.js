@@ -22,7 +22,7 @@ import { execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { networkInterfaces } from 'node:os';
-import { dirname, join as joinPath, resolve as resolvePath } from 'node:path';
+import { basename, dirname, join as joinPath, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import open from 'open';
@@ -37,7 +37,7 @@ import { extractMentions, extractVocativeAddresses } from './mentions.js';
 import { findLayout, readRoster, resolveAvatarPath } from './roster.js';
 import { DEFAULT_SESSION_ID, openStore } from './store.js';
 import { resolveWorkforce } from './workforceId.js';
-import { activateWorktree, canOfferWorktree } from './useWorktree.js';
+import { activateWorktree, canOfferWorktree, worktreeIsStartRepo } from './useWorktree.js';
 import { currentBranch, gitRoot, resolveGitDir } from './worktree.js';
 import { addWorkforce, listWorkforces, removeWorkforce, setActiveWorkforce } from '../../shared/workforceRegistry.js';
 import { getOrCreateSession, saveSessionPort } from '../../shared/chatSessions.js';
@@ -356,22 +356,34 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
         // Works in her conversation's own worktree when it has one (and the
         // folder is still there), otherwise in the workforce folder.
         const worktree = store.getWorktree(colleagueId, sessionId);
-        const cwd = worktree && existsSync(worktree.path) ? worktree.path : targetDir;
+        // A worktree of another repo does not move her: she keeps the
+        // workforce folder as cwd (her agents and settings are read from
+        // there) and the prompt names the worktree (see createAdapter).
+        const worktreeThere = worktree && existsSync(worktree.path);
+        const cwd = worktreeThere && worktreeIsStartRepo(worktree.repoPath, targetDir) ? worktree.path : targetDir;
         // She may move the conversation into a worktree herself (a tool of
         // hers, see useWorktree.js), if it can have one.
         let replaceWhenIdle = false;
-        const useWorktree = canOfferWorktree({ workforceId: workforce?.id, repoDir: targetDir, existing: worktree })
-          ? () => {
-              const result = activateWorktree({ store, workforceId: workforce?.id, repoDir: targetDir, colleagueId, sessionId });
+        const useWorktree = canOfferWorktree({ workforceId: workforce?.id, existing: worktree })
+          ? ({ repoPath } = {}) => {
+              const result = activateWorktree({ store, workforceId: workforce?.id, repoDir: targetDir, repoPath, colleagueId, sessionId });
+              if (result.ok) result.cwdIsWorktree = worktreeIsStartRepo(result.repoPath, targetDir);
               if (result.ok && result.created) {
                 // She is mid-turn: this adapter is replaced once it is idle.
                 replaceWhenIdle = true;
-                broadcast({ type: 'worktree_changed', colleagueId, sessionId, branch: result.branch, path: result.path });
+                broadcast({
+                  type: 'worktree_changed',
+                  colleagueId,
+                  sessionId,
+                  branch: result.branch,
+                  path: result.path,
+                  repoName: basename(result.repoPath),
+                });
               }
               return result;
             }
           : undefined;
-        const adapter = createAdapter(colleague, { targetDir, cwd, resume, model, useWorktree });
+        const adapter = createAdapter(colleague, { targetDir, cwd, resume, model, useWorktree, worktree: worktreeThere ? worktree : undefined });
         adapter.onIdle = () => {
           if (!replaceWhenIdle) return;
           adapter.close?.();
@@ -718,8 +730,11 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
           const worktree = store.getWorktree(colleagueId, sessionId);
           res.writeHead(200, { 'Content-Type': 'application/json' }).end(
             JSON.stringify({
-              available: Boolean(workforce?.id) && Boolean(gitRoot(targetDir)),
-              worktree: worktree ? { branch: worktree.branch, path: worktree.path } : null,
+              // The folder to branch from may also be named by the person.
+              available: Boolean(workforce?.id),
+              worktree: worktree
+                ? { branch: worktree.branch, path: worktree.path, repoName: basename(worktree.repoPath || gitRoot(targetDir) || '') }
+                : null,
             })
           );
           return;
@@ -1244,6 +1259,7 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
               store,
               workforceId: workforce?.id,
               repoDir: targetDir,
+              repoPath: typeof payload.repoPath === 'string' && payload.repoPath.trim() ? payload.repoPath.trim() : undefined,
               colleagueId,
               sessionId,
               busy: Boolean(adapters.get(key)?.busy),
@@ -1253,6 +1269,7 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
               return;
             }
             const { branch, path } = result;
+            const repoName = basename(result.repoPath || gitRoot(targetDir) || '');
             if (result.created) {
               // The running adapter still has the old working directory: drop
               // it; the next message creates one in the worktree (adapterFor)
@@ -1260,7 +1277,7 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
               adapters.get(key)?.close?.();
               adapters.delete(key);
             }
-            broadcast({ type: 'worktree_changed', colleagueId, sessionId, branch, path });
+            broadcast({ type: 'worktree_changed', colleagueId, sessionId, branch, path, repoName });
             return;
           }
 

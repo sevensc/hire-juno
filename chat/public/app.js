@@ -6196,11 +6196,16 @@
     const hint = document.createElement("p");
     hint.className = "model-picker__hint";
     if (info.worktree) {
-      hint.textContent = `Works on branch ${info.worktree.branch} in ${info.worktree.path}.`;
+      hint.textContent = `Repo: ${info.worktree.repoName || "unknown"}. Branch: ${info.worktree.branch}. Worktree folder: ${info.worktree.path}.`;
       convSettingsWorktreeEl.append(hint);
       return;
     }
-    hint.textContent = "Creates a git worktree and a branch for this conversation. She keeps what she knows and works there from her next message on. There is no way back from here yet.";
+    hint.textContent = "Creates a git worktree and a branch for this conversation. She keeps what she knows and works there from her next message on. There is no way back from here yet. One worktree per conversation. Leave the path empty for the folder this chat was started in; for another repo, enter its absolute path.";
+    const pathInput = document.createElement("input");
+    pathInput.type = "text";
+    pathInput.placeholder = "Repo path (empty: the folder this chat was started in)";
+    pathInput.setAttribute("aria-label", "Repo path");
+    pathInput.spellcheck = false;
     const button = document.createElement("button");
     button.type = "button";
     button.textContent = "Work in its own worktree";
@@ -6211,9 +6216,10 @@
     button.addEventListener("click", () => {
       error2.hidden = true;
       button.disabled = true;
-      socket.send(JSON.stringify({ type: "use_worktree", colleagueId, sessionId }));
+      const repoPath = pathInput.value.trim();
+      socket.send(JSON.stringify({ type: "use_worktree", colleagueId, sessionId, ...repoPath ? { repoPath } : {} }));
     });
-    convSettingsWorktreeEl.append(button, hint, error2);
+    convSettingsWorktreeEl.append(pathInput, button, hint, error2);
     worktreeForm = { colleagueId, sessionId, button, error: error2 };
   }
   function renderPaneHeader() {
@@ -6240,7 +6246,7 @@
         const chip = document.createElement("span");
         chip.className = "pane-header__branch";
         chip.textContent = info.worktree.branch;
-        chip.title = "Branch of this conversation's own worktree";
+        chip.title = info.worktree.repoName ? `Branch of this conversation's own worktree in ${info.worktree.repoName}` : "Branch of this conversation's own worktree";
         entries.appendChild(chip);
       }
       const line = statsLine(key);
@@ -7063,7 +7069,7 @@
     if (update.type === "worktree_changed") {
       const key2 = convKey(update.colleagueId, update.sessionId);
       const info = worktreeInfo.get(key2) || { available: true };
-      worktreeInfo.set(key2, { ...info, available: true, worktree: { branch: update.branch, path: update.path } });
+      worktreeInfo.set(key2, { ...info, available: true, worktree: { branch: update.branch, path: update.path, repoName: update.repoName } });
       if (key2 === activeConvKey()) {
         renderPaneHeader();
         refreshDiffIfOpen();

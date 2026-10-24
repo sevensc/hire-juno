@@ -72,6 +72,9 @@ const SCHEMA = `
     session_id TEXT NOT NULL DEFAULT 'default',
     path TEXT NOT NULL,
     branch TEXT NOT NULL,
+    -- The git repo the worktree belongs to (NULL: saved before this column
+    -- existed, which always meant the workforce folder's repo).
+    repo_path TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     PRIMARY KEY (colleague_id, session_id)
   );
@@ -184,6 +187,13 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
     if (!/duplicate column/i.test(err.message)) throw err;
   }
 
+  // Same again for the repo a conversation's worktree belongs to.
+  try {
+    db.exec('ALTER TABLE conversation_worktrees ADD COLUMN repo_path TEXT');
+  } catch (err) {
+    if (!/duplicate column/i.test(err.message)) throw err;
+  }
+
   const insertStmt = db.prepare(
     'INSERT INTO messages (colleague_id, session_id, role, text, trail) VALUES (?, ?, ?, ?, ?)'
   );
@@ -228,11 +238,11 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
      )`
   );
   const getWorktreeStmt = db.prepare(
-    'SELECT path, branch FROM conversation_worktrees WHERE colleague_id = ? AND session_id = ?'
+    'SELECT path, branch, repo_path AS repoPath FROM conversation_worktrees WHERE colleague_id = ? AND session_id = ?'
   );
   const setWorktreeStmt = db.prepare(
-    `INSERT INTO conversation_worktrees (colleague_id, session_id, path, branch) VALUES (?, ?, ?, ?)
-     ON CONFLICT(colleague_id, session_id) DO UPDATE SET path = excluded.path, branch = excluded.branch`
+    `INSERT INTO conversation_worktrees (colleague_id, session_id, path, branch, repo_path) VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(colleague_id, session_id) DO UPDATE SET path = excluded.path, branch = excluded.branch, repo_path = excluded.repo_path`
   );
   const insertSessionStmt = db.prepare('INSERT INTO sessions (id, colleague_id, title) VALUES (?, ?, ?)');
   const listSessionsStmt = db.prepare(
@@ -424,12 +434,13 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
     // See the adapter_sessions table comment above — the SDK's own
     // resumable session id for one (colleague, our session) adapter.
     // The model chosen for this conversation, or null for "the default".
-    // The worktree this conversation works in, {path, branch}, or null.
+    // The worktree this conversation works in, {path, branch, repoPath}
+    // (repoPath null for rows from before it was saved), or null.
     getWorktree(colleagueId, sessionId) {
       return getWorktreeStmt.get(colleagueId, sessionId || DEFAULT_SESSION_ID) ?? null;
     },
-    setWorktree(colleagueId, sessionId, path, branch) {
-      setWorktreeStmt.run(colleagueId, sessionId || DEFAULT_SESSION_ID, path, branch);
+    setWorktree(colleagueId, sessionId, path, branch, repoPath = null) {
+      setWorktreeStmt.run(colleagueId, sessionId || DEFAULT_SESSION_ID, path, branch, repoPath);
     },
     // `stats` is the object index.js keeps per conversation: {model, effort,
     // inputTokens, outputTokens, totalTokens, costUsd}, any of them may be unset.

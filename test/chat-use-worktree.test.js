@@ -25,7 +25,7 @@ function setup() {
   const rows = new Map();
   const store = {
     getWorktree: (c, s) => rows.get(`${c}::${s}`) ?? null,
-    setWorktree: (c, s, path, branch) => rows.set(`${c}::${s}`, { path, branch }),
+    setWorktree: (c, s, path, branch, repoPath = null) => rows.set(`${c}::${s}`, { path, branch, repoPath }),
   };
   const done = () => {
     process.env.HOME = oldHome;
@@ -42,7 +42,8 @@ test('activateWorktree creates the worktree, saves it and reports it', () => {
     assert.equal(result.created, true);
     assert.match(result.branch, /^chat\/mila-s1$/);
     assert.ok(existsSync(join(result.path, 'a.txt')));
-    assert.deepEqual(rows.get('mila::s1'), { path: result.path, branch: result.branch });
+    assert.deepEqual(rows.get('mila::s1'), { path: result.path, branch: result.branch, repoPath: repo });
+    assert.equal(result.repoPath, repo);
   } finally {
     done();
   }
@@ -54,7 +55,7 @@ test('activateWorktree returns the existing worktree without creating another', 
     const args = { store, workforceId: 'wf1', repoDir: repo, colleagueId: 'mila', sessionId: 's1' };
     const first = activateWorktree(args);
     const again = activateWorktree({ ...args, busy: true });
-    assert.deepEqual(again, { ok: true, created: false, branch: first.branch, path: first.path });
+    assert.deepEqual(again, { ok: true, created: false, branch: first.branch, path: first.path, repoPath: repo });
   } finally {
     done();
   }
@@ -67,7 +68,7 @@ test('activateWorktree says why it cannot', () => {
     assert.match(activateWorktree({ ...args, workforceId: undefined }).message, /workforce id/);
     const plain = join(base, 'plain');
     execFileSync('mkdir', [plain]);
-    assert.match(activateWorktree({ ...args, repoDir: plain }).message, /not a git repository/);
+    assert.match(activateWorktree({ ...args, repoDir: plain }).message, /not a git repository.*repo to work in/);
     assert.match(activateWorktree({ ...args, busy: true }).message, /still answering/);
     assert.equal(rows.size, 0);
   } finally {
@@ -75,15 +76,12 @@ test('activateWorktree says why it cannot', () => {
   }
 });
 
-test('the tool is offered only for a git repo with a workforce id and no worktree yet', () => {
-  const { base, repo, done } = setup();
+test('the tool is offered with a workforce id and no worktree yet, git repo or not', () => {
+  const { done } = setup();
   try {
-    assert.equal(canOfferWorktree({ workforceId: 'wf1', repoDir: repo, existing: null }), true);
-    assert.equal(canOfferWorktree({ workforceId: undefined, repoDir: repo, existing: null }), false);
-    assert.equal(canOfferWorktree({ workforceId: 'wf1', repoDir: repo, existing: { path: 'x', branch: 'y' } }), false);
-    const plain = join(base, 'plain');
-    execFileSync('mkdir', [plain]);
-    assert.equal(canOfferWorktree({ workforceId: 'wf1', repoDir: plain, existing: null }), false);
+    assert.equal(canOfferWorktree({ workforceId: 'wf1', existing: null }), true);
+    assert.equal(canOfferWorktree({ workforceId: undefined, existing: null }), false);
+    assert.equal(canOfferWorktree({ workforceId: 'wf1', existing: { path: 'x', branch: 'y' } }), false);
   } finally {
     done();
   }
