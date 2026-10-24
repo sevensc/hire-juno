@@ -17,6 +17,10 @@ if (process.argv[2] === 'chat') {
     ? resolve(process.argv[dirFlagIndex + 1])
     : process.cwd();
 
+  // Same flag as `hire-juno-chat --lan`; off unless asked for (see
+  // runChatServer for what changes once it is on).
+  const lan = process.argv.includes('--lan');
+
   let port = null;
   try {
     port = parsePortFlag(process.argv);
@@ -25,7 +29,7 @@ if (process.argv[2] === 'chat') {
     process.exit(1);
   }
 
-  runChatServer({ targetDir, port }).catch((err) => {
+  runChatServer({ targetDir, lan, port }).catch((err) => {
     if (port) {
       console.error(err.message);
       process.exitCode = 1;
