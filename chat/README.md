@@ -20,6 +20,14 @@ a different repo instead of the current directory (also useful for a
 project that predates hire-juno and uses the German-named layout — see
 below).
 
+`--port <n>` (1024 to 65535) serves on exactly that port and remembers it;
+if it is taken the start fails instead of picking another. Without it a
+workforce keeps the port it was first served on, and keeps it even after a
+start at which that port was taken. The separate command `hire-juno-chat`
+(`chat/bin/chat.js`) takes the same `--dir` and `--port`, and `--lan` as
+well, which makes the chat reachable from other devices on the same local
+network (plain http, anyone with the link; not for the internet).
+
 It starts a server bound to `127.0.0.1` only, with a random one-time
 token in the URL — the same access-control shape the installer's own
 browser step uses (`src/web/server.js`) — and opens it in your default

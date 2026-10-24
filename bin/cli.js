@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { resolve } from 'node:path';
 
+import { parsePortFlag } from '../shared/portFlag.js';
 import { run } from '../src/install.js';
 
 // `hire-juno chat` needs no installer step at all — chat/ only reads
@@ -16,7 +17,20 @@ if (process.argv[2] === 'chat') {
     ? resolve(process.argv[dirFlagIndex + 1])
     : process.cwd();
 
-  runChatServer({ targetDir }).catch((err) => {
+  let port = null;
+  try {
+    port = parsePortFlag(process.argv);
+  } catch (err) {
+    console.error(err.message);
+    process.exit(1);
+  }
+
+  runChatServer({ targetDir, port }).catch((err) => {
+    if (port) {
+      console.error(err.message);
+      process.exitCode = 1;
+      return;
+    }
     console.error(err);
     process.exitCode = 1;
   });
