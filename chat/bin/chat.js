@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 import { runChatServer } from '../server/index.js';
 import { findLayout } from '../server/roster.js';
 import { getActiveWorkforce } from '../../shared/workforceRegistry.js';
+import { parsePortFlag } from '../../shared/portFlag.js';
 
 // Which workforce a bare `hire-juno-chat` opens, in order:
 //
@@ -40,7 +41,22 @@ const targetDir = explicitDir
 // server opened up to their network without asking for it.
 const lan = process.argv.includes('--lan');
 
-runChatServer({ targetDir, lan }).catch((err) => {
+// `--port <n>` fixes the port (see shared/portFlag.js); without it the
+// workforce keeps the port it was first served on.
+let port = null;
+try {
+  port = parsePortFlag(process.argv);
+} catch (err) {
+  console.error(err.message);
+  process.exit(1);
+}
+
+runChatServer({ targetDir, lan, port }).catch((err) => {
+  if (port) {
+    console.error(err.message);
+    process.exitCode = 1;
+    return;
+  }
   console.error(err);
   process.exitCode = 1;
 });

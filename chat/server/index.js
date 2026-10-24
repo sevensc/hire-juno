@@ -41,6 +41,7 @@ import { activateWorktree, canOfferWorktree, worktreeIsStartRepo } from './useWo
 import { currentBranch, gitRoot, resolveGitDir } from './worktree.js';
 import { addWorkforce, listWorkforces, removeWorkforce, setActiveWorkforce } from '../../shared/workforceRegistry.js';
 import { getOrCreateSession, saveSessionPort } from '../../shared/chatSessions.js';
+import { portToRemember } from '../../shared/portFlag.js';
 
 // One colleague can now have several independent, parallel
 // conversations running at once (e.g. one session per topic) — each is its own adapter
@@ -290,7 +291,8 @@ function lanAddress() {
 // running turn (and would resume the same SDK session a second time).
 const runningServers = new Map(); // resolved folder -> { url, server, closing }
 
-export function runChatServer({ targetDir = process.cwd(), openBrowser = true, onReady, lan = false } = {}) {
+// `port`: a port fixed with `--port`; the server uses exactly that one or fails, with no fallback.
+export function runChatServer({ targetDir = process.cwd(), openBrowser = true, onReady, lan = false, port: explicitPort = null } = {}) {
   const runningKey = resolvePath(targetDir);
   const running = runningServers.get(runningKey);
   if (running && !running.closing) {
@@ -1644,7 +1646,8 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
       // one was taken and this is the fallback bind) — an unconditional
       // write here would touch the file on every single ordinary
       // launch for no reason.
-      if (port !== session.port) saveSessionPort(targetDir, port);
+      const toRemember = portToRemember({ bound: port, remembered: session.port, explicit: explicitPort });
+      if (toRemember != null) saveSessionPort(targetDir, toRemember);
       const url = `http://127.0.0.1:${port}/${token}/`;
       runningServers.set(runningKey, { url, server, closing: false });
       onReady?.(url);
@@ -1692,9 +1695,11 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
     // line print twice). One `once` listener, reused across both
     // attempts, fires exactly once no matter which attempt succeeds.
     server.once('listening', finishListening);
-    server.listen(session.port || 0, host);
+    server.listen(explicitPort ?? (session.port || 0), host);
     server.once('error', (err) => {
-      if (err.code === 'EADDRINUSE' && session.port) {
+      if (err.code === 'EADDRINUSE' && explicitPort) {
+        reject(new Error(`Port ${explicitPort} is already in use. Stop whatever uses it, or start with a different --port.`));
+      } else if (err.code === 'EADDRINUSE' && session.port) {
         server.listen(0, host);
         server.once('error', reject);
       } else {
