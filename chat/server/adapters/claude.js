@@ -29,6 +29,7 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 
 import { isStaleResumeError, STALE_RESUME_MESSAGE } from './staleResume.js';
+import { SubagentTracker } from './subagents.js';
 import { TextBlockSeparator } from './textBlocks.js';
 
 // Tools that always ask in the chat unless its Auto mode is on, whatever the
@@ -112,6 +113,7 @@ export class ClaudeAdapter {
     // announced to the frontend, so the second message in doesn't
     // re-announce it.
     this._openSubagents = new Set();
+    this._subagents = new SubagentTracker(); // briefs and background endings (see subagents.js)
     // How each tool call of this session got its go-ahead, by tool-use id:
     // 'asked' (the human answered a prompt) or whatever `via` the owner's
     // permission callback reported (e.g. 'auto mode'). A call that never
@@ -213,6 +215,7 @@ export class ClaudeAdapter {
           id: parentId,
           subagentType: message.subagent_type,
           taskDescription: message.task_description,
+          prompt: this._subagents.brief(parentId),
         });
       }
       if (message.type === 'stream_event') {
@@ -239,8 +242,14 @@ export class ClaudeAdapter {
         // which model and effort level a session ended up running on
         // (org caps and model-support downgrades mean that's not
         // necessarily what profile.md asked for). Every other `system`
-        // subtype (task_notification, session_state_changed, …) falls
-        // through to `default`, unrendered for now same as before.
+        // subtype (session_state_changed, …) falls through, unrendered for
+        // now same as before. The sub-agent ones are read in subagents.js:
+        // a background sub-agent's answer arrives as a task_notification.
+        this._subagents.noteSystemMessage(message);
+        const ended = this._subagents.endFromNotification(message);
+        if (ended && this._openSubagents.delete(ended.id)) {
+          this.onUpdate?.({ type: 'subagent_end', id: ended.id, report: ended.report });
+        }
         if (message.subtype === 'init') {
           this.onUpdate?.({ type: 'session_info', model: message.model, effort: message.effort ?? null });
           // Separate from onUpdate on purpose (see the constructor
@@ -271,6 +280,7 @@ export class ClaudeAdapter {
         // not visibility.
         for (const block of message.message?.content ?? []) {
           if (block.type === 'tool_use') {
+            this._subagents.rememberToolUse(block);
             this.onUpdate?.({ type: 'tool_use', id: block.id, name: block.name, input: block.input });
           } else if (block.type === 'text') {
             this._textBlocks.addText(block.text);
@@ -298,14 +308,22 @@ export class ClaudeAdapter {
           // A tool call has run once its result is back: say how it was
           // allowed, so the chat can show the ones nobody was asked about.
           for (const block of blocks) {
-            if (block.type !== 'tool_result' || this._openSubagents.has(block.tool_use_id)) continue;
+            if (block.type !== 'tool_result') continue;
+            // A foreground sub-agent's result ends its thread (below); the
+            // "launched" notice of a background one is just a finished call.
+            if (this._openSubagents.has(block.tool_use_id) && !this._subagents.isBackground(block.tool_use_id)) continue;
             const approval = this._approvals.get(block.tool_use_id) || 'not asked';
             this._approvals.delete(block.tool_use_id);
             this.onUpdate?.({ type: 'tool_done', id: block.tool_use_id, approval });
           }
           for (const block of blocks) {
-            if (block.type === 'tool_result' && this._openSubagents.has(block.tool_use_id)) {
+            if (
+              block.type === 'tool_result' &&
+              this._openSubagents.has(block.tool_use_id) &&
+              !this._subagents.isBackground(block.tool_use_id)
+            ) {
               this._openSubagents.delete(block.tool_use_id);
+              this._subagents.forget(block.tool_use_id);
               const result = message.tool_use_result;
               const report = result && typeof result === 'object' && 'content' in result
                 ? toolResultText(result.content)

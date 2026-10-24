@@ -2533,7 +2533,12 @@ const handleSocketMessage = (event) => {
       };
       subagentPanels.get(ownerColleagueId).set(update.id, panel);
       registerSubagentColleague(panel);
-      history.set(panel.syntheticId, []);
+      // The brief the colleague gave the sub-agent opens its conversation, so
+      // the thread shows what it was asked, not only what it did.
+      history.set(
+        panel.syntheticId,
+        update.prompt ? [{ role: 'you', text: update.prompt, createdAt: new Date().toISOString() }] : []
+      );
       renderSidebar();
       return;
     }
@@ -3094,7 +3099,7 @@ function renderMessages({ forceScrollToBottom = false } = {}) {
       ${permission ? html`<${PermissionCard} permission=${permission} colleagueId=${key} isChannel=${false} />` : null}
       ${isTyping(key) && !permission ? html`<div class="typing-indicator" role="status">typing…</div>` : null}
       ${items.map((item, i) => (item.pending ? row(item, i) : null))}
-      ${!items.length && !thinkingText && !partialText && !permission
+      ${!items.length && !thinkingText && !partialText && !permission && !liveTrail.length
         ? html`<${EmptyConversation}
             text=${`No messages with ${colleaguesById.get(activeColleagueId)?.name || 'this colleague'} yet. Write the first one below.`}
           />`
@@ -3617,8 +3622,9 @@ function renderSidebar() {
     // exchange, not just a live indicator that should vanish once
     // it's no longer running (it must not disappear right when the
     // conversation ends).
+    // Every sub-agent gets its row, named colleague or not: a general-purpose
+    // one (or a small model) is exactly the kind that has no other way in.
     for (const panel of subagentPanels.get(colleague.id)?.values() ?? []) {
-      if (!panel.knownColleagueId) continue;
       const synthetic = colleaguesById.get(panel.syntheticId);
       const nested = document.createElement('button');
       nested.type = 'button';
