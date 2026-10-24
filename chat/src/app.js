@@ -1627,9 +1627,41 @@ function refreshSettingsModalIfOpen() {
 // add/switch/remove are mutations and go over the socket, same split
 // as everything else in this app (see server/index.js's own comment on
 // its api/workforces route).
+// Messages of yours waiting in the *other* workforces (their turn runs on in
+// their own server, see switch_workforce). Polled lightly, see below.
+let otherWorkforcesWaiting = new Map(); // path -> count, only counts above 0
+const workforceWaitingBadgeEl = document.getElementById('workforce-waiting-badge');
+
+async function refreshWorkforceStatus() {
+  try {
+    const [statusRes, listRes] = await Promise.all([fetch('api/workforces-status'), fetch('api/workforces')]);
+    if (!statusRes.ok || !listRes.ok) return;
+    const [status, list] = await Promise.all([statusRes.json(), listRes.json()]);
+    const current = list.find((w) => w.current)?.path;
+    otherWorkforcesWaiting = new Map(
+      status.filter((w) => w.path !== current && w.waiting > 0).map((w) => [w.path, w.waiting])
+    );
+  } catch {
+    return; // a failed poll leaves the last answer standing; the next one corrects it
+  }
+  let total = 0;
+  for (const n of otherWorkforcesWaiting.values()) total += n;
+  workforceWaitingBadgeEl.hidden = total === 0;
+  if (total > 0) {
+    const text = `${total} ${total === 1 ? 'message' : 'messages'} waiting in other workforces`;
+    workforceWaitingBadgeEl.title = text;
+    workforceSwitcherEl.setAttribute('aria-label', `${brandNameEl.textContent}: switch workforce, ${text}`);
+  } else {
+    workforceSwitcherEl.removeAttribute('aria-label');
+  }
+}
+
+setInterval(() => { if (!document.hidden) refreshWorkforceStatus(); }, 5000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshWorkforceStatus(); });
+
 async function renderWorkforceList() {
   workforceListEl.innerHTML = '';
-  const res = await fetch('api/workforces');
+  const [res] = await Promise.all([fetch('api/workforces'), refreshWorkforceStatus()]);
   const workforces = await res.json();
   for (const workforce of workforces) {
     const li = document.createElement('li');
@@ -1655,6 +1687,14 @@ async function renderWorkforceList() {
       tag.className = 'workforce-row__tag';
       tag.textContent = 'current';
       nameRow.appendChild(tag);
+    }
+    const waitingCount = otherWorkforcesWaiting.get(workforce.path);
+    if (waitingCount && !workforce.current) {
+      const waiting = document.createElement('span');
+      waiting.className = 'workforce-row__waiting';
+      waiting.textContent = String(waitingCount);
+      waiting.title = `${waitingCount} ${waitingCount === 1 ? 'message' : 'messages'} waiting`;
+      nameRow.appendChild(waiting);
     }
     pick.appendChild(nameRow);
 
@@ -4654,3 +4694,4 @@ attachPullToRefresh(messagesEl, refreshActiveConversation, 'var(--bg)');
 attachPullToRefresh(sidebarEl, () => loadRoster({ preserveSelection: true }), 'var(--bg-sidebar)');
 
 loadRoster();
+refreshWorkforceStatus();

@@ -289,7 +289,21 @@ function lanAddress() {
 // mid-turn (see 'switch_workforce'); switching back finds it here and goes to
 // it, instead of starting a second server beside it that knows nothing of the
 // running turn (and would resume the same SDK session a second time).
-const runningServers = new Map(); // resolved folder -> { url, server, closing }
+const runningServers = new Map(); // resolved folder -> { url, server, closing, name, status() }
+
+// What the running servers know about their own workforce, for the others in
+// this process: how many of the human's messages wait and whether a turn runs.
+// Deliberately no url and no token: each server's access token is its own and
+// must not travel through another server's answer.
+export function workforcesStatus(servers = runningServers) {
+  const out = [];
+  for (const [path, entry] of servers) {
+    if (entry.closing || !entry.status) continue;
+    const { waiting, busy } = entry.status();
+    out.push({ path, name: entry.name, waiting, busy });
+  }
+  return out;
+}
 
 // `port`: a port fixed with `--port`; the server uses exactly that one or fails, with no fallback.
 export function runChatServer({ targetDir = process.cwd(), openBrowser = true, onReady, lan = false, port: explicitPort = null } = {}) {
@@ -551,6 +565,11 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
             lastMessage: lastMessages.get(colleague.id) || null,
           }));
           res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(roster));
+          return;
+        }
+
+        if (req.method === 'GET' && route === 'api/workforces-status') {
+          res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(workforcesStatus()));
           return;
         }
 
@@ -1663,7 +1682,16 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
       const toRemember = portToRemember({ bound: port, remembered: session.port, explicit: explicitPort });
       if (toRemember != null) saveSessionPort(targetDir, toRemember);
       const url = `http://127.0.0.1:${port}/${token}/`;
-      runningServers.set(runningKey, { url, server, closing: false });
+      runningServers.set(runningKey, {
+        url,
+        server,
+        closing: false,
+        name: workforce?.id || basename(runningKey),
+        status: () => ({
+          waiting: waitingYou.count(),
+          busy: [...adapters.values()].some((a) => a.busy),
+        }),
+      });
       onReady?.(url);
       if (lan) {
         // Explicit, every single run — this is the one thing standing

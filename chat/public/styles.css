@@ -1302,6 +1302,11 @@ button.workforce-row__pick:disabled { cursor: default; opacity: 0.55; }
   margin-left: auto;
 }
 .colleague--active .unread-badge { background: #fff; }
+/* On the workforce switcher: a message waits in another workforce. Sits
+   right after the chevron instead of at the row's edge. */
+#workforce-waiting-badge { margin-left: 0.1rem; }
+#workforce-waiting-badge[hidden] { display: none; }
+.workforce-row__waiting { color: var(--accent); font-weight: 600; margin-left: 0.4rem; }
 
 .draft-badge {
   flex-shrink: 0;

@@ -6687,9 +6687,40 @@
     renderUsageTable();
     renderAutoModeList();
   }
+  var otherWorkforcesWaiting = /* @__PURE__ */ new Map();
+  var workforceWaitingBadgeEl = document.getElementById("workforce-waiting-badge");
+  async function refreshWorkforceStatus() {
+    try {
+      const [statusRes, listRes] = await Promise.all([fetch("api/workforces-status"), fetch("api/workforces")]);
+      if (!statusRes.ok || !listRes.ok) return;
+      const [status, list2] = await Promise.all([statusRes.json(), listRes.json()]);
+      const current = list2.find((w2) => w2.current)?.path;
+      otherWorkforcesWaiting = new Map(
+        status.filter((w2) => w2.path !== current && w2.waiting > 0).map((w2) => [w2.path, w2.waiting])
+      );
+    } catch {
+      return;
+    }
+    let total = 0;
+    for (const n3 of otherWorkforcesWaiting.values()) total += n3;
+    workforceWaitingBadgeEl.hidden = total === 0;
+    if (total > 0) {
+      const text2 = `${total} ${total === 1 ? "message" : "messages"} waiting in other workforces`;
+      workforceWaitingBadgeEl.title = text2;
+      workforceSwitcherEl.setAttribute("aria-label", `${brandNameEl.textContent}: switch workforce, ${text2}`);
+    } else {
+      workforceSwitcherEl.removeAttribute("aria-label");
+    }
+  }
+  setInterval(() => {
+    if (!document.hidden) refreshWorkforceStatus();
+  }, 5e3);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) refreshWorkforceStatus();
+  });
   async function renderWorkforceList() {
     workforceListEl.innerHTML = "";
-    const res = await fetch("api/workforces");
+    const [res] = await Promise.all([fetch("api/workforces"), refreshWorkforceStatus()]);
     const workforces = await res.json();
     for (const workforce of workforces) {
       const li = document.createElement("li");
@@ -6708,6 +6739,14 @@
         tag.className = "workforce-row__tag";
         tag.textContent = "current";
         nameRow.appendChild(tag);
+      }
+      const waitingCount = otherWorkforcesWaiting.get(workforce.path);
+      if (waitingCount && !workforce.current) {
+        const waiting = document.createElement("span");
+        waiting.className = "workforce-row__waiting";
+        waiting.textContent = String(waitingCount);
+        waiting.title = `${waitingCount} ${waitingCount === 1 ? "message" : "messages"} waiting`;
+        nameRow.appendChild(waiting);
       }
       pick.appendChild(nameRow);
       const path = document.createElement("span");
@@ -8713,6 +8752,7 @@
   attachPullToRefresh(messagesEl, refreshActiveConversation, "var(--bg)");
   attachPullToRefresh(sidebarEl, () => loadRoster({ preserveSelection: true }), "var(--bg-sidebar)");
   loadRoster();
+  refreshWorkforceStatus();
 })();
 /*! Bundled license information:
 
