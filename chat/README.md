@@ -137,14 +137,15 @@ Also real, added after the first working slice:
   the literal line `:::mode hiring-process:start` visually detaches
   that conversation (a banner, a tinted background) until a later
   `:::mode hiring-process:end` line closes it again, both lines
-  stripped from what's actually shown. Juno's own `profile.md`
-  (`team/juno/profile.md`) instructs her to emit these — start once
+  stripped from what's actually shown. The chat adds
+  `chat/server/skills/hiring-mode.md` to Juno's instructions only (her
+  personnel file stays free of chat details) and it tells her to emit these — start once
   the needs assessment has actually cleared and the process really
   begins, end once probation begins or she's told to stop; the exact
   end point is a first attempt, expected to move once it's been used
   for real. Scoped to Juno only in this repo — a
-  different HR colleague in a different install would need the same
-  instruction added to her own profile.
+  different HR colleague in a different install would need an entry for her id in
+  `CHAT_SKILL_FOR_COLLEAGUE` (`chat/server/agentAdapter.js`).
 
 ## Known gaps
 
