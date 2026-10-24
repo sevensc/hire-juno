@@ -46,6 +46,11 @@ import { getOrCreateSession, saveSessionPort } from '../../shared/chatSessions.j
 // conversations running at once (e.g. one session per topic) — each is its own adapter
 // instance (own SDK session, own permission state, own history), keyed
 // by colleague *and* session rather than colleague alone.
+// A message id from the client: kept only if it looks like a plain uuid.
+function validMessageId(id) {
+  return typeof id === 'string' && /^[A-Za-z0-9-]{8,64}$/.test(id) ? id : undefined;
+}
+
 function adapterKey(colleagueId, sessionId) {
   return `${colleagueId}::${sessionId || DEFAULT_SESSION_ID}`;
 }
@@ -430,6 +435,18 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
     // Keyed by adapterKey(colleagueId, sessionId), same as `adapters`.
     // Messages sent while a turn was running, per conversation (see waiting.js).
     const waitingYou = new WaitingMessages(store);
+    // History rows of messages that still wait carry that, so a reloaded tab
+    // draws them as waiting (with Withdraw) instead of as read.
+    const withWaitingMarks = (rows, colleagueId, sessionId) => {
+      const key = adapterKey(colleagueId, sessionId);
+      const entries = waitingYou.list(key);
+      if (!entries.length) return rows;
+      const canCancel = Boolean(adapters.get(key)?.canCancel);
+      return rows.map((row) => {
+        const entry = entries.find((e) => e.id === row.id && e.uuid);
+        return entry ? { ...row, waiting: { id: entry.uuid, kind: entry.kind, canCancel } } : row;
+      });
+    };
     const pendingTrails = new Map(); // key -> [{kind:'tool_use', name, input}]
     const pendingThinking = new Map(); // key -> accumulated thinking text of the in-progress turn
     const pendingText = new Map(); // key -> accumulated reply text of the in-progress turn (live bubble)
@@ -578,7 +595,7 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
           const colleagueId = url.searchParams.get('colleagueId') || '';
           const sessionId = url.searchParams.get('sessionId') || DEFAULT_SESSION_ID;
           res.writeHead(200, { 'Content-Type': 'application/json' }).end(
-            JSON.stringify(store.getHistory(colleagueId, sessionId))
+            JSON.stringify(withWaitingMarks(store.getHistory(colleagueId, sessionId), colleagueId, sessionId))
           );
           return;
         }
@@ -857,9 +874,15 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
           const thinking = pendingThinking.get(key);
           const text = pendingText.get(key);
           const trail = pendingTrails.get(key);
-          if (!thinking && !text && !trail?.length) continue;
+          // Messages written during the turn that are still not read: the tab
+          // draws them as waiting again (with a Withdraw button if possible).
+          const waiting = waitingYou
+            .list(key)
+            .filter((e) => e.uuid)
+            .map((e) => ({ id: e.uuid, kind: e.kind, canCancel: Boolean(adapter.canCancel) }));
+          if (!thinking && !text && !trail?.length && !waiting.length) continue;
           const [colleagueId, sessionId] = key.split('::');
-          turns.push({ colleagueId, sessionId, thinking, text, trail });
+          turns.push({ colleagueId, sessionId, thinking, text, trail, waiting });
         }
         if (turns.length) ws.send(JSON.stringify({ type: 'live_state', turns }));
 
@@ -1550,6 +1573,22 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
             return;
           }
 
+          if (payload.type === 'cancel_message') {
+            const sessionId = payload.sessionId || DEFAULT_SESSION_ID;
+            const key = adapterKey(payload.colleagueId, sessionId);
+            const result = await waitingYou.withdraw(key, validMessageId(payload.id), adapters.get(key));
+            // Every tab: the one that asked drops the bubble (or its
+            // "waiting" mark), the others learn it as well.
+            broadcast({
+              type: 'message_cancelled',
+              colleagueId: payload.colleagueId,
+              sessionId,
+              id: payload.id,
+              ...result,
+            });
+            return;
+          }
+
           const { colleagueId, text, attachments } = payload;
           const sessionId = payload.sessionId || DEFAULT_SESSION_ID;
           const adapter = adapterFor(colleagueId, sessionId);
@@ -1563,11 +1602,25 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
           // reply that ends that turn can be stored in front of it.
           const wasBusy = adapter.busy;
           const savedId = store.appendMessage(colleagueId, sessionId, 'you', text, undefined, attachments);
+          // The id is the client's (it names the bubble there); the session
+          // gets it as the message's uuid so the message can be withdrawn.
+          // "Queue message" only means something while a turn runs.
+          const key = adapterKey(colleagueId, sessionId);
+          let uuid = validMessageId(payload.id);
+          if (!uuid || waitingYou.find(key, uuid)) uuid = randomUUID();
+          const kind = wasBusy && payload.kind === 'queue' ? 'queue' : 'send';
           if (wasBusy) {
-            const key = adapterKey(colleagueId, sessionId);
-            waitingYou.add(key, savedId);
+            waitingYou.add(key, savedId, { uuid, kind });
+            broadcast({
+              type: 'message_waiting',
+              colleagueId,
+              sessionId,
+              id: uuid,
+              kind,
+              canCancel: Boolean(adapter.canCancel),
+            });
           }
-          await adapter.sendMessage(text, attachments);
+          await adapter.sendMessage(text, attachments, { uuid, ...(kind === 'queue' ? { priority: 'later' } : {}) });
         });
       });
     });

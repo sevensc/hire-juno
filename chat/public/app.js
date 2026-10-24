@@ -5729,6 +5729,7 @@
   var fileInput = document.getElementById("composer-file");
   var attachmentPreviewEl = document.getElementById("attachment-preview");
   var sendButton = form.querySelector('button[type="submit"]');
+  var queueButtonEl = document.getElementById("queue-button");
   var attachButtonEl = document.getElementById("attach-button");
   var imageLightboxEl = document.getElementById("image-lightbox");
   var imageLightboxImgEl = document.getElementById("image-lightbox-img");
@@ -7122,9 +7123,37 @@
         const trail = reconstructTrail(turn.trail);
         if (trail) pendingTrail.set(key2, trail);
         else pendingTrail.delete(key2);
+        for (const w2 of turn.waiting || []) markWaiting(key2, w2);
       }
       renderSidebar();
       if (activeConvKey()) renderMessages();
+      return;
+    }
+    if (update.type === "message_waiting") {
+      markWaiting(convKey(update.colleagueId, update.sessionId), update);
+      if (activeConvKey()) renderMessages();
+      return;
+    }
+    if (update.type === "message_cancelled") {
+      const key2 = convKey(update.colleagueId, update.sessionId);
+      const items = history.get(key2) || [];
+      const i2 = items.findIndex((m3) => m3.clientId === update.id);
+      if (i2 >= 0) {
+        const item = items[i2];
+        if (update.cancelled) {
+          items.splice(i2, 1);
+          if (key2 === activeConvKey() && !input.value && !pendingAttachment) {
+            input.value = item.text || "";
+            autoResizeComposer();
+          }
+        } else if (update.error) {
+          delete item.withdrawing;
+        } else {
+          delete item.pending;
+          delete item.withdrawing;
+        }
+        if (activeConvKey()) renderMessages();
+      }
       return;
     }
     if (update.type === "session_created") {
@@ -7467,7 +7496,7 @@
       case "tool_done": {
         const entry = (pendingTrail.get(key) || []).find((e2) => e2.id && e2.id === update.id);
         if (entry) entry.approval = update.approval;
-        for (const waiting of history.get(key)) delete waiting.pending;
+        for (const waiting of history.get(key)) if (waiting.kind !== "queue") delete waiting.pending;
         break;
       }
       case "message": {
@@ -7476,7 +7505,12 @@
         thinkingStreaming.delete(key);
         renderSidebar();
         const text2 = applyHiringModeMarkers(key, update.text);
-        for (const waiting of history.get(key)) delete waiting.pending;
+        const stillWaiting = history.get(key).filter((m3) => m3.pending);
+        if (stillWaiting.length) {
+          delete stillWaiting[0].pending;
+          delete stillWaiting[0].withdrawing;
+        }
+        history.set(key, history.get(key).filter((m3) => !stillWaiting.includes(m3)));
         history.get(key).push({
           role: update.role,
           text: text2,
@@ -7491,6 +7525,7 @@
           // doesn't have.
           trail: reconstructTrail(update.trail)
         });
+        history.get(key).push(...stillWaiting);
         if (sessionId === DEFAULT_SESSION_ID && key === convKey(colleagueId, sessionId)) {
           const rosterColleague = colleaguesById.get(colleagueId);
           if (rosterColleague) rosterColleague.lastMessage = { role: update.role, text: text2 };
@@ -7669,7 +7704,7 @@
       button.textContent = label;
     }, 1500));
   }
-  function MessageRow({ role, avatarColleague, nameTag, item, toolText, onToggle, onToggleTrailEntry }) {
+  function MessageRow({ role, avatarColleague, nameTag, item, toolText, onToggle, onToggleTrailEntry, onWithdraw }) {
     const isToolUse = item.toolInput !== void 0;
     const time = formatMessageTime(item.createdAt);
     return m2`
@@ -7689,7 +7724,8 @@
     )}
                 <span class="message__footer">
                   ${item.text ? m2`<button type="button" class="copy-button" aria-label="Copy message as Markdown" onClick=${(event) => copyWithFeedback(item.text, event.currentTarget)}>Copy</button>` : null}
-                  ${item.pending ? m2`<time class="message__time">Waiting, not read yet</time>` : time ? m2`<time class="message__time">${time}</time>` : null}
+                  ${item.pending ? m2`<time class="message__time">${item.kind === "queue" ? "Queued, answered after this turn" : "Waiting, not read yet"}</time>
+                        ${item.canCancel && item.clientId ? m2`<button type="button" class="withdraw-button" disabled=${Boolean(item.withdrawing)} aria-label="Withdraw this message, it has not been read yet" onClick=${onWithdraw}>Withdraw</button>` : null}` : time ? m2`<time class="message__time">${time}</time>` : null}
                 </span>
               </span>
             `}
@@ -7752,6 +7788,11 @@
       item.trail[entryIndex].expanded = !item.trail[entryIndex].expanded;
       renderMessages();
     }}
+    onWithdraw=${() => {
+      item.withdrawing = true;
+      renderMessages();
+      socket.send(JSON.stringify({ type: "cancel_message", id: item.clientId, colleagueId: activeColleagueId, sessionId: activeSessionId }));
+    }}
   />`;
     R(
       m2`<${S}>
@@ -7776,10 +7817,15 @@
     );
     refreshHiringModeStyling(key);
     followThinkingTail();
+    updateQueueButton();
     if (stickToBottom) scrollMessagesToBottom();
     else updateScrollToBottomButton();
   }
+  function updateQueueButton() {
+    queueButtonEl.hidden = !(activeColleagueId && !activeChannelId && !input.disabled && isTyping(activeConvKey()));
+  }
   function renderChannelMessages({ forceScrollToBottom = false } = {}) {
+    queueButtonEl.hidden = true;
     const stickToBottom = forceScrollToBottom || isNearBottom();
     const items = channelMessages.get(activeChannelId) || [];
     const typingEntries = [];
@@ -7928,6 +7974,13 @@
   function storedAttachments(list2) {
     return (list2 || []).map((a2) => ({ ...a2, dataUrl: `api/attachment?id=${a2.id}` }));
   }
+  function markWaiting(key, w2) {
+    const item = (history.get(key) || []).find((m3) => m3.clientId === w2.id);
+    if (!item) return;
+    item.pending = true;
+    item.kind = w2.kind;
+    item.canCancel = Boolean(w2.canCancel);
+  }
   async function loadColleagueHistory(colleagueId, sessionId, key, { force = false } = {}) {
     sessionId = sessionId || DEFAULT_SESSION_ID;
     if (loadedHistory.has(key) && !force) return;
@@ -7943,7 +7996,8 @@
         text: row.text,
         createdAt: row.created_at,
         trail: reconstructTrail(row.trail),
-        attachments: storedAttachments(row.attachments)
+        attachments: storedAttachments(row.attachments),
+        ...row.waiting ? { pending: true, clientId: row.waiting.id, kind: row.waiting.kind, canCancel: row.waiting.canCancel } : {}
       }))
     );
   }
@@ -8467,10 +8521,15 @@
     }
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
-      form.requestSubmit();
+      if (event.altKey && !queueButtonEl.hidden) form.requestSubmit(queueButtonEl);
+      else form.requestSubmit();
     }
   });
   input.addEventListener("blur", () => closeMentionAutocomplete());
+  function newMessageId() {
+    if (globalThis.crypto?.randomUUID) return crypto.randomUUID();
+    return `m-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  }
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     closeMentionAutocomplete();
@@ -8496,7 +8555,10 @@
     const key = activeConvKey();
     if (!history.has(key)) history.set(key, []);
     const attachments = pendingAttachment ? [pendingAttachment] : [];
-    history.get(key).push({ role: "you", text: text2, attachments, createdAt: (/* @__PURE__ */ new Date()).toISOString(), pending: isTyping(key) });
+    const typing = isTyping(key);
+    const kind = typing && event.submitter === queueButtonEl ? "queue" : "send";
+    const clientId = newMessageId();
+    history.get(key).push({ role: "you", text: text2, attachments, createdAt: (/* @__PURE__ */ new Date()).toISOString(), pending: typing, clientId, kind });
     renderMessages({ forceScrollToBottom: true });
     if (activeSessionId === DEFAULT_SESSION_ID) {
       const rosterColleague = colleaguesById.get(activeColleagueId);
@@ -8508,6 +8570,8 @@
     socket.send(JSON.stringify({
       colleagueId: activeColleagueId,
       sessionId: activeSessionId,
+      id: clientId,
+      kind,
       text: text2,
       attachments: attachments.map((a2) => ({ name: a2.name, mimeType: a2.mimeType, data: a2.data }))
     }));

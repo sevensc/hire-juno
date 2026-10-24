@@ -20,6 +20,11 @@
 //     this, a server restart drops conversation context even though the
 //     chat transcript itself is still sitting in `messages`.
 //   adapter.sendMessage(text, attachments): Promise<void>
+//     Claude adapter only, optional third argument `{uuid, priority}`
+//     (priority 'later': a turn of its own after the running one), plus
+//     `canCancel` and `cancel(uuid): Promise<boolean>` to take a message
+//     back that has not been read yet. An adapter without them is simply
+//     not offered a "Withdraw" button.
 //   adapter.busy: boolean                           — a turn is in flight (read by the
 //     workforce switch, which keeps the old server alive until all are idle)
 //   adapter.close()

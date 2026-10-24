@@ -146,6 +146,7 @@ export class ClaudeAdapter {
     this._queue = [];
     this._notifyQueued = null;
     this._pendingResolve = null; // resolves the in-flight sendMessage() call, if any
+    this._resolvers = new Map(); // message uuid -> resolve of its own sendMessage() call (see cancel())
     this._textBlocks = new TextBlockSeparator(); // blank line between a turn's text blocks
     // Messages sent whose turn has not ended yet. A message sent mid-turn
     // counts too, which _pendingResolve alone can't say: it only holds the latest.
@@ -404,7 +405,10 @@ export class ClaudeAdapter {
         this._pendingResolve = null;
         this._textBlocks.reset();
         this._outstanding = Math.max(0, this._outstanding - 1);
-        if (this._outstanding === 0) this.onIdle?.();
+        if (this._outstanding === 0) {
+          this._resolvers.clear();
+          this.onIdle?.();
+        }
         return;
       }
       default:
@@ -453,10 +457,15 @@ export class ClaudeAdapter {
     return this._outstanding > 0;
   }
 
-  sendMessage(text, attachments) {
+  // `uuid` names the message so it can be withdrawn again (see cancel());
+  // `priority: 'later'` makes it a turn of its own after the running one
+  // ends instead of being read at the next tool result (measured, see the
+  // server's waiting.js).
+  sendMessage(text, attachments, { uuid, priority } = {}) {
     this._outstanding++;
     return new Promise((resolve) => {
       this._pendingResolve = resolve;
+      if (uuid) this._resolvers.set(uuid, resolve);
       // A plain string keeps the common case simple; the Messages API
       // only wants the array shape once there's more than text to say
       // (Base64ImageSource, verified against @anthropic-ai/sdk's own
@@ -474,11 +483,37 @@ export class ClaudeAdapter {
         type: 'user',
         message: { role: 'user', content },
         parent_tool_use_id: null,
+        ...(uuid ? { uuid } : {}),
+        ...(priority ? { priority } : {}),
       });
       const notify = this._notifyQueued;
       this._notifyQueued = null;
       notify?.();
     });
+  }
+
+  // Whether a message can be taken back at all: the SDK's
+  // cancelAsyncMessage() is in its control protocol but not in its public
+  // types, so it may be missing in another SDK version.
+  get canCancel() {
+    return typeof this._session?.cancelAsyncMessage === 'function';
+  }
+
+  // Takes a message back that the session has not read yet. true: it was
+  // dropped and will never be read; this turn's bookkeeping is undone (no
+  // result will ever come for it). false: the session had already taken it
+  // up (or it is unknown). Throws if the call itself fails.
+  async cancel(uuid) {
+    if (!uuid || !this.canCancel) return false;
+    const cancelled = (await this._session.cancelAsyncMessage(uuid)) === true;
+    if (cancelled) {
+      this._outstanding = Math.max(0, this._outstanding - 1);
+      const resolve = this._resolvers.get(uuid);
+      this._resolvers.delete(uuid);
+      resolve?.();
+      if (this._outstanding === 0) this.onIdle?.();
+    }
+    return cancelled;
   }
 
   // Showing Claude's own session/weekly usage limits, not just this
