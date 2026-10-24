@@ -12,7 +12,7 @@
 // `lan: true` (same local network only) binds to 0.0.0.0 instead —
 // deliberately opt-in, never the default. The token is still the only
 // gate at that point, over plain HTTP, against a live agent session
-// with real Bash/file/git execution in the target repo (autopilot skips
+// with real Bash/file/git execution in the target repo ("allow all tools" skips
 // even the permission prompt) — worth knowing before turning it on,
 // which is why runChatServer prints an explicit warning when it does
 // rather than silently widening what "reaching this chat" means.
@@ -30,7 +30,9 @@ import { WebSocketServer } from 'ws';
 
 import { createAdapter } from './agentAdapter.js';
 import { waitUntilIdle } from './drain.js';
+import { createPermissions, VIA_ALLOW_ALL, VIA_ALWAYS_ALLOW } from './permissions.js';
 import { validateModelChoice } from './modelChoice.js';
+import { writeLimitLog } from './limitLog.js';
 import { WaitingMessages } from './waiting.js';
 import { decideRelevance } from './gatekeeper.js';
 import { extractMentions, extractVocativeAddresses } from './mentions.js';
@@ -42,6 +44,7 @@ import { currentBranch, gitRoot, resolveGitDir } from './worktree.js';
 import { addWorkforce, listWorkforces, removeWorkforce, setActiveWorkforce } from '../../shared/workforceRegistry.js';
 import { getOrCreateSession, saveSessionPort } from '../../shared/chatSessions.js';
 import { portToRemember } from '../../shared/portFlag.js';
+import { cliSessionInfo, createHandovers, transferToTerminal } from './cliSession.js';
 
 // One colleague can now have several independent, parallel
 // conversations running at once (e.g. one session per topic) — each is its own adapter
@@ -367,6 +370,13 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
     }
     const workforce = resolveWorkforce(targetDir);
     const store = openStore({ workforceId: workforce?.id, baseDir: workforce?.baseDir });
+    // A recognised usage limit: its structural fields go to the limit log
+    // (see limitLog.js); what is sent on to the tabs is the notice without them.
+    const limitLogFile = workforce?.id ? joinPath(workforce.baseDir, workforce.id, 'chat', 'limit-log.jsonl') : null;
+    const takeLimitNotice = ({ log, ...notice }) => {
+      writeLimitLog(limitLogFile, log);
+      return notice;
+    };
     if (!store.persisted) {
       console.log(
         '\nNo workforce ID found (CONSTITUTION.md/verfassung.md missing or still unfilled) — chat history will not survive a restart.'
@@ -381,6 +391,17 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
     // human's own side-by-side 1:1 conversations, not something a
     // channel needs to pick between.
     const adapters = new Map();
+    // The folder she runs in for a conversation (also what the terminal
+    // command changes into). A worktree of another repo does not move her:
+    // she keeps the workforce folder as cwd (her agents and settings are
+    // read from there) and the prompt names the worktree (see createAdapter).
+    const conversationCwd = (colleagueId, sessionId) => {
+      const worktree = store.getWorktree(colleagueId, sessionId);
+      const worktreeThere = worktree && existsSync(worktree.path);
+      return worktreeThere && worktreeIsStartRepo(worktree.repoPath, targetDir) ? worktree.path : targetDir;
+    };
+    // Conversations handed to the terminal: the chat leaves their session alone.
+    const handovers = createHandovers();
     const adapterFor = (colleagueId, sessionId = DEFAULT_SESSION_ID) => {
       const key = adapterKey(colleagueId, sessionId);
       if (!adapters.has(key)) {
@@ -397,11 +418,8 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
         // Works in her conversation's own worktree when it has one (and the
         // folder is still there), otherwise in the workforce folder.
         const worktree = store.getWorktree(colleagueId, sessionId);
-        // A worktree of another repo does not move her: she keeps the
-        // workforce folder as cwd (her agents and settings are read from
-        // there) and the prompt names the worktree (see createAdapter).
         const worktreeThere = worktree && existsSync(worktree.path);
-        const cwd = worktreeThere && worktreeIsStartRepo(worktree.repoPath, targetDir) ? worktree.path : targetDir;
+        const cwd = conversationCwd(colleagueId, sessionId);
         // She may move the conversation into a worktree herself (a tool of
         // hers, see useWorktree.js), if it can have one.
         let replaceWhenIdle = false;
@@ -513,13 +531,13 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
       return sessionsByColleague.get(colleagueId);
     }
 
-    // "Allow all"/auto mode, per (colleague, session), like the native apps'
-    // auto-approve. Deliberately scoped
-    // to 1:1 sessions only for this first version, not channels: a
-    // channel turn already runs with full permission prompting (see
-    // relayChannelMessage below), and folding auto mode into that too
-    // is a separate decision, not silently extended.
-    const autoModeSessions = new Set();
+    // "Allow all tools" and "Always allow <tool>", per 1:1 session and per
+    // channel member. In memory only (see permissions.js).
+    const permissions = createPermissions();
+    // The key for the conversation a message names: a channel member when
+    // it carries a channelId, else a 1:1 session.
+    const permissionKey = (p) =>
+      p.channelId ? adapterKey(p.colleagueId, p.channelId) : adapterKey(p.colleagueId, p.sessionId);
 
     // Channels are few and long-lived, worth keeping in memory rather
     // than re-querying the store on every mention lookup.
@@ -704,9 +722,9 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
           return;
         }
 
-        if (req.method === 'GET' && route === 'api/auto-mode-sessions') {
+        if (req.method === 'GET' && route === 'api/permissions') {
           res.writeHead(200, { 'Content-Type': 'application/json' }).end(
-            JSON.stringify([...autoModeSessions])
+            JSON.stringify(permissions.snapshot())
           );
           return;
         }
@@ -725,6 +743,23 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
           return;
         }
 
+        if (req.method === 'GET' && route === 'api/cli-session') {
+          // What the terminal needs to continue this 1:1 conversation. Not for
+          // channels or subagent windows (the client never asks for them; an
+          // unknown id answers unavailable), and nothing before the first turn.
+          const colleagueId = url.searchParams.get('colleagueId') || '';
+          const sessionId = url.searchParams.get('sessionId') || DEFAULT_SESSION_ID;
+          const known = readRoster(targetDir).some((c) => c.id === colleagueId);
+          const info = cliSessionInfo({
+            sdkSessionId: known ? store.getAdapterSession(colleagueId, sessionId) : null,
+            cwd: known ? conversationCwd(colleagueId, sessionId) : null,
+          });
+          res.writeHead(200, { 'Content-Type': 'application/json' }).end(
+            JSON.stringify({ ...info, handedOver: handovers.has(adapterKey(colleagueId, sessionId)) })
+          );
+          return;
+        }
+
         if (req.method === 'GET' && route === 'api/models') {
           // What the conversation's settings dialog offers. Asked of the
           // colleague's own adapter, so opening the dialog starts her
@@ -734,7 +769,8 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
           // dialog simply leaves the section out.
           const colleagueId = url.searchParams.get('colleagueId') || '';
           const sessionId = url.searchParams.get('sessionId') || DEFAULT_SESSION_ID;
-          const adapter = adapterFor(colleagueId, sessionId);
+          // Not while the terminal has the session: asking would start it.
+          const adapter = handovers.has(adapterKey(colleagueId, sessionId)) ? null : adapterFor(colleagueId, sessionId);
           let models = null;
           if (adapter && typeof adapter.supportedModels === 'function') {
             try {
@@ -941,6 +977,10 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
         const bindAdapter = (adapter, colleagueId, sessionId) => {
           const key = adapterKey(colleagueId, sessionId);
           adapter.onUpdate = (update) => {
+            if (update.type === 'limit_notice') {
+              broadcast({ colleagueId, sessionId, ...takeLimitNotice(update) });
+              return;
+            }
             // The session took up a waiting message (the exact moment, not an
             // estimate from a tool result): it stops waiting everywhere.
             if (update.type === 'message_read') {
@@ -1052,12 +1092,12 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
             broadcast(trail ? { colleagueId, sessionId, ...update, trail } : { colleagueId, sessionId, ...update });
           };
           adapter.onPermissionRequest = (request) => {
-            // Allow-all/auto mode: skip the round trip
-            // entirely and allow, same as the native apps' auto-approve.
-            // Checked fresh on every request (not captured once at bind
-            // time) so toggling it mid-conversation takes effect on the
-            // very next tool call, not just the next message.
-            if (autoModeSessions.has(key)) return Promise.resolve({ allow: true, via: 'auto mode' });
+            // Allowed ahead of time ("allow all tools" / "always allow"):
+            // skip the round trip entirely. Checked fresh on every request
+            // (not captured once at bind time) so a change mid-conversation
+            // takes effect on the very next tool call.
+            const via = permissions.decide(key, request.toolName);
+            if (via) return Promise.resolve({ allow: true, via });
             return new Promise((resolve) => {
               const requestId = randomUUID();
               pendingPermissions.set(requestId, { resolve });
@@ -1183,6 +1223,8 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
           }
 
           for (const colleagueId of targets) {
+            // Her main conversation is with the terminal: a channel turn would write into it.
+            if (handovers.has(adapterKey(colleagueId, DEFAULT_SESSION_ID))) continue;
             const adapter = adapterFor(colleagueId);
             if (!adapter) continue;
 
@@ -1194,6 +1236,10 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
             // reply, persisted and dispatched exactly like the human's own
             // channel message was above.
             adapter.onUpdate = (update) => {
+              if (update.type === 'limit_notice') {
+                broadcast({ channelId, colleagueId, ...takeLimitNotice(update) });
+                return;
+              }
               if (update.type === 'message') {
                 relayChannelMessage(channelId, colleagueId, update.text, depth + 1);
                 return;
@@ -1208,12 +1254,15 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
               rememberStats(adapterKey(colleagueId, DEFAULT_SESSION_ID), update);
               broadcast({ channelId, colleagueId, ...update });
             };
-            adapter.onPermissionRequest = (request) =>
-              new Promise((resolve) => {
+            adapter.onPermissionRequest = (request) => {
+              const via = permissions.decide(adapterKey(colleagueId, channelId), request.toolName);
+              if (via) return Promise.resolve({ allow: true, via });
+              return new Promise((resolve) => {
                 const requestId = randomUUID();
                 pendingPermissions.set(requestId, { resolve });
                 broadcast({ channelId, colleagueId, type: 'permission_request', requestId, ...request });
               });
+            };
 
             broadcast({ channelId, colleagueId, type: 'channel_typing', active: true });
             // A colleague answering in a channel
@@ -1258,10 +1307,11 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
             const pending = pendingPermissions.get(payload.requestId);
             if (!pending) return; // late answer to a request nobody is waiting on anymore
             pendingPermissions.delete(payload.requestId);
-            // `via`: set by the browser when it answered on its own (an
-            // earlier "Allow always" or the channel autopilot), so the
-            // trail can say so. Only these two values are taken over.
-            const via = ['allow always', 'autopilot'].includes(payload.via) ? payload.via : undefined;
+            // `via`: set by the browser when the answer also switched on a
+            // standing permission (the card's "Always allow <tool>" or
+            // "Allow all tools"), so the trail can say so. Only these two
+            // values are taken over.
+            const via = [VIA_ALWAYS_ALLOW, VIA_ALLOW_ALL].includes(payload.via) ? payload.via : undefined;
             pending.resolve({ allow: Boolean(payload.allow), message: payload.message, via });
             // The request itself went out to every open tab (see
             // bindAdapter/relayChannelMessage's own broadcast calls); now
@@ -1326,16 +1376,15 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
             return;
           }
 
-          if (payload.type === 'set_auto_mode') {
-            const key = adapterKey(payload.colleagueId, payload.sessionId);
-            if (payload.enabled) autoModeSessions.add(key);
-            else autoModeSessions.delete(key);
-            broadcast({
-              type: 'auto_mode_changed',
-              colleagueId: payload.colleagueId,
-              sessionId: payload.sessionId || DEFAULT_SESSION_ID,
-              enabled: Boolean(payload.enabled),
-            });
+          if (payload.type === 'set_allow_all' || payload.type === 'set_always_allow') {
+            if (!payload.colleagueId) return;
+            const key = permissionKey(payload);
+            if (payload.type === 'set_allow_all') {
+              permissions.setAllowAll(key, Boolean(payload.enabled));
+            } else {
+              permissions.setAlwaysAllow(key, payload.tool, Boolean(payload.enabled));
+            }
+            broadcast({ type: 'permissions_changed', ...permissions.stateFor(key) });
             return;
           }
 
@@ -1379,6 +1428,33 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
               model: checked.model,
               resolvedModel: shown?.resolvedModel || checked.model || null,
             });
+            return;
+          }
+
+          if (payload.type === 'handover_terminal' || payload.type === 'take_back_terminal') {
+            // "Transfer to terminal": the chat lets go of the session so only
+            // the terminal writes to it. "Take back": the next message
+            // resumes it from the saved id.
+            const colleagueId = payload.colleagueId;
+            const sessionId = payload.sessionId || DEFAULT_SESSION_ID;
+            const key = adapterKey(colleagueId, sessionId);
+            const reply = (extra) => broadcast({ type: 'terminal_handover', colleagueId, sessionId, ...extra });
+            if (!readRoster(targetDir).some((c) => c.id === colleagueId)) {
+              reply({ handedOver: false, failed: true, message: 'Unknown colleague.' });
+              return;
+            }
+            if (payload.type === 'take_back_terminal') {
+              handovers.remove(key);
+              reply({ handedOver: false });
+              return;
+            }
+            if (!cliSessionInfo({ sdkSessionId: store.getAdapterSession(colleagueId, sessionId), cwd: targetDir }).available) {
+              reply({ handedOver: false, failed: true, message: 'There is no session to hand over yet.' });
+              return;
+            }
+            const result = transferToTerminal({ handovers, key, adapter: adapters.get(key) });
+            if (result.ok) adapters.delete(key);
+            reply(result.ok ? { handedOver: true } : { handedOver: false, failed: true, message: result.message });
             return;
           }
 
@@ -1646,6 +1722,12 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
 
           const { colleagueId, text, attachments } = payload;
           const sessionId = payload.sessionId || DEFAULT_SESSION_ID;
+          if (handovers.has(adapterKey(colleagueId, sessionId))) {
+            // The client asks first and takes it back; a message that still
+            // arrives is refused rather than written into the terminal's session.
+            broadcast({ colleagueId, sessionId, type: 'message', role: 'system', text: 'This conversation is handed over to the terminal. Take it back to continue here.' });
+            return;
+          }
           const adapter = adapterFor(colleagueId, sessionId);
           if (!adapter) {
             broadcast({ colleagueId, sessionId, type: 'message', role: 'system', text: 'Unknown colleague.' });
@@ -1718,7 +1800,7 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
         // between "reachable from another device on the same WiFi" and
         // "reachable by anyone who can see this token, over plain HTTP,
         // by a live agent session with real Bash/file/git execution in
-        // this repo" (autopilot skips even the permission prompt). Not
+        // this repo" ("allow all tools" skips even the permission prompt). Not
         // a one-time warning easy to forget between runs.
         const address = lanAddress();
         console.log('\n⚠ --lan is on: this chat is reachable by anyone on the same network who has this link.');
