@@ -777,7 +777,7 @@ button.workforce-row__pick:disabled { cursor: default; opacity: 0.55; }
    plain block-flow section, and multiple per-member rows (a channel)
    need one full-width line each, not inline-flex's default shrink-to-
    content sitting side by side. */
-#conv-settings-auto-mode .auto-mode-toggle {
+#conv-settings-permissions .auto-mode-toggle {
   display: flex;
   margin: 0 0 0.4rem;
 }
@@ -1999,9 +1999,23 @@ button.workforce-row__pick:disabled { cursor: default; opacity: 0.55; }
   color: var(--accent) !important;
 }
 
-/* Ties visually into the auto-mode header toggle's own color (see
-   .pane-header--auto-mode) — same "unattended from here on" idea. */
-.permission-card__autopilot { background: var(--auto-mode-border) !important; color: #1b1b1f !important; }
+/* "Allow all tools" is the widest grant, so it is only a text link, not a
+   button on a par with the others. */
+.permission-card__link {
+  margin-top: 0.5rem;
+  padding: 0.25rem 0;
+  background: none;
+  border: 0;
+  color: var(--accent);
+  font: inherit;
+  font-size: 0.85rem;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.permission-card__confirm { margin-top: 0.75rem; padding-top: 0.5rem; border-top: 1px solid var(--border); }
+
+#conv-settings-permissions .permissions-block { margin: 0 0 0.8rem; }
+.permissions-note { margin: 0 0 0.4rem 1.65rem; color: var(--fg-muted); font-size: 0.85rem; }
 
 /* `max-width: 16rem` alone is wider than the bubble at phone widths
    (bubble is min(60ch, 80%)), and html/body's overflow-x: hidden turned
