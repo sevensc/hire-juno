@@ -11,6 +11,7 @@
 // `remove [-f] <worktree>`, `list --porcelain`.
 
 import { execFileSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -26,6 +27,17 @@ export function gitRoot(dir) {
   } catch {
     return null;
   }
+}
+
+// The folder the changes dialog reads for a conversation: its own worktree
+// when it has one and the folder still exists, otherwise the workforce
+// folder (`targetDir`). `worktree` is what the store returns for the
+// conversation ({ path, branch }) or null.
+export function resolveGitDir(targetDir, worktree) {
+  if (worktree && worktree.path && existsSync(worktree.path)) {
+    return { dir: worktree.path, isWorktree: true };
+  }
+  return { dir: targetDir, isWorktree: false };
 }
 
 // The branch checked out in `dir`, or null for a detached HEAD or when
