@@ -660,6 +660,10 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
         }
 
         if (req.method === 'GET' && route === 'api/subagent-threads') {
+          // Sessions live in memory only: a window left "running" by one that
+          // is gone (restart, closed session) would never get its end and so
+          // never offer to be closed.
+          store.finishOrphanedSubagentThreads((ownerId, sessionId) => adapters.has(adapterKey(ownerId, sessionId)));
           res.writeHead(200, { 'Content-Type': 'application/json' }).end(
             JSON.stringify(store.listSubagentThreads())
           );
