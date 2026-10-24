@@ -152,7 +152,27 @@ const CONTENT_TYPES = {
   // text file besides index.html that needs a placeholder filled in
   // (see TEMPLATED below), not a third kind of static file.
   '.webmanifest': 'application/manifest+json',
+  // Only for the two fixed files in VENDOR_FILES below.
+  '.svg': 'image/svg+xml',
 };
+
+// The one subdirectory of public/ that is served: the GitHub mark for
+// the "Report an issue" link (see public/vendor/github/README.md).
+// An exact list, not a prefix match.
+const VENDOR_FILES = new Set([
+  'vendor/github/GitHub_Invertocat_Black.svg',
+  'vendor/github/GitHub_Invertocat_White.svg',
+]);
+
+// This package's own version, shown in the issue template. Missing or
+// unreadable is not an error: the template says "unknown".
+const PACKAGE_VERSION = (() => {
+  try {
+    return JSON.parse(readFileSync(joinPath(MODULE_DIR, '..', '..', 'package.json'), 'utf8')).version;
+  } catch {
+    return undefined;
+  }
+})();
 
 // index.html and manifest.webmanifest both carry placeholders — this is
 // the exact set, not "any .html/.webmanifest file happens to work",
@@ -180,7 +200,7 @@ function serveStatic(route, res, token, teamName, req) {
   // module ships — a chat message is never a path, but staying
   // deliberate here costs nothing.
   const ext = '.' + file.split('.').pop();
-  if (!CONTENT_TYPES[ext] || file.includes('..') || file.includes('/')) {
+  if (!CONTENT_TYPES[ext] || file.includes('..') || (file.includes('/') && !VENDOR_FILES.has(file))) {
     res.writeHead(404).end('Not found.');
     return;
   }
@@ -549,7 +569,7 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
           // own comment above), same as the header always showed before
           // this existed.
           res.writeHead(200, { 'Content-Type': 'application/json' }).end(
-            JSON.stringify({ persisted: store.persisted, teamName: workforce?.id || 'hire-juno' })
+            JSON.stringify({ persisted: store.persisted, teamName: workforce?.id || 'hire-juno', version: PACKAGE_VERSION })
           );
           return;
         }

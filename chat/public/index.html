@@ -302,6 +302,19 @@ try {
       </div>
       <div id="branding-error" role="alert" hidden></div>
     </section>
+    <section>
+      <h3>Feedback</h3>
+      <!-- A plain link, opened by the browser in a new tab; app.js fills
+           the href in (chat/src/issue-link.js). The GitHub mark is
+           decorative and unmodified: the white file shows on dark, the
+           black one on light (styles.css). -->
+      <a id="issue-link" class="issue-link" href="https://github.com/sevensc/hire-juno/issues/new" target="_blank" rel="noopener noreferrer">
+        <img class="issue-link__mark issue-link__mark--on-light" src="vendor/github/GitHub_Invertocat_Black.svg" alt="" width="16" height="16" aria-hidden="true" />
+        <img class="issue-link__mark issue-link__mark--on-dark" src="vendor/github/GitHub_Invertocat_White.svg" alt="" width="16" height="16" aria-hidden="true" />
+        <span>Report an issue</span>
+      </a>
+      <p class="issue-link__note">Opens a pre-filled form on GitHub in a new tab. Nothing from your conversations is sent, and you can edit the form before submitting.</p>
+    </section>
   </div>
 </div>
 <!-- Replaces the pane header's own Auto-mode checkbox and

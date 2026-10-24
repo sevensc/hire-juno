@@ -15,6 +15,7 @@ import { html } from 'htm/preact';
 
 import { renderMarkdown } from './markdown.js';
 import { pickConversationToRestore, recallOpenConversation, rememberOpenConversation } from './open-conversation.js';
+import { buildIssueUrl } from './issue-link.js';
 import { applyTheme, readThemePreference, writeThemePreference } from './theme.js';
 
 const paneEl = document.getElementById('pane');
@@ -38,6 +39,7 @@ const workforceListEl = document.getElementById('workforce-list');
 const workforceAddFormEl = document.getElementById('workforce-add-form');
 const workforceAddInputEl = document.getElementById('workforce-add-input');
 const workforceErrorEl = document.getElementById('workforce-error');
+const issueLinkEl = document.getElementById('issue-link');
 const settingsNotifyRowEl = document.getElementById('settings-notify-row');
 
 // Appearance (settings dialog): the <head> already applied the stored
@@ -4129,7 +4131,8 @@ function channelFormEl() {
 // which belongs to first load, not to every refresh.
 async function loadRoster({ preserveSelection = false } = {}) {
   const statusRes = await fetch('api/status');
-  const { persisted, teamName } = await statusRes.json();
+  const { persisted, teamName, version } = await statusRes.json();
+  issueLinkEl.href = buildIssueUrl({ version, userAgent: navigator.userAgent });
   noPersistenceBannerEl.hidden = persisted;
   // The header carries the team's own name and a logo that
   // can be swapped — both come from api/status/logo.png now (see
