@@ -7285,7 +7285,10 @@
         };
         subagentPanels.get(ownerColleagueId).set(update.id, panel2);
         registerSubagentColleague(panel2);
-        history.set(panel2.syntheticId, []);
+        history.set(
+          panel2.syntheticId,
+          update.prompt ? [{ role: "you", text: update.prompt, createdAt: (/* @__PURE__ */ new Date()).toISOString() }] : []
+        );
         renderSidebar();
         return;
       }
@@ -7635,7 +7638,7 @@
       ${permission ? m2`<${PermissionCard} permission=${permission} colleagueId=${key} isChannel=${false} />` : null}
       ${items.map((item, i2) => item.pending ? row(item, i2) : null)}
       ${isTyping(key) && !permission ? m2`<div class="typing-indicator" role="status">typing…</div>` : null}
-      ${!items.length && !thinkingText && !partialText && !permission ? m2`<${EmptyConversation}
+      ${!items.length && !thinkingText && !partialText && !permission && !liveTrail.length ? m2`<${EmptyConversation}
             text=${`No messages with ${colleaguesById.get(activeColleagueId)?.name || "this colleague"} yet. Write the first one below.`}
           />` : null}
     <//>`,
@@ -7995,7 +7998,6 @@
       button.addEventListener("click", () => selectColleague(colleague, lastSessionByColleague.get(colleague.id) || DEFAULT_SESSION_ID));
       sidebarEl.appendChild(button);
       for (const panel of subagentPanels.get(colleague.id)?.values() ?? []) {
-        if (!panel.knownColleagueId) continue;
         const synthetic = colleaguesById.get(panel.syntheticId);
         const nested = document.createElement("button");
         nested.type = "button";
