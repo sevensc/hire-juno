@@ -111,16 +111,28 @@ const CHAT_UI_SKILL = readFileSync(joinPath(dirname(fileURLToPath(import.meta.ur
 // option silently would be a claim about behavior nobody verified.
 // `cwd` is where she works; it differs from `targetDir` (where her profile
 // is read from) when the conversation has its own git worktree.
-export function createAdapter(colleague, { targetDir, cwd = targetDir, resume, model }) {
+// `useWorktree`: set when the conversation can have a worktree (see
+// useWorktree.js); it creates one and returns { ok, created, branch, path } or
+// { ok: false, message }. Claude only; it becomes her `use_worktree` tool.
+export function createAdapter(colleague, { targetDir, cwd = targetDir, resume, model, useWorktree }) {
   const ownProfile = readProfileBody(targetDir, colleague.id) ?? `You are ${colleague.name}.`;
   const worktreeNote =
     cwd === targetDir
       ? ''
       : `\n\nYour working directory is ${cwd}, a git worktree on its own branch for this conversation. ` +
         `Work only inside it and do not change files in ${targetDir}.`;
-  const systemPrompt = `${ownProfile}${worktreeNote}\n\n${CHAT_UI_SKILL}`;
   const wantsCopilot = colleague.adapter.some((a) => a.toLowerCase().includes('copilot'));
+  const offer = useWorktree && !wantsCopilot ? `\n\n${WORKTREE_OFFER}` : '';
+  const systemPrompt = `${ownProfile}${worktreeNote}${offer}\n\n${CHAT_UI_SKILL}`;
   return wantsCopilot
     ? new CopilotAdapter(colleague, { cwd })
-    : new ClaudeAdapter(colleague, { systemPrompt, cwd, resume, model });
+    : new ClaudeAdapter(colleague, { systemPrompt, cwd, resume, model, useWorktree });
 }
+
+// Only added when the `use_worktree` tool exists for the conversation.
+export const WORKTREE_OFFER =
+  'You have a `use_worktree` tool (no arguments) that moves this conversation into its own git worktree ' +
+  'on a new branch. At the start of a larger task that changes files in this git repository, call it ' +
+  'before you change anything; the person confirms it. Do not call it for small changes. After it ran, ' +
+  'work in the worktree by its absolute path for the rest of this turn; from the next turn on it is ' +
+  'your working directory.';

@@ -26,7 +26,7 @@
 // that one call meant those later messages had nowhere to go — a
 // silent, complete loss of the subagent thread, not a rendering bug.
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { createSdkMcpServer, query, tool } from '@anthropic-ai/claude-agent-sdk';
 
 import { isStaleResumeError, STALE_RESUME_MESSAGE } from './staleResume.js';
 import { SubagentTracker } from './subagents.js';
@@ -65,6 +65,35 @@ function summarizeUsage(message) {
   };
 }
 
+// What the `use_worktree` tool tells her, from the result of useWorktree().
+export function worktreeToolResult(result) {
+  if (!result.ok) return { content: [{ type: 'text', text: result.message }], isError: true };
+  const text = result.created
+    ? `Created a git worktree on branch ${result.branch} at ${result.path}. ` +
+      `Your shell and file tools still start in the old folder for the rest of this turn: ` +
+      `work in ${result.path} by absolute path. From your next turn on it is your working directory.`
+    : `This conversation already has a worktree, on branch ${result.branch} at ${result.path}.`;
+  return { content: [{ type: 'text', text }] };
+}
+
+// An in-process MCP server with the one `use_worktree` tool (shown to her as
+// mcp__juno__use_worktree; it asks in the chat like any mcp__* tool, see
+// ASK_UNLESS_AUTO_MODE).
+export function worktreeServer(useWorktree) {
+  return createSdkMcpServer({
+    name: 'juno',
+    tools: [
+      tool(
+        'use_worktree',
+        'Moves this conversation into its own git worktree on a new branch, so the changes stay off the main ' +
+          'checkout. Takes no arguments. Returns the worktree path and branch.',
+        {},
+        async () => worktreeToolResult(useWorktree())
+      ),
+    ],
+  });
+}
+
 function toolResultText(content) {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
@@ -83,7 +112,9 @@ export class ClaudeAdapter {
   // query()'s own `resume` option (sdk.d.ts: "Session ID to resume. Loads
   // the conversation history from the specified session," no companion
   // option required). Omitted entirely for a first-ever conversation.
-  constructor(colleague, { systemPrompt, cwd, resume, model }) {
+  // `useWorktree`: when set, she gets the `use_worktree` tool (worktreeServer
+  // above); see createAdapter in agentAdapter.js.
+  constructor(colleague, { systemPrompt, cwd, resume, model, useWorktree }) {
     this.colleague = colleague;
     // Set by whoever owns this adapter (server/index.js) right after
     // creating it, and re-bound on every subsequent message so a
@@ -101,6 +132,9 @@ export class ClaudeAdapter {
     // asked to resume has no transcript anymore (see staleResume.js), so
     // whoever owns the saved pointer can clear it and drop this adapter.
     this.onStaleResume = null;
+    // Called when the last outstanding turn has ended and nothing is queued
+    // behind it: the one safe moment for the owner to replace this adapter.
+    this.onIdle = null;
     this._staleResumeHandled = false;
     this._queue = [];
     this._notifyQueued = null;
@@ -160,6 +194,7 @@ export class ClaudeAdapter {
         // option of its own in the SDK (sdk.d.ts: "Claude model to use.
         // Defaults to the CLI default model."), left out entirely otherwise.
         ...(model ? { model } : {}),
+        ...(useWorktree ? { mcpServers: { juno: worktreeServer(useWorktree) } } : {}),
       },
     });
 
@@ -354,6 +389,7 @@ export class ClaudeAdapter {
         this._pendingResolve = null;
         this._textBlocks.reset();
         this._outstanding = Math.max(0, this._outstanding - 1);
+        if (this._outstanding === 0) this.onIdle?.();
         return;
       }
       default:

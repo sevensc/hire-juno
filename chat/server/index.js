@@ -37,15 +37,8 @@ import { extractMentions, extractVocativeAddresses } from './mentions.js';
 import { findLayout, readRoster, resolveAvatarPath } from './roster.js';
 import { DEFAULT_SESSION_ID, openStore } from './store.js';
 import { resolveWorkforce } from './workforceId.js';
-import {
-  chatBranchName,
-  createWorktree,
-  currentBranch,
-  gitRoot,
-  resolveGitDir,
-  worktreeFolderName,
-  worktreesDir,
-} from './worktree.js';
+import { activateWorktree, canOfferWorktree } from './useWorktree.js';
+import { currentBranch, gitRoot, resolveGitDir } from './worktree.js';
 import { addWorkforce, listWorkforces, removeWorkforce, setActiveWorkforce } from '../../shared/workforceRegistry.js';
 import { getOrCreateSession, saveSessionPort } from '../../shared/chatSessions.js';
 
@@ -364,7 +357,26 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
         // folder is still there), otherwise in the workforce folder.
         const worktree = store.getWorktree(colleagueId, sessionId);
         const cwd = worktree && existsSync(worktree.path) ? worktree.path : targetDir;
-        const adapter = createAdapter(colleague, { targetDir, cwd, resume, model });
+        // She may move the conversation into a worktree herself (a tool of
+        // hers, see useWorktree.js), if it can have one.
+        let replaceWhenIdle = false;
+        const useWorktree = canOfferWorktree({ workforceId: workforce?.id, repoDir: targetDir, existing: worktree })
+          ? () => {
+              const result = activateWorktree({ store, workforceId: workforce?.id, repoDir: targetDir, colleagueId, sessionId });
+              if (result.ok && result.created) {
+                // She is mid-turn: this adapter is replaced once it is idle.
+                replaceWhenIdle = true;
+                broadcast({ type: 'worktree_changed', colleagueId, sessionId, branch: result.branch, path: result.path });
+              }
+              return result;
+            }
+          : undefined;
+        const adapter = createAdapter(colleague, { targetDir, cwd, resume, model, useWorktree });
+        adapter.onIdle = () => {
+          if (!replaceWhenIdle) return;
+          adapter.close?.();
+          if (adapters.get(key) === adapter) adapters.delete(key);
+        };
         // Set once here, not per-message like onUpdate/onPermissionRequest
         // below (bindAdapter) — this is bookkeeping, not delivery to a
         // particular browser tab.
@@ -1227,38 +1239,27 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
               fail('Unknown colleague.');
               return;
             }
-            const existing = store.getWorktree(colleagueId, sessionId);
-            if (existing) {
-              broadcast({ type: 'worktree_changed', colleagueId, sessionId, branch: existing.branch, path: existing.path });
-              return;
-            }
-            if (!workforce?.id) {
-              fail('A worktree needs a workforce id to be stored under, and this workforce has none yet.');
-              return;
-            }
-            if (!gitRoot(targetDir)) {
-              fail('This folder is not a git repository.');
-              return;
-            }
             const key = adapterKey(colleagueId, sessionId);
-            if (adapters.get(key)?.busy) {
-              fail('She is still answering. Try again once the reply is finished.');
+            const result = activateWorktree({
+              store,
+              workforceId: workforce?.id,
+              repoDir: targetDir,
+              colleagueId,
+              sessionId,
+              busy: Boolean(adapters.get(key)?.busy),
+            });
+            if (!result.ok) {
+              fail(result.message);
               return;
             }
-            const branch = chatBranchName(colleagueId, sessionId);
-            const path = joinPath(worktreesDir(workforce.id), worktreeFolderName(colleagueId, sessionId));
-            try {
-              createWorktree({ repoDir: targetDir, worktreeDir: path, branch });
-            } catch (err) {
-              fail(`Could not create the worktree: ${(err.stderr || err.message).toString().trim()}`);
-              return;
+            const { branch, path } = result;
+            if (result.created) {
+              // The running adapter still has the old working directory: drop
+              // it; the next message creates one in the worktree (adapterFor)
+              // and resumes the saved session.
+              adapters.get(key)?.close?.();
+              adapters.delete(key);
             }
-            store.setWorktree(colleagueId, sessionId, path, branch);
-            // The running adapter still has the old working directory: drop
-            // it; the next message creates one in the worktree (adapterFor)
-            // and resumes the saved session.
-            adapters.get(key)?.close?.();
-            adapters.delete(key);
             broadcast({ type: 'worktree_changed', colleagueId, sessionId, branch, path });
             return;
           }
