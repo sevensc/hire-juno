@@ -38,7 +38,7 @@ import { findLayout, readRoster, resolveAvatarPath } from './roster.js';
 import { DEFAULT_SESSION_ID, openStore } from './store.js';
 import { resolveWorkforce } from './workforceId.js';
 import { activateWorktree, canOfferWorktree } from './useWorktree.js';
-import { gitRoot } from './worktree.js';
+import { currentBranch, gitRoot, resolveGitDir } from './worktree.js';
 import { addWorkforce, listWorkforces, removeWorkforce, setActiveWorkforce } from '../../shared/workforceRegistry.js';
 import { getOrCreateSession, saveSessionPort } from '../../shared/chatSessions.js';
 
@@ -725,9 +725,21 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
           return;
         }
 
+        // Which folder the changes dialog reads: the conversation's own
+        // worktree when `colleagueId` (+ `sessionId`) name one that still
+        // exists, otherwise `targetDir`. Channels and subagent threads send
+        // no colleagueId and so get `targetDir`.
+        const gitScope = () => {
+          const colleagueId = url.searchParams.get('colleagueId') || '';
+          const sessionId = url.searchParams.get('sessionId') || DEFAULT_SESSION_ID;
+          const worktree = colleagueId ? store.getWorktree(colleagueId, sessionId) : null;
+          return resolveGitDir(targetDir, worktree);
+        };
+
         if (req.method === 'GET' && route === 'api/git-status') {
+          const { dir, isWorktree } = gitScope();
           res.writeHead(200, { 'Content-Type': 'application/json' }).end(
-            JSON.stringify({ cwd: targetDir, files: gitStatus(targetDir) })
+            JSON.stringify({ cwd: dir, branch: currentBranch(dir), worktree: isWorktree, files: gitStatus(dir) })
           );
           return;
         }
@@ -740,10 +752,11 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
           // happily diff *any* two filesystem paths, repo or not, so
           // an unchecked `path` here would turn this into a generic
           // "read a file this server process can see" endpoint. Only
-          // a path git itself currently reports as changed in this
-          // repo gets through.
-          const known = (gitStatus(targetDir) || []).find((f) => f.path === filePath);
-          const diff = known ? gitDiff(targetDir, filePath, known.status.includes('?')) : null;
+          // a path git itself currently reports as changed in the
+          // chosen folder gets through.
+          const { dir } = gitScope();
+          const known = (gitStatus(dir) || []).find((f) => f.path === filePath);
+          const diff = known ? gitDiff(dir, filePath, known.status.includes('?')) : null;
           res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ diff }));
           return;
         }
