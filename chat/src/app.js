@@ -14,6 +14,7 @@ import { Fragment, render } from 'preact';
 import { html } from 'htm/preact';
 
 import { renderMarkdown } from './markdown.js';
+import { nextMenuIndex, pickSendKind } from './send-kind.js';
 import { pickConversationToRestore, recallOpenConversation, rememberOpenConversation } from './open-conversation.js';
 import { applyTheme, readThemePreference, writeThemePreference } from './theme.js';
 
@@ -80,8 +81,10 @@ const attachmentPreviewEl = document.getElementById('attachment-preview');
 // Explicitly the submit button, not "the first button in the form":
 // #attach-button is a real <button> now (it was a <label for> before,
 // which no keyboard could reach) and it comes first in the markup.
-const sendButton = form.querySelector('button[type="submit"]');
+const sendButton = document.getElementById('send-button');
 const queueButtonEl = document.getElementById('queue-button');
+const sendMenuButtonEl = document.getElementById('send-menu-button');
+const sendMenuEl = document.getElementById('send-menu');
 const attachButtonEl = document.getElementById('attach-button');
 const imageLightboxEl = document.getElementById('image-lightbox');
 const imageLightboxImgEl = document.getElementById('image-lightbox-img');
@@ -3560,17 +3563,69 @@ function renderMessages({ forceScrollToBottom = false } = {}) {
 
   refreshHiringModeStyling(key);
   followThinkingTail();
-  updateQueueButton();
+  updateSendMenu();
   if (stickToBottom) scrollMessagesToBottom();
   else updateScrollToBottomButton();
 }
 
-// "Queue message" next to Send: only in a 1:1 conversation whose colleague
-// is working on a turn right now (without one there is nothing to queue
-// behind, Send does the same).
-function updateQueueButton() {
-  queueButtonEl.hidden = !(activeColleagueId && !activeChannelId && !input.disabled && isTyping(activeConvKey()));
+// The arrow next to Send (and its menu with "Queue message"): only in a 1:1
+// conversation whose colleague is working on a turn right now (without one
+// there is nothing to queue behind, Send does the same).
+function updateSendMenu() {
+  const available = Boolean(activeColleagueId && !activeChannelId && !input.disabled && isTyping(activeConvKey()));
+  sendMenuButtonEl.hidden = !available;
+  if (!available) closeSendMenu();
 }
+
+function sendMenuItems() {
+  return [...sendMenuEl.querySelectorAll('[role="menuitem"]')];
+}
+
+function openSendMenu() {
+  sendMenuEl.hidden = false;
+  sendMenuButtonEl.setAttribute('aria-expanded', 'true');
+  sendMenuItems()[0].focus();
+}
+
+function closeSendMenu({ restoreFocus = false } = {}) {
+  const wasOpen = !sendMenuEl.hidden;
+  sendMenuEl.hidden = true;
+  sendMenuButtonEl.setAttribute('aria-expanded', 'false');
+  if (wasOpen && restoreFocus && !sendMenuButtonEl.hidden) sendMenuButtonEl.focus();
+}
+
+sendMenuButtonEl.addEventListener('click', () => {
+  if (sendMenuEl.hidden) openSendMenu();
+  else closeSendMenu({ restoreFocus: true });
+});
+sendMenuButtonEl.addEventListener('keydown', (event) => {
+  if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+    event.preventDefault();
+    if (sendMenuEl.hidden) openSendMenu();
+  }
+});
+sendMenuEl.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    closeSendMenu({ restoreFocus: true });
+    return;
+  }
+  if (event.key === 'Tab') {
+    closeSendMenu();
+    return;
+  }
+  const items = sendMenuItems();
+  const next = nextMenuIndex(items.indexOf(document.activeElement), event.key, items.length);
+  if (next !== null) {
+    event.preventDefault();
+    items[next].focus();
+  }
+  // Enter and Space on a focused item click it, which submits the form.
+});
+// A click anywhere else closes it; the click on an entry itself submits first.
+document.addEventListener('click', (event) => {
+  if (!sendMenuEl.hidden && !sendMenuEl.contains(event.target) && !sendMenuButtonEl.contains(event.target)) closeSendMenu();
+});
 
 // A channel's message list, one bubble per sender — the part a 1:1
 // thread doesn't need, since there only one "colleague" ever speaks.
@@ -3579,7 +3634,8 @@ function updateQueueButton() {
 // carry a name tag, since which colleague spoke changes message to
 // message here.
 function renderChannelMessages({ forceScrollToBottom = false } = {}) {
-  queueButtonEl.hidden = true;
+  sendMenuButtonEl.hidden = true;
+  closeSendMenu();
   // Same reasoning as renderMessages' own stickToBottom — measured
   // before render() below, not after.
   const stickToBottom = forceScrollToBottom || isNearBottom();
@@ -3694,6 +3750,7 @@ async function selectChannel(channel) {
   activeSessionId = null;
   rememberOpenConversation({ channelId: channel.id });
   closeMentionAutocomplete();
+  closeSendMenu();
   if (unreadConversations.delete(UNREAD_CHANNEL_PREFIX + channel.id)) refreshUnreadTitle();
   renderSidebar();
   input.disabled = false;
@@ -3753,6 +3810,7 @@ async function selectColleague(colleague, sessionId = DEFAULT_SESSION_ID) {
   if (activeSessionId !== null) rememberOpenConversation({ colleagueId: colleague.id, sessionId: activeSessionId });
   activeChannelId = null;
   closeMentionAutocomplete();
+  closeSendMenu();
   if (unreadConversations.delete(activeConvKey())) refreshUnreadTitle();
   renderSidebar();
   const canReply = !isSubagentThread(colleague.id);
@@ -4639,8 +4697,8 @@ input.addEventListener('keydown', (event) => {
   // held, not required.
   if (event.key === 'Enter' && !event.shiftKey) {
     event.preventDefault();
-    // Alt+Enter: "Queue message" (only while that button is there).
-    if (event.altKey && !queueButtonEl.hidden) form.requestSubmit(queueButtonEl);
+    // Alt+Enter: "Queue message" (only while the menu is there).
+    if (event.altKey && !sendMenuButtonEl.hidden) form.requestSubmit(queueButtonEl);
     else form.requestSubmit();
   }
 });
@@ -4657,6 +4715,7 @@ function newMessageId() {
 form.addEventListener('submit', (event) => {
   event.preventDefault();
   closeMentionAutocomplete();
+  if (!sendMenuEl.hidden) { closeSendMenu(); input.focus(); }
   const text = input.value.trim();
   if (!text && !pendingAttachment) return;
 
@@ -4697,7 +4756,7 @@ form.addEventListener('submit', (event) => {
   // marked as waiting, until her turn ends (see the 'message' update).
   // "Queue message" only counts while her turn runs; otherwise it is a plain send.
   const typing = isTyping(key);
-  const kind = typing && event.submitter === queueButtonEl ? 'queue' : 'send';
+  const kind = pickSendKind({ typing, requested: event.submitter?.dataset.kind });
   const clientId = newMessageId();
   history.get(key).push({ role: 'you', text, attachments, createdAt: new Date().toISOString(), pending: typing, clientId, kind });
   // Forced — sending your own message should always land you at the
