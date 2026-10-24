@@ -12,7 +12,7 @@
 // `lan: true` (same local network only) binds to 0.0.0.0 instead —
 // deliberately opt-in, never the default. The token is still the only
 // gate at that point, over plain HTTP, against a live agent session
-// with real Bash/file/git execution in the target repo (autopilot skips
+// with real Bash/file/git execution in the target repo ("allow all tools" skips
 // even the permission prompt) — worth knowing before turning it on,
 // which is why runChatServer prints an explicit warning when it does
 // rather than silently widening what "reaching this chat" means.
@@ -30,6 +30,7 @@ import { WebSocketServer } from 'ws';
 
 import { createAdapter } from './agentAdapter.js';
 import { waitUntilIdle } from './drain.js';
+import { createPermissions, VIA_ALLOW_ALL, VIA_ALWAYS_ALLOW } from './permissions.js';
 import { validateModelChoice } from './modelChoice.js';
 import { WaitingMessages } from './waiting.js';
 import { decideRelevance } from './gatekeeper.js';
@@ -479,13 +480,13 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
       return sessionsByColleague.get(colleagueId);
     }
 
-    // "Allow all"/auto mode, per (colleague, session), like the native apps'
-    // auto-approve. Deliberately scoped
-    // to 1:1 sessions only for this first version, not channels: a
-    // channel turn already runs with full permission prompting (see
-    // relayChannelMessage below), and folding auto mode into that too
-    // is a separate decision, not silently extended.
-    const autoModeSessions = new Set();
+    // "Allow all tools" and "Always allow <tool>", per 1:1 session and per
+    // channel member. In memory only (see permissions.js).
+    const permissions = createPermissions();
+    // The key for the conversation a message names: a channel member when
+    // it carries a channelId, else a 1:1 session.
+    const permissionKey = (p) =>
+      p.channelId ? adapterKey(p.colleagueId, p.channelId) : adapterKey(p.colleagueId, p.sessionId);
 
     // Channels are few and long-lived, worth keeping in memory rather
     // than re-querying the store on every mention lookup.
@@ -665,9 +666,9 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
           return;
         }
 
-        if (req.method === 'GET' && route === 'api/auto-mode-sessions') {
+        if (req.method === 'GET' && route === 'api/permissions') {
           res.writeHead(200, { 'Content-Type': 'application/json' }).end(
-            JSON.stringify([...autoModeSessions])
+            JSON.stringify(permissions.snapshot())
           );
           return;
         }
@@ -1013,12 +1014,12 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
             broadcast(trail ? { colleagueId, sessionId, ...update, trail } : { colleagueId, sessionId, ...update });
           };
           adapter.onPermissionRequest = (request) => {
-            // Allow-all/auto mode: skip the round trip
-            // entirely and allow, same as the native apps' auto-approve.
-            // Checked fresh on every request (not captured once at bind
-            // time) so toggling it mid-conversation takes effect on the
-            // very next tool call, not just the next message.
-            if (autoModeSessions.has(key)) return Promise.resolve({ allow: true, via: 'auto mode' });
+            // Allowed ahead of time ("allow all tools" / "always allow"):
+            // skip the round trip entirely. Checked fresh on every request
+            // (not captured once at bind time) so a change mid-conversation
+            // takes effect on the very next tool call.
+            const via = permissions.decide(key, request.toolName);
+            if (via) return Promise.resolve({ allow: true, via });
             return new Promise((resolve) => {
               const requestId = randomUUID();
               pendingPermissions.set(requestId, { resolve });
@@ -1169,12 +1170,15 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
               rememberStats(adapterKey(colleagueId, DEFAULT_SESSION_ID), update);
               broadcast({ channelId, colleagueId, ...update });
             };
-            adapter.onPermissionRequest = (request) =>
-              new Promise((resolve) => {
+            adapter.onPermissionRequest = (request) => {
+              const via = permissions.decide(adapterKey(colleagueId, channelId), request.toolName);
+              if (via) return Promise.resolve({ allow: true, via });
+              return new Promise((resolve) => {
                 const requestId = randomUUID();
                 pendingPermissions.set(requestId, { resolve });
                 broadcast({ channelId, colleagueId, type: 'permission_request', requestId, ...request });
               });
+            };
 
             broadcast({ channelId, colleagueId, type: 'channel_typing', active: true });
             // A colleague answering in a channel
@@ -1219,10 +1223,11 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
             const pending = pendingPermissions.get(payload.requestId);
             if (!pending) return; // late answer to a request nobody is waiting on anymore
             pendingPermissions.delete(payload.requestId);
-            // `via`: set by the browser when it answered on its own (an
-            // earlier "Allow always" or the channel autopilot), so the
-            // trail can say so. Only these two values are taken over.
-            const via = ['allow always', 'autopilot'].includes(payload.via) ? payload.via : undefined;
+            // `via`: set by the browser when the answer also switched on a
+            // standing permission (the card's "Always allow <tool>" or
+            // "Allow all tools"), so the trail can say so. Only these two
+            // values are taken over.
+            const via = [VIA_ALWAYS_ALLOW, VIA_ALLOW_ALL].includes(payload.via) ? payload.via : undefined;
             pending.resolve({ allow: Boolean(payload.allow), message: payload.message, via });
             // The request itself went out to every open tab (see
             // bindAdapter/relayChannelMessage's own broadcast calls); now
@@ -1287,16 +1292,15 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
             return;
           }
 
-          if (payload.type === 'set_auto_mode') {
-            const key = adapterKey(payload.colleagueId, payload.sessionId);
-            if (payload.enabled) autoModeSessions.add(key);
-            else autoModeSessions.delete(key);
-            broadcast({
-              type: 'auto_mode_changed',
-              colleagueId: payload.colleagueId,
-              sessionId: payload.sessionId || DEFAULT_SESSION_ID,
-              enabled: Boolean(payload.enabled),
-            });
+          if (payload.type === 'set_allow_all' || payload.type === 'set_always_allow') {
+            if (!payload.colleagueId) return;
+            const key = permissionKey(payload);
+            if (payload.type === 'set_allow_all') {
+              permissions.setAllowAll(key, Boolean(payload.enabled));
+            } else {
+              permissions.setAlwaysAllow(key, payload.tool, Boolean(payload.enabled));
+            }
+            broadcast({ type: 'permissions_changed', ...permissions.stateFor(key) });
             return;
           }
 
@@ -1670,7 +1674,7 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
         // between "reachable from another device on the same WiFi" and
         // "reachable by anyone who can see this token, over plain HTTP,
         // by a live agent session with real Bash/file/git execution in
-        // this repo" (autopilot skips even the permission prompt). Not
+        // this repo" ("allow all tools" skips even the permission prompt). Not
         // a one-time warning easy to forget between runs.
         const address = lanAddress();
         console.log('\n⚠ --lan is on: this chat is reachable by anyone on the same network who has this link.');

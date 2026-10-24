@@ -5689,7 +5689,7 @@
   var settingsCloseEl = document.getElementById("settings-close");
   var usageSummaryEl = document.getElementById("usage-summary");
   var usageTableEl = document.getElementById("usage-table");
-  var autoModeListEl = document.getElementById("auto-mode-list");
+  var permissionsListEl = document.getElementById("permissions-list");
   var workforceSwitcherEl = document.getElementById("workforce-switcher");
   var workforceMenuEl = document.getElementById("workforce-menu");
   var workforceListEl = document.getElementById("workforce-list");
@@ -5712,7 +5712,7 @@
   var convSettingsModalEl = document.getElementById("conv-settings-modal");
   var convSettingsTitleEl = document.getElementById("conv-settings-modal__title");
   var convSettingsCloseEl = document.getElementById("conv-settings-close");
-  var convSettingsAutoModeEl = document.getElementById("conv-settings-auto-mode");
+  var convSettingsPermissionsEl = document.getElementById("conv-settings-permissions");
   var convSettingsNewSessionSectionEl = document.getElementById("conv-settings-new-session-section");
   var convSettingsNewSessionEl = document.getElementById("conv-settings-new-session");
   var convSettingsModelSectionEl = document.getElementById("conv-settings-model-section");
@@ -5777,7 +5777,7 @@
     ];
   }
   var showSessionForm = /* @__PURE__ */ new Set();
-  var autoModeKeys = /* @__PURE__ */ new Set();
+  var permissionStates = /* @__PURE__ */ new Map();
   var unreadConversations = /* @__PURE__ */ new Set();
   var UNREAD_CHANNEL_PREFIX = "channel:";
   function channelConvKey(channelId) {
@@ -5826,6 +5826,7 @@
   function describeConvKey(key) {
     const [colleagueId, sessionId] = key.split("::");
     const name = colleaguesById.get(colleagueId)?.name || colleagueId;
+    if (channelsById.has(sessionId)) return `${name} in #${channelsById.get(sessionId).name}`;
     if (sessionId === DEFAULT_SESSION_ID) return name;
     const session = (colleagueSessions.get(colleagueId) || []).find((s2) => s2.id === sessionId);
     return `${name} \u2014 ${session?.title || sessionId}`;
@@ -5840,23 +5841,25 @@
     if (typeof stats.costUsd === "number") parts.push(formatCost(stats.costUsd));
     return parts.length ? parts.join(" \xB7 ") : null;
   }
-  function toggleAutoMode() {
-    const key = activeConvKey();
-    const enabled = !autoModeKeys.has(key);
-    if (enabled) autoModeKeys.add(key);
-    else {
-      autoModeKeys.delete(key);
-      withdrawAllowEverything(key);
-    }
-    socket.send(JSON.stringify({ type: "set_auto_mode", colleagueId: activeColleagueId, sessionId: activeSessionId, enabled }));
-    renderPaneHeader();
+  function allowAllOn(key) {
+    return Boolean(permissionStates.get(key)?.allowAll);
   }
-  function turnOnAutoMode() {
-    const key = activeConvKey();
-    if (autoModeKeys.has(key)) return;
-    autoModeKeys.add(key);
-    socket.send(JSON.stringify({ type: "set_auto_mode", colleagueId: activeColleagueId, sessionId: activeSessionId, enabled: true }));
-    renderPaneHeader();
+  function alwaysAllowedFor(key) {
+    return [...permissionStates.get(key)?.tools || []];
+  }
+  function applyPermissionState({ key, allowAll, tools }) {
+    if (!allowAll && !tools.length) permissionStates.delete(key);
+    else permissionStates.set(key, { allowAll, tools: new Set(tools) });
+  }
+  function permissionTarget(key) {
+    const [colleagueId, rest] = key.split("::");
+    return channelsById.has(rest) ? { colleagueId, channelId: rest } : { colleagueId, sessionId: rest };
+  }
+  function setAllowAll(key, enabled) {
+    socket.send(JSON.stringify({ type: "set_allow_all", ...permissionTarget(key), enabled }));
+  }
+  function setAlwaysAllow(key, tool, enabled) {
+    socket.send(JSON.stringify({ type: "set_always_allow", ...permissionTarget(key), tool, enabled }));
   }
   function resetContext() {
     if (activeChannelId) {
@@ -5867,51 +5870,60 @@
       socket.send(JSON.stringify({ type: "reset_context", colleagueId: activeColleagueId, sessionId: activeSessionId }));
     }
   }
-  var alwaysAllowedTools = /* @__PURE__ */ new Map();
-  function isAlwaysAllowed(key, toolName) {
-    const allowed = alwaysAllowedTools.get(key);
-    return Boolean(allowed && (allowed.has("*") || allowed.has(toolName)));
-  }
-  function withdrawAllowEverything(key) {
-    const allowed = alwaysAllowedTools.get(key);
-    if (!allowed) return;
-    allowed.delete("*");
-    if (!allowed.size) alwaysAllowedTools.delete(key);
-  }
-  function rememberAlwaysAllowed(key, toolName) {
-    if (!alwaysAllowedTools.has(key)) alwaysAllowedTools.set(key, /* @__PURE__ */ new Set());
-    alwaysAllowedTools.get(key).add(toolName);
-  }
-  function convSettingsAutoModeRowEl(colleague, checked, onChange) {
+  function convSettingsPermissionsBlock(key, colleague) {
+    const block2 = document.createElement("div");
+    block2.className = "permissions-block";
     const row = document.createElement("label");
     row.className = "auto-mode-toggle";
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
-    checkbox.checked = checked;
-    checkbox.addEventListener("change", () => onChange(checkbox.checked));
+    checkbox.checked = allowAllOn(key);
+    checkbox.addEventListener("change", () => setAllowAll(key, checkbox.checked));
     const nameSpan = document.createElement("span");
-    nameSpan.textContent = colleague ? ` ${colleague.name} \u2014 auto mode (allow all tools)` : " Auto mode (allow all tools)";
+    nameSpan.textContent = colleague ? ` ${colleague.name} \u2014 Allow all tools` : " Allow all tools";
     row.append(checkbox, nameSpan);
-    return row;
+    block2.appendChild(row);
+    const note = document.createElement("p");
+    note.className = "permissions-note";
+    note.textContent = "Edits files, runs commands and uses the web without asking.";
+    block2.appendChild(note);
+    const tools = alwaysAllowedFor(key);
+    const list2 = document.createElement("ul");
+    list2.className = "settings-list";
+    list2.setAttribute("aria-label", colleague ? `Always allowed for ${colleague.name}` : "Always allowed");
+    if (!tools.length) {
+      const li = document.createElement("li");
+      li.className = "empty-note";
+      li.textContent = 'No tool is always allowed. Use "Always allow" on a request to add one.';
+      list2.appendChild(li);
+    }
+    for (const tool of tools) {
+      const li = document.createElement("li");
+      const label = document.createElement("span");
+      label.className = "settings-list__label";
+      label.textContent = `Always allow ${tool}`;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = "Revoke";
+      button.setAttribute("aria-label", `Revoke always allow ${tool}`);
+      button.addEventListener("click", () => setAlwaysAllow(key, tool, false));
+      li.append(label, button);
+      list2.appendChild(li);
+    }
+    block2.appendChild(list2);
+    return block2;
   }
-  function renderConvSettingsAutoMode() {
-    convSettingsAutoModeEl.innerHTML = "";
+  function renderConvSettingsPermissions() {
+    convSettingsPermissionsEl.innerHTML = "";
     if (activeColleagueId && !isSubagentThread(activeColleagueId)) {
-      const key = activeConvKey();
-      convSettingsAutoModeEl.appendChild(
-        convSettingsAutoModeRowEl(null, autoModeKeys.has(key), () => toggleAutoMode())
-      );
+      convSettingsPermissionsEl.appendChild(convSettingsPermissionsBlock(activeConvKey(), null));
       return;
     }
     if (activeChannelId) {
       const channel = channelsById.get(activeChannelId);
       for (const id of channel?.memberIds || []) {
-        const autopilotKey = channelKey(id, activeChannelId);
-        convSettingsAutoModeEl.appendChild(
-          convSettingsAutoModeRowEl(colleaguesById.get(id), Boolean(alwaysAllowedTools.get(autopilotKey)?.has("*")), (checked) => {
-            if (checked) rememberAlwaysAllowed(autopilotKey, "*");
-            else alwaysAllowedTools.delete(autopilotKey);
-          })
+        convSettingsPermissionsEl.appendChild(
+          convSettingsPermissionsBlock(channelKey(id, activeChannelId), colleaguesById.get(id))
         );
       }
     }
@@ -6187,7 +6199,7 @@
     } else {
       convSettingsTitleEl.textContent = `${colleaguesById.get(activeColleagueId)?.name || activeColleagueId} settings`;
     }
-    renderConvSettingsAutoMode();
+    renderConvSettingsPermissions();
     renderConvSettingsNewSession();
     renderConvSettingsWorktree();
     disarmClearChat();
@@ -6307,7 +6319,13 @@
         span.appendChild(document.createTextNode(line));
         entries.appendChild(span);
       }
-      paneHeaderEl.classList.toggle("pane-header--auto-mode", autoModeKeys.has(key));
+      if (allowAllOn(key)) {
+        const span = document.createElement("span");
+        span.className = "pane-header__entry";
+        span.textContent = "All tools allowed";
+        entries.appendChild(span);
+      }
+      paneHeaderEl.classList.toggle("pane-header--auto-mode", allowAllOn(key));
       hasContent = true;
     } else {
       paneHeaderEl.classList.remove("pane-header--auto-mode");
@@ -6541,34 +6559,36 @@
     costBig.textContent = formatCost(totalCost);
     usageSummaryEl.append(tokensBig, document.createTextNode(" \xB7 "), costBig);
   }
-  function renderAutoModeList() {
-    autoModeListEl.innerHTML = "";
-    if (autoModeKeys.size === 0) {
+  function renderPermissionsList() {
+    permissionsListEl.innerHTML = "";
+    const rows = [];
+    for (const [key, state] of permissionStates) {
+      if (state.allowAll) rows.push({ key, text: "Allow all tools", off: () => setAllowAll(key, false), action: "Turn off" });
+      for (const tool of state.tools) {
+        rows.push({ key, text: `Always allow ${tool}`, off: () => setAlwaysAllow(key, tool, false), action: "Revoke" });
+      }
+    }
+    if (!rows.length) {
       const li = document.createElement("li");
       li.className = "empty-note";
-      li.textContent = "No one-to-one conversation has auto mode on right now. Channel autopilot is not listed here.";
-      autoModeListEl.appendChild(li);
+      li.textContent = "Nothing is allowed ahead of time. Everything that asks will ask.";
+      permissionsListEl.appendChild(li);
       return;
     }
-    for (const key of autoModeKeys) {
+    for (const { key, text: text2, off, action } of rows) {
       const [colleagueId] = key.split("::");
       const li = document.createElement("li");
       li.appendChild(avatarEl(colleaguesById.get(colleagueId)));
       const label = document.createElement("span");
       label.className = "settings-list__label";
-      label.textContent = describeConvKey(key);
+      label.textContent = `${describeConvKey(key)}: ${text2}`;
       const button = document.createElement("button");
       button.type = "button";
-      button.textContent = "Turn off";
-      button.addEventListener("click", () => {
-        const [colleagueId2, sessionId] = key.split("::");
-        autoModeKeys.delete(key);
-        socket.send(JSON.stringify({ type: "set_auto_mode", colleagueId: colleagueId2, sessionId, enabled: false }));
-        renderAutoModeList();
-        if (key === activeConvKey()) renderPaneHeader();
-      });
+      button.textContent = action;
+      button.setAttribute("aria-label", `${action}: ${describeConvKey(key)}, ${text2}`);
+      button.addEventListener("click", off);
       li.append(label, button);
-      autoModeListEl.appendChild(li);
+      permissionsListEl.appendChild(li);
     }
   }
   function renderSettingsNotifyRow() {
@@ -6685,7 +6705,7 @@
   function refreshSettingsModalIfOpen() {
     if (settingsBackdropEl.hidden) return;
     renderUsageTable();
-    renderAutoModeList();
+    renderPermissionsList();
   }
   async function renderWorkforceList() {
     workforceListEl.innerHTML = "";
@@ -6778,7 +6798,7 @@
   }, true);
   function openSettingsModal() {
     renderUsageTable();
-    renderAutoModeList();
+    renderPermissionsList();
     renderSettingsNotifyRow();
     renderUsageLimits();
     brandingLogoPreviewEl.src = "logo.png";
@@ -7193,14 +7213,10 @@
       if (colleague) selectColleague(colleague, update.session.id);
       return;
     }
-    if (update.type === "auto_mode_changed") {
-      const key2 = convKey(update.colleagueId, update.sessionId);
-      if (update.enabled) autoModeKeys.add(key2);
-      else {
-        autoModeKeys.delete(key2);
-        withdrawAllowEverything(key2);
-      }
-      if (key2 === activeConvKey()) renderPaneHeader();
+    if (update.type === "permissions_changed") {
+      applyPermissionState(update);
+      renderPaneHeader();
+      renderConvSettingsPermissions();
       refreshSettingsModalIfOpen();
       return;
     }
@@ -7415,11 +7431,6 @@
           break;
         }
         case "permission_request":
-          if (isAlwaysAllowed(channelKey(colleagueId2, channelId), update.toolName)) {
-            const via = alwaysAllowedTools.get(channelKey(colleagueId2, channelId))?.has("*") ? "autopilot" : "allow always";
-            socket.send(JSON.stringify({ type: "permission_response", requestId: update.requestId, allow: true, via }));
-            break;
-          }
           channelPendingPermission.set(channelKey(colleagueId2, channelId), { channelId, ...update });
           break;
         default:
@@ -7579,11 +7590,6 @@
         break;
       }
       case "permission_request":
-        if (isAlwaysAllowed(key, update.toolName)) {
-          const via = alwaysAllowedTools.get(key)?.has("*") ? "autopilot" : "allow always";
-          socket.send(JSON.stringify({ type: "permission_response", requestId: update.requestId, allow: true, via }));
-          return;
-        }
         pendingPermission.set(key, update);
         break;
       default:
@@ -7633,18 +7639,26 @@
     }
     socket.send(JSON.stringify({ type: "permission_response", requestId, allow }));
   }
+  var confirmingAllowAll = /* @__PURE__ */ new Set();
   function PermissionCard({ permission, colleagueId, isChannel }) {
     const key = isChannel ? channelKey(colleagueId, permission.channelId) : colleagueId;
+    const confirming = confirmingAllowAll.has(permission.requestId);
+    const setConfirming = (on) => {
+      if (on) confirmingAllowAll.add(permission.requestId);
+      else confirmingAllowAll.delete(permission.requestId);
+      if (isChannel) renderChannelMessages();
+      else renderMessages();
+    };
+    const name = colleaguesById.get(key.split("::")[0])?.name || "She";
+    const where = isChannel ? "this channel" : "this chat";
     const allow = () => respondToPermission(key, permission.requestId, true, isChannel);
     const allowAlways = () => {
-      rememberAlwaysAllowed(key, permission.toolName);
+      setAlwaysAllow(key, permission.toolName, true);
       respondToPermission(key, permission.requestId, true, isChannel);
     };
     const deny = () => respondToPermission(key, permission.requestId, false, isChannel);
-    const autopilot = () => {
-      rememberAlwaysAllowed(key, "*");
-      if (!isChannel) turnOnAutoMode();
-      if (isChannel && permission.channelId === activeChannelId) renderPaneHeader();
+    const allowAllTools = () => {
+      setAllowAll(key, true);
       respondToPermission(key, permission.requestId, true, isChannel);
     };
     return m2`
@@ -7653,10 +7667,18 @@
       ${permission.description ? m2`<p class="permission-card__description">${permission.description}</p>` : null}
       <div class="permission-card__actions">
         <button type="button" onClick=${allow}>Allow</button>
-        <button type="button" class="permission-card__allow-always" onClick=${allowAlways}>Allow always</button>
+        <button type="button" class="permission-card__allow-always" onClick=${allowAlways}
+          title=${`Stops asking for ${permission.toolName} in ${where}. Applies to every ${permission.toolName} call, not just this one.`}>Always allow ${permission.toolName}</button>
         <button type="button" class="permission-card__deny" onClick=${deny}>Deny</button>
-        <button type="button" class="permission-card__autopilot" onClick=${autopilot}>Turn on autopilot</button>
       </div>
+      ${confirming ? m2`<div class="permission-card__confirm" role="group" aria-label="Allow all tools">
+            <p>Allow all tools in ${where}?</p>
+            <p class="permission-card__description">${name} will edit files, run commands and use the web without asking, until you turn this off in Conversation settings.</p>
+            <div class="permission-card__actions">
+              <button type="button" onClick=${allowAllTools}>Allow all tools</button>
+              <button type="button" class="permission-card__deny" onClick=${() => setConfirming(false)}>Cancel</button>
+            </div>
+          </div>` : m2`<button type="button" class="permission-card__link" onClick=${() => setConfirming(true)}>Allow all tools in ${where}…</button>`}
     </div>
   `;
   }
@@ -8387,10 +8409,9 @@
     for (const channel of channels) channelsById.set(channel.id, channel);
     const statsRes = await fetch("api/colleague-stats");
     for (const [key, stats] of Object.entries(await statsRes.json())) colleagueStats.set(key, stats);
-    const autoModeRes = await fetch("api/auto-mode-sessions");
-    const autoModeSessions = await autoModeRes.json();
-    autoModeKeys.clear();
-    for (const key of autoModeSessions) autoModeKeys.add(key);
+    const permissionsRes = await fetch("api/permissions");
+    permissionStates.clear();
+    for (const state of await permissionsRes.json()) applyPermissionState(state);
     const gatekeeperUsageRes = await fetch("api/gatekeeper-usage");
     gatekeeperUsage = await gatekeeperUsageRes.json();
     await Promise.all(
