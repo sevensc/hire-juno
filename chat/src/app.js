@@ -1795,7 +1795,8 @@ function resizeImageToPngDataUrl(file, maxDimension) {
 
 // --- Changed-files / diff view --------------------------------------
 // A dedicated view of the changed files, as a diff like in VS Code.
-// Scoped to the one repo this server actually knows about
+// Scoped to the open conversation: its own worktree when it has one,
+// otherwise the one repo this server actually knows about
 // (`targetDir`, the `--dir` this chat was started against, see
 // server/index.js's api/git-status/api/git-diff) — a colleague working
 // in some other repo named to her directly doesn't show up here;
@@ -1947,12 +1948,22 @@ function renderDiffContent(diffText) {
   }
 }
 
+// The conversation the dialog speaks for, as query parameters: a colleague
+// conversation names itself (the server uses its worktree if it has one),
+// channels and subagent threads send nothing and get the workforce folder.
+function diffScopeParams() {
+  if (!activeColleagueId || isSubagentThread(activeColleagueId) || !activeSessionId) return '';
+  return `colleagueId=${encodeURIComponent(activeColleagueId)}&sessionId=${encodeURIComponent(activeSessionId)}`;
+}
+let diffLoadSeq = 0; // answers for an earlier conversation are dropped
+
 async function loadDiffContent(path) {
   diffContentEl.textContent = 'Loading…';
+  const seq = diffLoadSeq;
   try {
-    const res = await fetch(`api/git-diff?path=${encodeURIComponent(path)}`);
+    const res = await fetch(`api/git-diff?path=${encodeURIComponent(path)}&${diffScopeParams()}`);
     const data = await res.json();
-    if (activeDiffPath !== path) return; // switched files again before this landed
+    if (activeDiffPath !== path || seq !== diffLoadSeq) return; // switched files again before this landed
     renderDiffContent(data.diff);
   } catch {
     if (activeDiffPath === path) diffContentEl.textContent = 'Could not load diff.';
@@ -1966,20 +1977,24 @@ function selectDiffFile(path) {
 }
 
 async function loadDiffFiles() {
+  const seq = ++diffLoadSeq;
   diffFileListEl.innerHTML = '<li class="empty-note">Loading…</li>';
   diffContentEl.textContent = '';
   let data;
   try {
-    const res = await fetch('api/git-status');
+    const res = await fetch(`api/git-status?${diffScopeParams()}`);
     data = await res.json();
   } catch {
+    if (seq !== diffLoadSeq) return;
     diffFiles = null;
     renderDiffFileList();
     return;
   }
-  if (diffBackdropEl.hidden) return; // closed while this was in flight
+  if (diffBackdropEl.hidden || seq !== diffLoadSeq) return; // closed, or another conversation asked since
   diffFiles = data.files;
-  diffModalCwdEl.textContent = data.cwd || '';
+  const where = `${data.worktree ? 'Worktree' : 'Workforce folder'}: ${data.cwd || ''}${data.branch ? ` (${data.branch})` : ''}`;
+  diffModalCwdEl.textContent = where;
+  diffModalCwdEl.title = where;
   if (diffFiles && diffFiles.length > 0) {
     if (!activeDiffPath || !diffFiles.some((f) => f.path === activeDiffPath)) activeDiffPath = diffFiles[0].path;
   } else {
@@ -1987,6 +2002,13 @@ async function loadDiffFiles() {
   }
   renderDiffFileList();
   if (activeDiffPath) loadDiffContent(activeDiffPath);
+}
+
+// The conversation (or its worktree) changed under an open dialog.
+function refreshDiffIfOpen() {
+  if (diffBackdropEl.hidden) return;
+  activeDiffPath = null;
+  loadDiffFiles();
 }
 
 function openDiffModal() {
@@ -2207,6 +2229,7 @@ const handleSocketMessage = (event) => {
     worktreeInfo.set(key, { ...info, available: true, worktree: { branch: update.branch, path: update.path } });
     if (key === activeConvKey()) {
       renderPaneHeader();
+      refreshDiffIfOpen();
       if (!convSettingsBackdropEl.hidden) renderConvSettingsWorktree();
     }
     return;
@@ -3235,6 +3258,7 @@ async function selectChannel(channel) {
   autoResizeComposer();
 
   renderPaneHeader();
+  refreshDiffIfOpen();
   await loadChannelHistory(channel.id);
   // Forced, not the usual isNearBottom heuristic — this is a fresh
   // conversation replacing whatever was on screen a moment ago, so
@@ -3293,6 +3317,7 @@ async function selectColleague(colleague, sessionId = DEFAULT_SESSION_ID) {
   input.value = canReply ? drafts.get(convKey(colleague.id, activeSessionId)) || '' : '';
   autoResizeComposer();
   renderPaneHeader();
+  refreshDiffIfOpen();
 
   const key = activeConvKey();
   await loadColleagueHistory(colleague.id, activeSessionId, key);

@@ -12,6 +12,7 @@ import {
   gitRoot,
   listWorktrees,
   removeWorktree,
+  resolveGitDir,
   worktreeFolderName,
   worktreesDir,
 } from '../chat/server/worktree.js';
@@ -113,4 +114,22 @@ test('the store remembers which worktree a conversation works in', async () => {
   assert.deepEqual(store.getWorktree('nora', 'default'), { path: '/w/nora', branch: 'chat/nora-default' });
   assert.equal(store.getWorktree('nora', 's2'), null);
   assert.equal(store.getWorktree('juno', 'default'), null);
+});
+
+test('resolveGitDir reads the conversation worktree, else the workforce folder', () => {
+  const { base, repo } = makeRepo();
+  try {
+    const dir = join(base, 'wt');
+    createWorktree({ repoDir: repo, worktreeDir: dir, branch: 'chat/y' });
+    // no worktree for this conversation (channels, subagent threads, not opted in)
+    assert.deepEqual(resolveGitDir(repo, null), { dir: repo, isWorktree: false });
+    assert.deepEqual(resolveGitDir(repo, undefined), { dir: repo, isWorktree: false });
+    // worktree present
+    assert.deepEqual(resolveGitDir(repo, { path: dir, branch: 'chat/y' }), { dir, isWorktree: true });
+    // worktree recorded but its folder is gone
+    removeWorktree(repo, dir);
+    assert.deepEqual(resolveGitDir(repo, { path: dir, branch: 'chat/y' }), { dir: repo, isWorktree: false });
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
 });

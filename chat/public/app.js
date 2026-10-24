@@ -6870,12 +6870,18 @@
       diffContentEl.appendChild(lineEl);
     }
   }
+  function diffScopeParams() {
+    if (!activeColleagueId || isSubagentThread(activeColleagueId) || !activeSessionId) return "";
+    return `colleagueId=${encodeURIComponent(activeColleagueId)}&sessionId=${encodeURIComponent(activeSessionId)}`;
+  }
+  var diffLoadSeq = 0;
   async function loadDiffContent(path) {
     diffContentEl.textContent = "Loading\u2026";
+    const seq = diffLoadSeq;
     try {
-      const res = await fetch(`api/git-diff?path=${encodeURIComponent(path)}`);
+      const res = await fetch(`api/git-diff?path=${encodeURIComponent(path)}&${diffScopeParams()}`);
       const data = await res.json();
-      if (activeDiffPath !== path) return;
+      if (activeDiffPath !== path || seq !== diffLoadSeq) return;
       renderDiffContent(data.diff);
     } catch {
       if (activeDiffPath === path) diffContentEl.textContent = "Could not load diff.";
@@ -6887,20 +6893,24 @@
     loadDiffContent(path);
   }
   async function loadDiffFiles() {
+    const seq = ++diffLoadSeq;
     diffFileListEl.innerHTML = '<li class="empty-note">Loading\u2026</li>';
     diffContentEl.textContent = "";
     let data;
     try {
-      const res = await fetch("api/git-status");
+      const res = await fetch(`api/git-status?${diffScopeParams()}`);
       data = await res.json();
     } catch {
+      if (seq !== diffLoadSeq) return;
       diffFiles = null;
       renderDiffFileList();
       return;
     }
-    if (diffBackdropEl.hidden) return;
+    if (diffBackdropEl.hidden || seq !== diffLoadSeq) return;
     diffFiles = data.files;
-    diffModalCwdEl.textContent = data.cwd || "";
+    const where = `${data.worktree ? "Worktree" : "Workforce folder"}: ${data.cwd || ""}${data.branch ? ` (${data.branch})` : ""}`;
+    diffModalCwdEl.textContent = where;
+    diffModalCwdEl.title = where;
     if (diffFiles && diffFiles.length > 0) {
       if (!activeDiffPath || !diffFiles.some((f2) => f2.path === activeDiffPath)) activeDiffPath = diffFiles[0].path;
     } else {
@@ -6908,6 +6918,11 @@
     }
     renderDiffFileList();
     if (activeDiffPath) loadDiffContent(activeDiffPath);
+  }
+  function refreshDiffIfOpen() {
+    if (diffBackdropEl.hidden) return;
+    activeDiffPath = null;
+    loadDiffFiles();
   }
   function openDiffModal() {
     openDialog(diffBackdropEl, diffModalEl);
@@ -7051,6 +7066,7 @@
       worktreeInfo.set(key2, { ...info, available: true, worktree: { branch: update.branch, path: update.path } });
       if (key2 === activeConvKey()) {
         renderPaneHeader();
+        refreshDiffIfOpen();
         if (!convSettingsBackdropEl.hidden) renderConvSettingsWorktree();
       }
       return;
@@ -7747,6 +7763,7 @@
     input.value = drafts.get(channelConvKey(channel.id)) || "";
     autoResizeComposer();
     renderPaneHeader();
+    refreshDiffIfOpen();
     await loadChannelHistory(channel.id);
     if (activeChannelId === channel.id) renderChannelMessages({ forceScrollToBottom: true });
   }
@@ -7786,6 +7803,7 @@
     input.value = canReply ? drafts.get(convKey(colleague.id, activeSessionId)) || "" : "";
     autoResizeComposer();
     renderPaneHeader();
+    refreshDiffIfOpen();
     const key = activeConvKey();
     await loadColleagueHistory(colleague.id, activeSessionId, key);
     if (activeConvKey() === key) renderMessages({ forceScrollToBottom: true });
