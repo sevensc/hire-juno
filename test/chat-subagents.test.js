@@ -71,3 +71,23 @@ test('a background sub-agent notification with the placeholder ends with the han
     { id: 'a', report: 'The real report' }
   );
 });
+
+test('a SendMessage to a sub-agent lands in that sub-agent\'s window, found through the agent id of its launch', () => {
+  const t = new SubagentTracker();
+  const send = { type: 'tool_use', id: 's1', name: 'SendMessage', input: { to: 'a123', message: 'Go on, Sven agreed.', summary: 'go on' } };
+  assert.equal(t.messageTo(send), null); // launch not seen yet
+  t.rememberLaunch('toolu_1', { isAsync: true, status: 'async_launched', agentId: 'a123' });
+  assert.deepEqual(t.messageTo(send), { id: 'toolu_1', text: 'Go on, Sven agreed.' });
+});
+
+test('SendMessage to someone else, without text, or other tools are not sub-agent messages', () => {
+  const t = new SubagentTracker();
+  t.rememberLaunch('toolu_1', { agentId: 'a123' });
+  assert.equal(t.messageTo({ type: 'tool_use', name: 'SendMessage', input: { to: 'researcher', message: 'hi' } }), null);
+  assert.equal(t.messageTo({ type: 'tool_use', name: 'SendMessage', input: { to: 'a123', message: '  ' } }), null);
+  assert.equal(t.messageTo({ type: 'tool_use', name: 'Bash', input: { to: 'a123', message: 'hi' } }), null);
+  t.rememberLaunch('toolu_2', 'not an object');
+  t.rememberLaunch('toolu_3', { agentId: 42 });
+  t.rememberLaunch(undefined, { agentId: 'a999' });
+  assert.equal(t.messageTo({ type: 'tool_use', name: 'SendMessage', input: { to: 'a999', message: 'hi' } }), null);
+});

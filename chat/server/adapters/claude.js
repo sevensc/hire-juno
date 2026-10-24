@@ -332,6 +332,10 @@ export class ClaudeAdapter {
           if (block.type === 'tool_use') {
             this._subagents.rememberToolUse(block);
             this.onUpdate?.({ type: 'tool_use', id: block.id, name: block.name, input: block.input });
+            // What she sends a running or finished sub-agent later is part of
+            // its window, next to the brief it was started with.
+            const sent = this._subagents.messageTo(block);
+            if (sent) this.onUpdate?.({ type: 'subagent_sent', id: sent.id, text: sent.text });
           } else if (block.type === 'text') {
             this._textBlocks.addText(block.text);
           }
@@ -357,6 +361,8 @@ export class ClaudeAdapter {
         if (Array.isArray(blocks)) {
           // A tool call has run once its result is back: say how it was
           // allowed, so the chat can show the ones nobody was asked about.
+          const results = blocks.filter((b) => b.type === 'tool_result');
+          if (results.length === 1) this._subagents.rememberLaunch(results[0].tool_use_id, message.tool_use_result);
           for (const block of blocks) {
             if (block.type !== 'tool_result') continue;
             // A foreground sub-agent's result ends its thread (below); the

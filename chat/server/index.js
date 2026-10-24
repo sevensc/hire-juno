@@ -938,6 +938,11 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
               } else if (update.type === 'subagent_tool_use') {
                 if (!pendingTrails.has(subKey)) pendingTrails.set(subKey, []);
                 pendingTrails.get(subKey).push({ kind: 'tool_use', name: update.name, input: update.input });
+              } else if (update.type === 'subagent_sent') {
+                // What the colleague sent the sub-agent after its start.
+                if (subagentThreadExists(update.id) && update.text) {
+                  store.appendMessage(subKey, sessionId, 'you', update.text);
+                }
               } else if (update.type === 'subagent_message') {
                 // Text between tool calls: stored in arrival order, with the
                 // tool lines collected since the last message as its trail.
