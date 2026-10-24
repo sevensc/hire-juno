@@ -3097,8 +3097,8 @@ function renderMessages({ forceScrollToBottom = false } = {}) {
           />`
         : null}
       ${permission ? html`<${PermissionCard} permission=${permission} colleagueId=${key} isChannel=${false} />` : null}
-      ${isTyping(key) && !permission ? html`<div class="typing-indicator" role="status">typing…</div>` : null}
       ${items.map((item, i) => (item.pending ? row(item, i) : null))}
+      ${isTyping(key) && !permission ? html`<div class="typing-indicator" role="status">typing…</div>` : null}
       ${!items.length && !thinkingText && !partialText && !permission && !liveTrail.length
         ? html`<${EmptyConversation}
             text=${`No messages with ${colleaguesById.get(activeColleagueId)?.name || 'this colleague'} yet. Write the first one below.`}
