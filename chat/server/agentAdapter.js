@@ -95,6 +95,21 @@ import { readProfileBody } from './roster.js';
 // — the two are complementary, not duplicates.
 const CHAT_UI_SKILL = readFileSync(joinPath(dirname(fileURLToPath(import.meta.url)), 'skills', 'chat-ui.md'), 'utf8');
 
+// Chat instructions that only one colleague gets, by her id. The hiring-process
+// marker is for Juno alone: it only means something in the chat interface, so
+// it does not belong in her personnel file, which has to work on any platform.
+const SKILLS_DIR = joinPath(dirname(fileURLToPath(import.meta.url)), 'skills');
+const CHAT_SKILL_FOR_COLLEAGUE = {
+  juno: readFileSync(joinPath(SKILLS_DIR, 'hiring-mode.md'), 'utf8'),
+};
+
+// The system prompt of a colleague in the chat: her personnel file body, the
+// worktree notes, the chat instructions for everyone, and the one only she gets.
+export function buildSystemPrompt({ colleagueId, ownProfile, worktreeNote = '', offer = '' }) {
+  const own = CHAT_SKILL_FOR_COLLEAGUE[colleagueId];
+  return `${ownProfile}${worktreeNote}${offer}\n\n${CHAT_UI_SKILL}${own ? `\n\n${own}` : ''}`;
+}
+
 // Selects by the colleague's own `adapter:` frontmatter field. Note:
 // the installer's own tool list (src/tools.js) doesn't offer "Copilot"
 // as a choice yet, so no profile.md this repo writes today will
@@ -123,7 +138,7 @@ export function createAdapter(colleague, { targetDir, cwd = targetDir, resume, m
         `Work only inside it and do not change files in ${targetDir}.`;
   const wantsCopilot = colleague.adapter.some((a) => a.toLowerCase().includes('copilot'));
   const offer = useWorktree && !wantsCopilot ? `\n\n${WORKTREE_OFFER}` : '';
-  const systemPrompt = `${ownProfile}${worktreeNote}${offer}\n\n${CHAT_UI_SKILL}`;
+  const systemPrompt = buildSystemPrompt({ colleagueId: colleague.id, ownProfile, worktreeNote, offer });
   return wantsCopilot
     ? new CopilotAdapter(colleague, { cwd })
     : new ClaudeAdapter(colleague, { systemPrompt, cwd, resume, model, useWorktree });
