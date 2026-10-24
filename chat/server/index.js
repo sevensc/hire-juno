@@ -381,6 +381,15 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
     // connection closure so a browser reload doesn't lose it — see
     // `api/colleague-stats` below.
     const colleagueStats = new Map();
+    // What the last run reported, so the header survives a restart.
+    for (const [colleagueId, sessionId, stats] of store.getAllStats()) {
+      colleagueStats.set(adapterKey(colleagueId, sessionId), stats);
+    }
+    const rememberStats = (key, update) => {
+      if (update.type !== 'session_info' && update.type !== 'usage') return;
+      const [colleagueId, sessionId] = key.split('::');
+      store.saveStats(colleagueId, sessionId, colleagueStats.get(key));
+    };
 
     // Mirrors the client's own pendingTrail/thinkingStreaming (see
     // chat/src/app.js) so a finished reply can be persisted with its
@@ -852,6 +861,7 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
               waitingYou.afterReply(key);
             }
             recordStats(colleagueStats, key, update);
+            rememberStats(key, update);
             broadcast(trail ? { colleagueId, sessionId, ...update, trail } : { colleagueId, sessionId, ...update });
           };
           adapter.onPermissionRequest = (request) => {
@@ -1007,6 +1017,7 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
               // into state that assumes a 1:1 context.
               if (update.type.startsWith('subagent_')) return;
               recordStats(colleagueStats, adapterKey(colleagueId, DEFAULT_SESSION_ID), update);
+              rememberStats(adapterKey(colleagueId, DEFAULT_SESSION_ID), update);
               broadcast({ channelId, colleagueId, ...update });
             };
             adapter.onPermissionRequest = (request) =>
