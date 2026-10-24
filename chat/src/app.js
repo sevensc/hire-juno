@@ -2733,6 +2733,12 @@ const handleSocketMessage = (event) => {
       update.type = 'tool_use'; // falls through to the shared case below
     } else if (update.type === 'subagent_delta') {
       update.type = 'delta';
+    } else if (update.type === 'subagent_sent') {
+      // A message the colleague sent this sub-agent after its start.
+      history.get(key) || history.set(key, []);
+      history.get(key).push({ role: 'you', text: update.text, createdAt: new Date().toISOString() });
+      if (key === activeConvKey()) renderMessages();
+      return;
     } else if (update.type === 'subagent_message') {
       // Finished text between its tool calls: a message of the window; the
       // window itself goes on (only subagent_end closes it).

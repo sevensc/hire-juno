@@ -19,6 +19,7 @@ export class SubagentTracker {
     this._inputs = new Map(); // tool_use id -> input of the Agent/Task call
     this._background = new Set(); // tool_use ids started in the background
     this._handbacks = new Map(); // sub-agent tool_use id -> text of its SubagentHandback call
+    this._agentIds = new Map(); // agent id (what SendMessage's `to` names) -> tool_use id of its window
   }
 
   // Call for every tool_use block a sub-agent sends (`id` = the call that
@@ -40,6 +41,27 @@ export class SubagentTracker {
       return this._handbacks.get(id) ?? report;
     }
     return report;
+  }
+
+  // Call for every tool result: the launch result of an Agent/Task call names
+  // the agent (`tool_use_result.agentId`), which is how a later SendMessage
+  // finds the window. `result` is typed unknown in the SDK, so it is read
+  // defensively. Only meaningful when the message carries one tool result.
+  rememberLaunch(toolUseId, result) {
+    if (toolUseId && result && typeof result === 'object' && typeof result.agentId === 'string') {
+      this._agentIds.set(result.agentId, toolUseId);
+    }
+  }
+
+  // For a `SendMessage` tool call of the colleague's own turn: the window it
+  // goes to and the text, {id, text}; null when it names no sub-agent we know
+  // (a colleague, a name, an agent whose launch we never saw) or has no text.
+  messageTo(block) {
+    if (block?.type !== 'tool_use' || block.name !== 'SendMessage') return null;
+    const id = this._agentIds.get(block.input?.to);
+    const text = block.input?.message;
+    if (!id || typeof text !== 'string' || !text.trim()) return null;
+    return { id, text };
   }
 
   // Call for every tool_use block of the colleague's own turns.
