@@ -252,3 +252,21 @@ test('resolveWorkforce returns null when neither governance file exists', () => 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('finishOrphanedSubagentThreads marks running windows without a live owner session as done', () => {
+  const baseDir = mkdtempSync(join(tmpdir(), 'hire-juno-chat-store-'));
+  try {
+    const store = openStore({ workforceId: 'acme', baseDir });
+    store.createSubagentThread({ id: 'orphan', ownerId: 'juno', sessionId: 'default', subagentType: 'general-purpose' });
+    store.createSubagentThread({ id: 'live', ownerId: 'ada', sessionId: 'default', subagentType: 'general-purpose' });
+    store.createSubagentThread({ id: 'finished', ownerId: 'juno', sessionId: 'default', subagentType: 'general-purpose' });
+    store.finishSubagentThread('finished');
+    const ids = store.finishOrphanedSubagentThreads((ownerId) => ownerId === 'ada');
+    assert.deepEqual(ids, ['orphan']);
+    const status = Object.fromEntries(store.listSubagentThreads().map((t) => [t.id, t.status]));
+    assert.deepEqual(status, { orphan: 'done', live: 'running', finished: 'done' });
+    store.close();
+  } finally {
+    rmSync(baseDir, { recursive: true, force: true });
+  }
+});

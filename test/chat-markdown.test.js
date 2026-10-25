@@ -77,3 +77,12 @@ test('inline basics and fenced code still render as before', () => {
   assert.equal(renderMarkdown('a **b** *c* `d`').trim(), '<p>a <strong>b</strong> <em>c</em> <code>d</code></p>');
   assert.match(renderMarkdown('```\ncode\n```'), /<pre><code>code\n<\/code><\/pre>/);
 });
+
+test('a fenced code block gets a Copy button outside the <pre>, an indented one too', async () => {
+  const { renderMarkdown } = await import('../chat/src/markdown.js');
+  const fenced = renderMarkdown('```js\nconst a = 1;\n```');
+  assert.match(fenced, /^<div class="code-block"><button type="button" class="code-copy" aria-label="Copy code">Copy<\/button><pre><code class="language-js">const a = 1;\n<\/code><\/pre><\/div>$/);
+  const indented = renderMarkdown('text\n\n    indented code');
+  assert.match(indented, /<div class="code-block"><button[^>]*>Copy<\/button><pre><code>indented code\n<\/code><\/pre><\/div>/);
+  assert.equal(renderMarkdown('plain `inline` text').includes('code-copy'), false);
+});

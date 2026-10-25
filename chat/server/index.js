@@ -12,7 +12,7 @@
 // `lan: true` (same local network only) binds to 0.0.0.0 instead —
 // deliberately opt-in, never the default. The token is still the only
 // gate at that point, over plain HTTP, against a live agent session
-// with real Bash/file/git execution in the target repo (autopilot skips
+// with real Bash/file/git execution in the target repo ("allow all tools" skips
 // even the permission prompt) — worth knowing before turning it on,
 // which is why runChatServer prints an explicit warning when it does
 // rather than silently widening what "reaching this chat" means.
@@ -20,28 +20,41 @@
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
-import { readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { networkInterfaces } from 'node:os';
-import { dirname, join as joinPath } from 'node:path';
+import { basename, dirname, join as joinPath, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import open from 'open';
 import { WebSocketServer } from 'ws';
 
 import { createAdapter } from './agentAdapter.js';
+import { waitUntilIdle } from './drain.js';
+import { createPermissions, VIA_ALLOW_ALL, VIA_ALWAYS_ALLOW } from './permissions.js';
 import { validateModelChoice } from './modelChoice.js';
+import { writeLimitLog } from './limitLog.js';
+import { WaitingMessages } from './waiting.js';
 import { decideRelevance } from './gatekeeper.js';
 import { extractMentions, extractVocativeAddresses } from './mentions.js';
 import { findLayout, readRoster, resolveAvatarPath } from './roster.js';
 import { DEFAULT_SESSION_ID, openStore } from './store.js';
 import { resolveWorkforce } from './workforceId.js';
+import { activateWorktree, canOfferWorktree, worktreeIsStartRepo } from './useWorktree.js';
+import { currentBranch, gitRoot, resolveGitDir } from './worktree.js';
 import { addWorkforce, listWorkforces, removeWorkforce, setActiveWorkforce } from '../../shared/workforceRegistry.js';
 import { getOrCreateSession, saveSessionPort } from '../../shared/chatSessions.js';
+import { portToRemember } from '../../shared/portFlag.js';
+import { cliSessionInfo, createHandovers, transferToTerminal } from './cliSession.js';
 
 // One colleague can now have several independent, parallel
 // conversations running at once (e.g. one session per topic) — each is its own adapter
 // instance (own SDK session, own permission state, own history), keyed
 // by colleague *and* session rather than colleague alone.
+// A message id from the client: kept only if it looks like a plain uuid.
+function validMessageId(id) {
+  return typeof id === 'string' && /^[A-Za-z0-9-]{8,64}$/.test(id) ? id : undefined;
+}
+
 function adapterKey(colleagueId, sessionId) {
   return `${colleagueId}::${sessionId || DEFAULT_SESSION_ID}`;
 }
@@ -142,7 +155,27 @@ const CONTENT_TYPES = {
   // text file besides index.html that needs a placeholder filled in
   // (see TEMPLATED below), not a third kind of static file.
   '.webmanifest': 'application/manifest+json',
+  // Only for the two fixed files in VENDOR_FILES below.
+  '.svg': 'image/svg+xml',
 };
+
+// The one subdirectory of public/ that is served: the GitHub mark for
+// the "Report an issue" link (see public/vendor/github/README.md).
+// An exact list, not a prefix match.
+const VENDOR_FILES = new Set([
+  'vendor/github/GitHub_Invertocat_Black.svg',
+  'vendor/github/GitHub_Invertocat_White.svg',
+]);
+
+// This package's own version, shown in the issue template. Missing or
+// unreadable is not an error: the template says "unknown".
+const PACKAGE_VERSION = (() => {
+  try {
+    return JSON.parse(readFileSync(joinPath(MODULE_DIR, '..', '..', 'package.json'), 'utf8')).version;
+  } catch {
+    return undefined;
+  }
+})();
 
 // index.html and manifest.webmanifest both carry placeholders — this is
 // the exact set, not "any .html/.webmanifest file happens to work",
@@ -170,7 +203,7 @@ function serveStatic(route, res, token, teamName, req) {
   // module ships — a chat message is never a path, but staying
   // deliberate here costs nothing.
   const ext = '.' + file.split('.').pop();
-  if (!CONTENT_TYPES[ext] || file.includes('..') || file.includes('/')) {
+  if (!CONTENT_TYPES[ext] || file.includes('..') || (file.includes('/') && !VENDOR_FILES.has(file))) {
     res.writeHead(404).end('Not found.');
     return;
   }
@@ -274,7 +307,36 @@ function lanAddress() {
   return null;
 }
 
-export function runChatServer({ targetDir = process.cwd(), openBrowser = true, onReady, lan = false } = {}) {
+// The chat servers running in this process, by workforce folder. A server
+// that was switched away from keeps running while one of its colleagues is
+// mid-turn (see 'switch_workforce'); switching back finds it here and goes to
+// it, instead of starting a second server beside it that knows nothing of the
+// running turn (and would resume the same SDK session a second time).
+const runningServers = new Map(); // resolved folder -> { url, server, closing, name, status() }
+
+// What the running servers know about their own workforce, for the others in
+// this process: how many of the human's messages wait and whether a turn runs.
+// Deliberately no url and no token: each server's access token is its own and
+// must not travel through another server's answer.
+export function workforcesStatus(servers = runningServers) {
+  const out = [];
+  for (const [path, entry] of servers) {
+    if (entry.closing || !entry.status) continue;
+    const { waiting, busy } = entry.status();
+    out.push({ path, name: entry.name, waiting, busy });
+  }
+  return out;
+}
+
+// `port`: a port fixed with `--port`; the server uses exactly that one or fails, with no fallback.
+export function runChatServer({ targetDir = process.cwd(), openBrowser = true, onReady, lan = false, port: explicitPort = null } = {}) {
+  const runningKey = resolvePath(targetDir);
+  const running = runningServers.get(runningKey);
+  if (running && !running.closing) {
+    onReady?.(running.url);
+    if (openBrowser) open(running.url).catch(() => {});
+    return Promise.resolve({ url: running.url, server: running.server });
+  }
   return new Promise((resolve, reject) => {
     // Token and preferred port both come from the same persisted-per-path record
     // now (see shared/chatSessions.js), instead of a fresh random
@@ -308,6 +370,13 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
     }
     const workforce = resolveWorkforce(targetDir);
     const store = openStore({ workforceId: workforce?.id, baseDir: workforce?.baseDir });
+    // A recognised usage limit: its structural fields go to the limit log
+    // (see limitLog.js); what is sent on to the tabs is the notice without them.
+    const limitLogFile = workforce?.id ? joinPath(workforce.baseDir, workforce.id, 'chat', 'limit-log.jsonl') : null;
+    const takeLimitNotice = ({ log, ...notice }) => {
+      writeLimitLog(limitLogFile, log);
+      return notice;
+    };
     if (!store.persisted) {
       console.log(
         '\nNo workforce ID found (CONSTITUTION.md/verfassung.md missing or still unfilled) — chat history will not survive a restart.'
@@ -322,6 +391,17 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
     // human's own side-by-side 1:1 conversations, not something a
     // channel needs to pick between.
     const adapters = new Map();
+    // The folder she runs in for a conversation (also what the terminal
+    // command changes into). A worktree of another repo does not move her:
+    // she keeps the workforce folder as cwd (her agents and settings are
+    // read from there) and the prompt names the worktree (see createAdapter).
+    const conversationCwd = (colleagueId, sessionId) => {
+      const worktree = store.getWorktree(colleagueId, sessionId);
+      const worktreeThere = worktree && existsSync(worktree.path);
+      return worktreeThere && worktreeIsStartRepo(worktree.repoPath, targetDir) ? worktree.path : targetDir;
+    };
+    // Conversations handed to the terminal: the chat leaves their session alone.
+    const handovers = createHandovers();
     const adapterFor = (colleagueId, sessionId = DEFAULT_SESSION_ID) => {
       const key = adapterKey(colleagueId, sessionId);
       if (!adapters.has(key)) {
@@ -335,7 +415,39 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
         const resume = store.getAdapterSession(colleagueId, sessionId) || undefined;
         // The model picked for this conversation in its settings, if any.
         const model = store.getModelChoice(colleagueId, sessionId) || undefined;
-        const adapter = createAdapter(colleague, { targetDir, resume, model });
+        // Works in her conversation's own worktree when it has one (and the
+        // folder is still there), otherwise in the workforce folder.
+        const worktree = store.getWorktree(colleagueId, sessionId);
+        const worktreeThere = worktree && existsSync(worktree.path);
+        const cwd = conversationCwd(colleagueId, sessionId);
+        // She may move the conversation into a worktree herself (a tool of
+        // hers, see useWorktree.js), if it can have one.
+        let replaceWhenIdle = false;
+        const useWorktree = canOfferWorktree({ workforceId: workforce?.id, existing: worktree })
+          ? ({ repoPath } = {}) => {
+              const result = activateWorktree({ store, workforceId: workforce?.id, repoDir: targetDir, repoPath, colleagueId, sessionId });
+              if (result.ok) result.cwdIsWorktree = worktreeIsStartRepo(result.repoPath, targetDir);
+              if (result.ok && result.created) {
+                // She is mid-turn: this adapter is replaced once it is idle.
+                replaceWhenIdle = true;
+                broadcast({
+                  type: 'worktree_changed',
+                  colleagueId,
+                  sessionId,
+                  branch: result.branch,
+                  path: result.path,
+                  repoName: basename(result.repoPath),
+                });
+              }
+              return result;
+            }
+          : undefined;
+        const adapter = createAdapter(colleague, { targetDir, cwd, resume, model, useWorktree, worktree: worktreeThere ? worktree : undefined });
+        adapter.onIdle = () => {
+          if (!replaceWhenIdle) return;
+          adapter.close?.();
+          if (adapters.get(key) === adapter) adapters.delete(key);
+        };
         // Set once here, not per-message like onUpdate/onPermissionRequest
         // below (bindAdapter) — this is bookkeeping, not delivery to a
         // particular browser tab.
@@ -360,14 +472,38 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
     // connection closure so a browser reload doesn't lose it — see
     // `api/colleague-stats` below.
     const colleagueStats = new Map();
+    // What the last run reported, so the header survives a restart.
+    for (const [colleagueId, sessionId, stats] of store.getAllStats()) {
+      colleagueStats.set(adapterKey(colleagueId, sessionId), stats);
+    }
+    const rememberStats = (key, update) => {
+      if (update.type !== 'session_info' && update.type !== 'usage') return;
+      const [colleagueId, sessionId] = key.split('::');
+      store.saveStats(colleagueId, sessionId, colleagueStats.get(key));
+    };
 
     // Mirrors the client's own pendingTrail/thinkingStreaming (see
     // chat/src/app.js) so a finished reply can be persisted with its
     // trail attached (see bindAdapter below), not just relayed live and
     // then lost on the next reload or restart.
     // Keyed by adapterKey(colleagueId, sessionId), same as `adapters`.
+    // Messages sent while a turn was running, per conversation (see waiting.js).
+    const waitingYou = new WaitingMessages(store);
+    // History rows of messages that still wait carry that, so a reloaded tab
+    // draws them as waiting (with Withdraw) instead of as read.
+    const withWaitingMarks = (rows, colleagueId, sessionId) => {
+      const key = adapterKey(colleagueId, sessionId);
+      const entries = waitingYou.list(key);
+      if (!entries.length) return rows;
+      const canCancel = Boolean(adapters.get(key)?.canCancel);
+      return rows.map((row) => {
+        const entry = entries.find((e) => e.id === row.id && e.uuid);
+        return entry ? { ...row, waiting: { id: entry.uuid, kind: entry.kind, canCancel } } : row;
+      });
+    };
     const pendingTrails = new Map(); // key -> [{kind:'tool_use', name, input}]
     const pendingThinking = new Map(); // key -> accumulated thinking text of the in-progress turn
+    const pendingText = new Map(); // key -> accumulated reply text of the in-progress turn (live bubble)
 
     // The gatekeeper isn't a colleague — it's a shared, anonymous
     // classifier call, so its usage doesn't fit colleagueStats' per-
@@ -395,13 +531,13 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
       return sessionsByColleague.get(colleagueId);
     }
 
-    // "Allow all"/auto mode, per (colleague, session), like the native apps'
-    // auto-approve. Deliberately scoped
-    // to 1:1 sessions only for this first version, not channels: a
-    // channel turn already runs with full permission prompting (see
-    // relayChannelMessage below), and folding auto mode into that too
-    // is a separate decision, not silently extended.
-    const autoModeSessions = new Set();
+    // "Allow all tools" and "Always allow <tool>", per 1:1 session and per
+    // channel member. In memory only (see permissions.js).
+    const permissions = createPermissions();
+    // The key for the conversation a message names: a channel member when
+    // it carries a channelId, else a 1:1 session.
+    const permissionKey = (p) =>
+      p.channelId ? adapterKey(p.colleagueId, p.channelId) : adapterKey(p.colleagueId, p.sessionId);
 
     // Channels are few and long-lived, worth keeping in memory rather
     // than re-querying the store on every mention lookup.
@@ -451,7 +587,7 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
           // own comment above), same as the header always showed before
           // this existed.
           res.writeHead(200, { 'Content-Type': 'application/json' }).end(
-            JSON.stringify({ persisted: store.persisted, teamName: workforce?.id || 'hire-juno' })
+            JSON.stringify({ persisted: store.persisted, teamName: workforce?.id || 'hire-juno', version: PACKAGE_VERSION })
           );
           return;
         }
@@ -467,6 +603,11 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
             lastMessage: lastMessages.get(colleague.id) || null,
           }));
           res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(roster));
+          return;
+        }
+
+        if (req.method === 'GET' && route === 'api/workforces-status') {
+          res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(workforcesStatus()));
           return;
         }
 
@@ -513,8 +654,35 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
           const colleagueId = url.searchParams.get('colleagueId') || '';
           const sessionId = url.searchParams.get('sessionId') || DEFAULT_SESSION_ID;
           res.writeHead(200, { 'Content-Type': 'application/json' }).end(
-            JSON.stringify(store.getHistory(colleagueId, sessionId))
+            JSON.stringify(withWaitingMarks(store.getHistory(colleagueId, sessionId), colleagueId, sessionId))
           );
+          return;
+        }
+
+        if (req.method === 'GET' && route === 'api/subagent-threads') {
+          // Sessions live in memory only: a window left "running" by one that
+          // is gone (restart, closed session) would never get its end and so
+          // never offer to be closed.
+          store.finishOrphanedSubagentThreads((ownerId, sessionId) => adapters.has(adapterKey(ownerId, sessionId)));
+          res.writeHead(200, { 'Content-Type': 'application/json' }).end(
+            JSON.stringify(store.listSubagentThreads())
+          );
+          return;
+        }
+
+        if (req.method === 'GET' && route === 'api/attachment') {
+          const attachment = store.getAttachment(Number(url.searchParams.get('id')));
+          if (!attachment) {
+            res.writeHead(404).end('Not found.');
+            return;
+          }
+          // Only image types are ever stored (see store.js); nosniff keeps
+          // the browser from guessing a different type from the bytes.
+          res.writeHead(200, {
+            'Content-Type': attachment.mimeType,
+            'X-Content-Type-Options': 'nosniff',
+            'Cache-Control': 'private, max-age=31536000, immutable',
+          }).end(attachment.data);
           return;
         }
 
@@ -558,9 +726,9 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
           return;
         }
 
-        if (req.method === 'GET' && route === 'api/auto-mode-sessions') {
+        if (req.method === 'GET' && route === 'api/permissions') {
           res.writeHead(200, { 'Content-Type': 'application/json' }).end(
-            JSON.stringify([...autoModeSessions])
+            JSON.stringify(permissions.snapshot())
           );
           return;
         }
@@ -579,6 +747,23 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
           return;
         }
 
+        if (req.method === 'GET' && route === 'api/cli-session') {
+          // What the terminal needs to continue this 1:1 conversation. Not for
+          // channels or subagent windows (the client never asks for them; an
+          // unknown id answers unavailable), and nothing before the first turn.
+          const colleagueId = url.searchParams.get('colleagueId') || '';
+          const sessionId = url.searchParams.get('sessionId') || DEFAULT_SESSION_ID;
+          const known = readRoster(targetDir).some((c) => c.id === colleagueId);
+          const info = cliSessionInfo({
+            sdkSessionId: known ? store.getAdapterSession(colleagueId, sessionId) : null,
+            cwd: known ? conversationCwd(colleagueId, sessionId) : null,
+          });
+          res.writeHead(200, { 'Content-Type': 'application/json' }).end(
+            JSON.stringify({ ...info, handedOver: handovers.has(adapterKey(colleagueId, sessionId)) })
+          );
+          return;
+        }
+
         if (req.method === 'GET' && route === 'api/models') {
           // What the conversation's settings dialog offers. Asked of the
           // colleague's own adapter, so opening the dialog starts her
@@ -588,7 +773,8 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
           // dialog simply leaves the section out.
           const colleagueId = url.searchParams.get('colleagueId') || '';
           const sessionId = url.searchParams.get('sessionId') || DEFAULT_SESSION_ID;
-          const adapter = adapterFor(colleagueId, sessionId);
+          // Not while the terminal has the session: asking would start it.
+          const adapter = handovers.has(adapterKey(colleagueId, sessionId)) ? null : adapterFor(colleagueId, sessionId);
           let models = null;
           if (adapter && typeof adapter.supportedModels === 'function') {
             try {
@@ -641,9 +827,39 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
           return;
         }
 
-        if (req.method === 'GET' && route === 'api/git-status') {
+        if (req.method === 'GET' && route === 'api/worktree') {
+          // Whether this conversation can have its own worktree (a git repo
+          // and a workforce id to keep it under) and the one it has.
+          const colleagueId = url.searchParams.get('colleagueId') || '';
+          const sessionId = url.searchParams.get('sessionId') || DEFAULT_SESSION_ID;
+          const worktree = store.getWorktree(colleagueId, sessionId);
           res.writeHead(200, { 'Content-Type': 'application/json' }).end(
-            JSON.stringify({ cwd: targetDir, files: gitStatus(targetDir) })
+            JSON.stringify({
+              // The folder to branch from may also be named by the person.
+              available: Boolean(workforce?.id),
+              worktree: worktree
+                ? { branch: worktree.branch, path: worktree.path, repoName: basename(worktree.repoPath || gitRoot(targetDir) || '') }
+                : null,
+            })
+          );
+          return;
+        }
+
+        // Which folder the changes dialog reads: the conversation's own
+        // worktree when `colleagueId` (+ `sessionId`) name one that still
+        // exists, otherwise `targetDir`. Channels and subagent threads send
+        // no colleagueId and so get `targetDir`.
+        const gitScope = () => {
+          const colleagueId = url.searchParams.get('colleagueId') || '';
+          const sessionId = url.searchParams.get('sessionId') || DEFAULT_SESSION_ID;
+          const worktree = colleagueId ? store.getWorktree(colleagueId, sessionId) : null;
+          return resolveGitDir(targetDir, worktree);
+        };
+
+        if (req.method === 'GET' && route === 'api/git-status') {
+          const { dir, isWorktree } = gitScope();
+          res.writeHead(200, { 'Content-Type': 'application/json' }).end(
+            JSON.stringify({ cwd: dir, branch: currentBranch(dir), worktree: isWorktree, files: gitStatus(dir) })
           );
           return;
         }
@@ -656,10 +872,11 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
           // happily diff *any* two filesystem paths, repo or not, so
           // an unchecked `path` here would turn this into a generic
           // "read a file this server process can see" endpoint. Only
-          // a path git itself currently reports as changed in this
-          // repo gets through.
-          const known = (gitStatus(targetDir) || []).find((f) => f.path === filePath);
-          const diff = known ? gitDiff(targetDir, filePath, known.status.includes('?')) : null;
+          // a path git itself currently reports as changed in the
+          // chosen folder gets through.
+          const { dir } = gitScope();
+          const known = (gitStatus(dir) || []).find((f) => f.path === filePath);
+          const diff = known ? gitDiff(dir, filePath, known.status.includes('?')) : null;
           res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ diff }));
           return;
         }
@@ -708,6 +925,15 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
       }
     };
 
+    // A conversation's context reset or cleared chat takes its sub-agent
+    // windows with it (they are part of what she remembers).
+    const subagentThreadExists = (id) => store.listSubagentThreads().some((t) => t.id === id);
+    const dropSubagentThreadsOf = (colleagueId, sessionId) => {
+      const ids = store.deleteSubagentThreadsOf(colleagueId, sessionId);
+      for (const id of ids) pendingTrails.delete(`sub:${id}`);
+      if (ids.length) broadcast({ type: 'subagent_removed', ids });
+    };
+
     server.on('upgrade', (req, socket, head) => {
       const url = new URL(req.url, 'http://127.0.0.1');
       const parts = url.pathname.split('/').filter(Boolean);
@@ -718,6 +944,28 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
       wss.handleUpgrade(req, socket, head, (ws) => {
         connections.add(ws);
         ws.on('close', () => connections.delete(ws));
+
+        // A tab that opens (or reloads) while a colleague is mid-turn only
+        // hears the rest of the stream; what came before — thinking, reply
+        // text so far, tool lines — is told to it once, here. Only for
+        // turns still running (an adapter that is not busy has nothing live).
+        const turns = [];
+        for (const [key, adapter] of adapters) {
+          if (!adapter.busy) continue;
+          const thinking = pendingThinking.get(key);
+          const text = pendingText.get(key);
+          const trail = pendingTrails.get(key);
+          // Messages written during the turn that are still not read: the tab
+          // draws them as waiting again (with a Withdraw button if possible).
+          const waiting = waitingYou
+            .list(key)
+            .filter((e) => e.uuid)
+            .map((e) => ({ id: e.uuid, kind: e.kind, canCancel: Boolean(adapter.canCancel) }));
+          if (!thinking && !text && !trail?.length && !waiting.length) continue;
+          const [colleagueId, sessionId] = key.split('::');
+          turns.push({ colleagueId, sessionId, thinking, text, trail, waiting });
+        }
+        if (turns.length) ws.send(JSON.stringify({ type: 'live_state', turns }));
 
         // Bound on the adapter itself, not passed into each
         // sendMessage() call — see agentAdapter.js. A colleague can run
@@ -733,6 +981,18 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
         const bindAdapter = (adapter, colleagueId, sessionId) => {
           const key = adapterKey(colleagueId, sessionId);
           adapter.onUpdate = (update) => {
+            if (update.type === 'limit_notice') {
+              broadcast({ colleagueId, sessionId, ...takeLimitNotice(update) });
+              return;
+            }
+            // The session took up a waiting message (the exact moment, not an
+            // estimate from a tool result): it stops waiting everywhere.
+            if (update.type === 'message_read') {
+              if (waitingYou.remove(key, update.uuid)) {
+                broadcast({ type: 'message_read', colleagueId, sessionId, id: update.uuid });
+              }
+              return;
+            }
             // Same three update types the client's own trail-building
             // switch reacts to (see the socket handler in
             // chat/src/app.js) — collected here too so the finished
@@ -750,17 +1010,74 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
             // overheard — see the client's own 'message' case for the
             // matching half of this fix.
             let trail;
+            if (update.type.startsWith('subagent_')) {
+              // A sub-agent window is kept like a conversation of its own
+              // (see store.js, subagent_threads): the brief when it starts,
+              // its tool lines collected on the way, the report with that
+              // trail when it ends.
+              const subKey = `sub:${update.id}`;
+              let endTrail;
+              if (update.type === 'subagent_start') {
+                const created = store.createSubagentThread({
+                  id: update.id,
+                  ownerId: colleagueId,
+                  sessionId,
+                  subagentType: update.subagentType,
+                  description: update.taskDescription,
+                });
+                if (created && update.prompt) store.appendMessage(subKey, sessionId, 'you', update.prompt);
+              } else if (update.type === 'subagent_tool_use') {
+                if (!pendingTrails.has(subKey)) pendingTrails.set(subKey, []);
+                pendingTrails.get(subKey).push({ kind: 'tool_use', name: update.name, input: update.input });
+              } else if (update.type === 'subagent_sent') {
+                // What the colleague sent the sub-agent after its start.
+                if (subagentThreadExists(update.id) && update.text) {
+                  store.appendMessage(subKey, sessionId, 'you', update.text);
+                }
+              } else if (update.type === 'subagent_message') {
+                // Text between tool calls: stored in arrival order, with the
+                // tool lines collected since the last message as its trail.
+                const subTrail = pendingTrails.get(subKey) || [];
+                pendingTrails.delete(subKey);
+                endTrail = subTrail;
+                if (subagentThreadExists(update.id) && update.text) {
+                  store.appendMessage(subKey, sessionId, 'colleague', update.text, subTrail);
+                }
+              } else if (update.type === 'subagent_end') {
+                const subTrail = pendingTrails.get(subKey) || [];
+                pendingTrails.delete(subKey);
+                endTrail = subTrail;
+                // A window the user closed meanwhile has no row any more:
+                // nothing is stored for it.
+                if (subagentThreadExists(update.id)) {
+                  // The report is often the last text block again: not stored twice.
+                  const rows = store.getHistory(subKey);
+                  const last = rows[rows.length - 1];
+                  const same = last?.role === 'colleague' && last.text === (update.report || '') && !subTrail.length;
+                  if (!same) store.appendMessage(subKey, sessionId, 'colleague', update.report || '', subTrail);
+                  store.finishSubagentThread(update.id);
+                }
+              }
+              broadcast({ colleagueId, sessionId, ...update, ...(endTrail ? { trail: endTrail } : {}) });
+              return;
+            }
             if (update.type === 'tool_use') {
               if (!pendingTrails.has(key)) pendingTrails.set(key, []);
               pendingTrails.get(key).push({ kind: 'tool_use', id: update.id, name: update.name, input: update.input });
             } else if (update.type === 'tool_done') {
+              // A tool result is where a message sent mid-turn gets folded
+              // into the turn (see waiting.js), so it no longer waits.
+              waitingYou.folded(key);
               // How the call was allowed, kept with the trail so it is still
               // shown after a reload.
               const entry = (pendingTrails.get(key) || []).find((e) => e.id && e.id === update.id);
               if (entry) entry.approval = update.approval;
             } else if (update.type === 'thinking_delta') {
               pendingThinking.set(key, (pendingThinking.get(key) || '') + update.text);
+            } else if (update.type === 'delta') {
+              pendingText.set(key, (pendingText.get(key) || '') + update.text);
             } else if (update.type === 'message') {
+              pendingText.delete(key);
               trail = pendingTrails.get(key) || [];
               if (pendingThinking.has(key)) {
                 trail.push({ kind: 'thinking', text: pendingThinking.get(key) });
@@ -768,17 +1085,23 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
               }
               pendingTrails.delete(key);
               store.appendMessage(colleagueId, sessionId, update.role, update.text, trail);
+              // This turn is over: everything that arrived while it ran
+              // belongs behind this reply (see store.moveToEnd). The oldest
+              // of those is what the colleague starts next, so it stops
+              // waiting; the rest keep waiting under their new ids.
+              waitingYou.afterReply(key);
             }
             recordStats(colleagueStats, key, update);
+            rememberStats(key, update);
             broadcast(trail ? { colleagueId, sessionId, ...update, trail } : { colleagueId, sessionId, ...update });
           };
           adapter.onPermissionRequest = (request) => {
-            // Allow-all/auto mode: skip the round trip
-            // entirely and allow, same as the native apps' auto-approve.
-            // Checked fresh on every request (not captured once at bind
-            // time) so toggling it mid-conversation takes effect on the
-            // very next tool call, not just the next message.
-            if (autoModeSessions.has(key)) return Promise.resolve({ allow: true, via: 'auto mode' });
+            // Allowed ahead of time ("allow all tools" / "always allow"):
+            // skip the round trip entirely. Checked fresh on every request
+            // (not captured once at bind time) so a change mid-conversation
+            // takes effect on the very next tool call.
+            const via = permissions.decide(key, request.toolName);
+            if (via) return Promise.resolve({ allow: true, via });
             return new Promise((resolve) => {
               const requestId = randomUUID();
               pendingPermissions.set(requestId, { resolve });
@@ -825,13 +1148,10 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
         async function relayChannelMessage(channelId, senderId, text, depth, attachments = []) {
           const channel = channelsById.get(channelId);
           if (!channel) return;
-          store.appendChannelMessage(channelId, senderId, text);
-          // Attachments aren't persisted here either (see claude.js's
-          // sendMessage — same "store.js has no place for binary
-          // content yet" gap as a 1:1 DM), so they only ever reach
-          // whoever's watching live: this broadcast, and the adapter
-          // dispatch below. A page reload loses them, same as a 1:1
-          // chat's images already do.
+          // Images are stored with the message (store.js, attachments
+          // table), so they survive a reload; the broadcast below still
+          // carries the bytes for whoever is watching live.
+          store.appendChannelMessage(channelId, senderId, text, attachments);
           broadcast({ channelId, type: 'channel_message', senderId, text, attachments });
 
           // When two channel messages are written back
@@ -907,6 +1227,8 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
           }
 
           for (const colleagueId of targets) {
+            // Her main conversation is with the terminal: a channel turn would write into it.
+            if (handovers.has(adapterKey(colleagueId, DEFAULT_SESSION_ID))) continue;
             const adapter = adapterFor(colleagueId);
             if (!adapter) continue;
 
@@ -918,6 +1240,10 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
             // reply, persisted and dispatched exactly like the human's own
             // channel message was above.
             adapter.onUpdate = (update) => {
+              if (update.type === 'limit_notice') {
+                broadcast({ channelId, colleagueId, ...takeLimitNotice(update) });
+                return;
+              }
               if (update.type === 'message') {
                 relayChannelMessage(channelId, colleagueId, update.text, depth + 1);
                 return;
@@ -927,15 +1253,20 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
               // a channel turn yet, so these are dropped rather than fed
               // into state that assumes a 1:1 context.
               if (update.type.startsWith('subagent_')) return;
+              if (update.type === 'message_read') return; // waiting messages exist for 1:1 only
               recordStats(colleagueStats, adapterKey(colleagueId, DEFAULT_SESSION_ID), update);
+              rememberStats(adapterKey(colleagueId, DEFAULT_SESSION_ID), update);
               broadcast({ channelId, colleagueId, ...update });
             };
-            adapter.onPermissionRequest = (request) =>
-              new Promise((resolve) => {
+            adapter.onPermissionRequest = (request) => {
+              const via = permissions.decide(adapterKey(colleagueId, channelId), request.toolName);
+              if (via) return Promise.resolve({ allow: true, via });
+              return new Promise((resolve) => {
                 const requestId = randomUUID();
                 pendingPermissions.set(requestId, { resolve });
                 broadcast({ channelId, colleagueId, type: 'permission_request', requestId, ...request });
               });
+            };
 
             broadcast({ channelId, colleagueId, type: 'channel_typing', active: true });
             // A colleague answering in a channel
@@ -980,10 +1311,11 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
             const pending = pendingPermissions.get(payload.requestId);
             if (!pending) return; // late answer to a request nobody is waiting on anymore
             pendingPermissions.delete(payload.requestId);
-            // `via`: set by the browser when it answered on its own (an
-            // earlier "Allow always" or the channel autopilot), so the
-            // trail can say so. Only these two values are taken over.
-            const via = ['allow always', 'autopilot'].includes(payload.via) ? payload.via : undefined;
+            // `via`: set by the browser when the answer also switched on a
+            // standing permission (the card's "Always allow <tool>" or
+            // "Allow all tools"), so the trail can say so. Only these two
+            // values are taken over.
+            const via = [VIA_ALWAYS_ALLOW, VIA_ALLOW_ALL].includes(payload.via) ? payload.via : undefined;
             pending.resolve({ allow: Boolean(payload.allow), message: payload.message, via });
             // The request itself went out to every open tab (see
             // bindAdapter/relayChannelMessage's own broadcast calls); now
@@ -1048,16 +1380,15 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
             return;
           }
 
-          if (payload.type === 'set_auto_mode') {
-            const key = adapterKey(payload.colleagueId, payload.sessionId);
-            if (payload.enabled) autoModeSessions.add(key);
-            else autoModeSessions.delete(key);
-            broadcast({
-              type: 'auto_mode_changed',
-              colleagueId: payload.colleagueId,
-              sessionId: payload.sessionId || DEFAULT_SESSION_ID,
-              enabled: Boolean(payload.enabled),
-            });
+          if (payload.type === 'set_allow_all' || payload.type === 'set_always_allow') {
+            if (!payload.colleagueId) return;
+            const key = permissionKey(payload);
+            if (payload.type === 'set_allow_all') {
+              permissions.setAllowAll(key, Boolean(payload.enabled));
+            } else {
+              permissions.setAlwaysAllow(key, payload.tool, Boolean(payload.enabled));
+            }
+            broadcast({ type: 'permissions_changed', ...permissions.stateFor(key) });
             return;
           }
 
@@ -1101,6 +1432,72 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
               model: checked.model,
               resolvedModel: shown?.resolvedModel || checked.model || null,
             });
+            return;
+          }
+
+          if (payload.type === 'handover_terminal' || payload.type === 'take_back_terminal') {
+            // "Transfer to terminal": the chat lets go of the session so only
+            // the terminal writes to it. "Take back": the next message
+            // resumes it from the saved id.
+            const colleagueId = payload.colleagueId;
+            const sessionId = payload.sessionId || DEFAULT_SESSION_ID;
+            const key = adapterKey(colleagueId, sessionId);
+            const reply = (extra) => broadcast({ type: 'terminal_handover', colleagueId, sessionId, ...extra });
+            if (!readRoster(targetDir).some((c) => c.id === colleagueId)) {
+              reply({ handedOver: false, failed: true, message: 'Unknown colleague.' });
+              return;
+            }
+            if (payload.type === 'take_back_terminal') {
+              handovers.remove(key);
+              reply({ handedOver: false });
+              return;
+            }
+            if (!cliSessionInfo({ sdkSessionId: store.getAdapterSession(colleagueId, sessionId), cwd: targetDir }).available) {
+              reply({ handedOver: false, failed: true, message: 'There is no session to hand over yet.' });
+              return;
+            }
+            const result = transferToTerminal({ handovers, key, adapter: adapters.get(key) });
+            if (result.ok) adapters.delete(key);
+            reply(result.ok ? { handedOver: true } : { handedOver: false, failed: true, message: result.message });
+            return;
+          }
+
+          if (payload.type === 'use_worktree') {
+            // Moves this conversation into its own git worktree on a new
+            // branch (see worktree.js). Her SDK session is resumed from the
+            // saved id, so she keeps what she knows; only her working
+            // directory changes, from the next message on.
+            const colleagueId = payload.colleagueId;
+            const sessionId = payload.sessionId || DEFAULT_SESSION_ID;
+            const fail = (message) => broadcast({ type: 'worktree_failed', colleagueId, sessionId, message });
+            if (!readRoster(targetDir).some((c) => c.id === colleagueId)) {
+              fail('Unknown colleague.');
+              return;
+            }
+            const key = adapterKey(colleagueId, sessionId);
+            const result = activateWorktree({
+              store,
+              workforceId: workforce?.id,
+              repoDir: targetDir,
+              repoPath: typeof payload.repoPath === 'string' && payload.repoPath.trim() ? payload.repoPath.trim() : undefined,
+              colleagueId,
+              sessionId,
+              busy: Boolean(adapters.get(key)?.busy),
+            });
+            if (!result.ok) {
+              fail(result.message);
+              return;
+            }
+            const { branch, path } = result;
+            const repoName = basename(result.repoPath || gitRoot(targetDir) || '');
+            if (result.created) {
+              // The running adapter still has the old working directory: drop
+              // it; the next message creates one in the worktree (adapterFor)
+              // and resumes the saved session.
+              adapters.get(key)?.close?.();
+              adapters.delete(key);
+            }
+            broadcast({ type: 'worktree_changed', colleagueId, sessionId, branch, path, repoName });
             return;
           }
 
@@ -1159,10 +1556,21 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
                 adapters.delete(key);
               }
               store.clearAdapterSession(payload.colleagueId, sessionId);
+              dropSubagentThreadsOf(payload.colleagueId, sessionId);
               const notice = 'Context reset — starting fresh from here.';
               store.appendMessage(payload.colleagueId, sessionId, 'system', notice);
               broadcast({ colleagueId: payload.colleagueId, sessionId, type: 'message', role: 'system', text: notice });
             }
+            return;
+          }
+
+          // The user closed one finished sub-agent window: gone for good,
+          // with everything stored for it. Other open tabs hear about it.
+          if (payload.type === 'close_subagent') {
+            if (typeof payload.id !== 'string' || !payload.id) return;
+            store.deleteSubagentThread(payload.id);
+            pendingTrails.delete(`sub:${payload.id}`);
+            broadcast({ type: 'subagent_removed', ids: [payload.id] });
             return;
           }
 
@@ -1200,6 +1608,7 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
                 adapters.delete(key);
               }
               store.clearHistory(payload.colleagueId, sessionId);
+              dropSubagentThreadsOf(payload.colleagueId, sessionId);
               broadcast({ type: 'chat_cleared', colleagueId: payload.colleagueId, sessionId });
             }
             return;
@@ -1244,6 +1653,12 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
                 throw new Error(`No team/ or mitarbeiter/ folder in ${payload.path} — not a workforce repo.`);
               }
               const { url: newUrl } = await runChatServer({ targetDir: payload.path, lan, openBrowser: false });
+              // "Switching" to the folder this server already serves: the tabs
+              // just go to the same address, nothing to close.
+              if (resolvePath(payload.path) === runningKey) {
+                broadcast({ type: 'workforce_switch_ready', url: newUrl });
+                return;
+              }
               // Broadcast, not a reply to just this one connection —
               // every tab currently open against this instance is about
               // to lose its server out from under it (see the close()
@@ -1255,7 +1670,22 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
               // a moment to actually go out before this instance closes
               // — a close() called synchronously right after could race
               // the send.
-              setTimeout(() => server.close(), 500);
+              // The old instance keeps running turns alive: the 'close'
+              // handler below waits for them (bounded) before it
+              // closes the adapters. Their replies still reach the store.
+              // Closed only once nothing runs anymore, and only if nobody is
+              // connected by then (someone who switched back is using it
+              // again): until then it keeps serving, so switching back finds
+              // the running turn alive, live (see runningServers).
+              setTimeout(async () => {
+                // Waits for the tabs to have left as well as for the turns to
+                // end: the broadcast above only just went out.
+                await waitUntilIdle(() => connections.size > 0 || [...adapters.values()].some((a) => a.busy));
+                const entry = runningServers.get(runningKey);
+                if (connections.size > 0 || entry?.server !== server) return;
+                entry.closing = true;
+                server.close();
+              }, 500);
             } catch (err) {
               broadcast({ type: 'workforce_switch_failed', message: err.message });
             }
@@ -1278,19 +1708,60 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
             return;
           }
 
+          if (payload.type === 'cancel_message') {
+            const sessionId = payload.sessionId || DEFAULT_SESSION_ID;
+            const key = adapterKey(payload.colleagueId, sessionId);
+            const result = await waitingYou.withdraw(key, validMessageId(payload.id), adapters.get(key));
+            // Every tab: the one that asked drops the bubble (or its
+            // "waiting" mark), the others learn it as well.
+            broadcast({
+              type: 'message_cancelled',
+              colleagueId: payload.colleagueId,
+              sessionId,
+              id: payload.id,
+              ...result,
+            });
+            return;
+          }
+
           const { colleagueId, text, attachments } = payload;
           const sessionId = payload.sessionId || DEFAULT_SESSION_ID;
+          if (handovers.has(adapterKey(colleagueId, sessionId))) {
+            // The client asks first and takes it back; a message that still
+            // arrives is refused rather than written into the terminal's session.
+            broadcast({ colleagueId, sessionId, type: 'message', role: 'system', text: 'This conversation is handed over to the terminal. Take it back to continue here.' });
+            return;
+          }
           const adapter = adapterFor(colleagueId, sessionId);
           if (!adapter) {
             broadcast({ colleagueId, sessionId, type: 'message', role: 'system', text: 'Unknown colleague.' });
             return;
           }
           bindAdapter(adapter, colleagueId, sessionId);
-          // Attachments aren't persisted (store.js has no place for
-          // binary content yet) — only the text survives a restart.
-          // Named, not silent: the DB just doesn't have that column.
-          store.appendMessage(colleagueId, sessionId, 'you', text);
-          await adapter.sendMessage(text, attachments);
+          // Images are stored with the message (store.js, attachments table).
+          // A message that arrives mid-turn is remembered here, so the
+          // reply that ends that turn can be stored in front of it.
+          const wasBusy = adapter.busy;
+          const savedId = store.appendMessage(colleagueId, sessionId, 'you', text, undefined, attachments);
+          // The id is the client's (it names the bubble there); the session
+          // gets it as the message's uuid so the message can be withdrawn.
+          // "Queue message" only means something while a turn runs.
+          const key = adapterKey(colleagueId, sessionId);
+          let uuid = validMessageId(payload.id);
+          if (!uuid || waitingYou.find(key, uuid)) uuid = randomUUID();
+          const kind = wasBusy && payload.kind === 'queue' ? 'queue' : 'send';
+          if (wasBusy) {
+            waitingYou.add(key, savedId, { uuid, kind });
+            broadcast({
+              type: 'message_waiting',
+              colleagueId,
+              sessionId,
+              id: uuid,
+              kind,
+              canCancel: Boolean(adapter.canCancel),
+            });
+          }
+          await adapter.sendMessage(text, attachments, { uuid, ...(kind === 'queue' ? { priority: 'later' } : {}) });
         });
       });
     });
@@ -1314,15 +1785,26 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
       // one was taken and this is the fallback bind) — an unconditional
       // write here would touch the file on every single ordinary
       // launch for no reason.
-      if (port !== session.port) saveSessionPort(targetDir, port);
+      const toRemember = portToRemember({ bound: port, remembered: session.port, explicit: explicitPort });
+      if (toRemember != null) saveSessionPort(targetDir, toRemember);
       const url = `http://127.0.0.1:${port}/${token}/`;
+      runningServers.set(runningKey, {
+        url,
+        server,
+        closing: false,
+        name: workforce?.id || basename(runningKey),
+        status: () => ({
+          waiting: waitingYou.count(),
+          busy: [...adapters.values()].some((a) => a.busy),
+        }),
+      });
       onReady?.(url);
       if (lan) {
         // Explicit, every single run — this is the one thing standing
         // between "reachable from another device on the same WiFi" and
         // "reachable by anyone who can see this token, over plain HTTP,
         // by a live agent session with real Bash/file/git execution in
-        // this repo" (autopilot skips even the permission prompt). Not
+        // this repo" ("allow all tools" skips even the permission prompt). Not
         // a one-time warning easy to forget between runs.
         const address = lanAddress();
         console.log('\n⚠ --lan is on: this chat is reachable by anyone on the same network who has this link.');
@@ -1361,9 +1843,11 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
     // line print twice). One `once` listener, reused across both
     // attempts, fires exactly once no matter which attempt succeeds.
     server.once('listening', finishListening);
-    server.listen(session.port || 0, host);
+    server.listen(explicitPort ?? (session.port || 0), host);
     server.once('error', (err) => {
-      if (err.code === 'EADDRINUSE' && session.port) {
+      if (err.code === 'EADDRINUSE' && explicitPort) {
+        reject(new Error(`Port ${explicitPort} is already in use. Stop whatever uses it, or start with a different --port.`));
+      } else if (err.code === 'EADDRINUSE' && session.port) {
         server.listen(0, host);
         server.once('error', reject);
       } else {
@@ -1377,6 +1861,7 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
       // (found by running a real one against a live colleague: the
       // WebSocket closed, the HTTP server closed, and the process sat
       // there anyway, kept up by the still-running `claude` child).
+      if (runningServers.get(runningKey)?.server === server) runningServers.delete(runningKey);
       for (const adapter of adapters.values()) adapter.close?.();
       store.close();
     });

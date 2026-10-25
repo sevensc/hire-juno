@@ -26,9 +26,17 @@
 // that one call meant those later messages had nowhere to go — a
 // silent, complete loss of the subagent thread, not a rendering bug.
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { createSdkMcpServer, query, tool } from '@anthropic-ai/claude-agent-sdk';
+import { z } from 'zod';
 
+import { limitFromEvent, limitFromResult, limitLogFields } from './limit.js';
 import { isStaleResumeError, STALE_RESUME_MESSAGE } from './staleResume.js';
+import { SubagentTracker } from './subagents.js';
+import { TextBlockSeparator } from './textBlocks.js';
+
+// Tools that always ask in the chat unless its Auto mode is on, whatever the
+// Claude settings allow. The names are Claude Code's own tool names.
+export const ASK_UNLESS_AUTO_MODE = ['Bash', 'Edit', 'Write', 'NotebookEdit', 'WebFetch', 'WebSearch', 'mcp__*'];
 
 // A tool_result's `content` (ToolResultBlockParam, per @anthropic-ai/sdk)
 // is either a plain string or an array of content blocks — normalizes
@@ -59,6 +67,39 @@ function summarizeUsage(message) {
   };
 }
 
+// What the `use_worktree` tool tells her, from the result of useWorktree().
+export function worktreeToolResult(result) {
+  if (!result.ok) return { content: [{ type: 'text', text: result.message }], isError: true };
+  const text = result.created
+    ? `Created a git worktree on branch ${result.branch} at ${result.path}. ` +
+      (result.cwdIsWorktree === false
+        ? `Your working directory stays where it is, because it is not this repository: ` +
+          `work on this repository in ${result.path} by absolute path (or cd there).`
+        : `Your shell and file tools still start in the old folder for the rest of this turn: ` +
+          `work in ${result.path} by absolute path. From your next turn on it is your working directory.`)
+    : `This conversation already has a worktree, on branch ${result.branch} at ${result.path}.`;
+  return { content: [{ type: 'text', text }] };
+}
+
+// An in-process MCP server with the one `use_worktree` tool (shown to her as
+// mcp__juno__use_worktree; it asks in the chat like any mcp__* tool, see
+// ASK_UNLESS_AUTO_MODE).
+export function worktreeServer(useWorktree) {
+  return createSdkMcpServer({
+    name: 'juno',
+    tools: [
+      tool(
+        'use_worktree',
+        'Moves this conversation into its own git worktree on a new branch, so the changes stay off the main ' +
+          'checkout. Optional `repoPath`: the absolute path of the top folder of the git repository to branch ' +
+          'from, when you work in a repo other than the one you started in. Returns the worktree path and branch.',
+        { repoPath: z.string().optional().describe('Absolute path of the git repository to work in') },
+        async ({ repoPath }) => worktreeToolResult(useWorktree({ repoPath }))
+      ),
+    ],
+  });
+}
+
 function toolResultText(content) {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
@@ -77,8 +118,12 @@ export class ClaudeAdapter {
   // query()'s own `resume` option (sdk.d.ts: "Session ID to resume. Loads
   // the conversation history from the specified session," no companion
   // option required). Omitted entirely for a first-ever conversation.
-  constructor(colleague, { systemPrompt, cwd, resume, model }) {
+  // `useWorktree`: when set, she gets the `use_worktree` tool (worktreeServer
+  // above); see createAdapter in agentAdapter.js.
+  constructor(colleague, { systemPrompt, cwd, resume, model, useWorktree }) {
     this.colleague = colleague;
+    this.systemPrompt = systemPrompt;
+    this.cwd = cwd;
     // Set by whoever owns this adapter (server/index.js) right after
     // creating it, and re-bound on every subsequent message so a
     // reconnected browser tab takes over delivery. Both may be null
@@ -95,14 +140,23 @@ export class ClaudeAdapter {
     // asked to resume has no transcript anymore (see staleResume.js), so
     // whoever owns the saved pointer can clear it and drop this adapter.
     this.onStaleResume = null;
+    // Called when the last outstanding turn has ended and nothing is queued
+    // behind it: the one safe moment for the owner to replace this adapter.
+    this.onIdle = null;
     this._staleResumeHandled = false;
     this._queue = [];
     this._notifyQueued = null;
     this._pendingResolve = null; // resolves the in-flight sendMessage() call, if any
+    this._resolvers = new Map(); // message uuid -> resolve of its own sendMessage() call (see cancel())
+    this._textBlocks = new TextBlockSeparator(); // blank line between a turn's text blocks
+    // Messages sent whose turn has not ended yet. A message sent mid-turn
+    // counts too, which _pendingResolve alone can't say: it only holds the latest.
+    this._outstanding = 0;
     // Tool-use IDs of Task calls whose subagent thread we've already
     // announced to the frontend, so the second message in doesn't
     // re-announce it.
     this._openSubagents = new Set();
+    this._subagents = new SubagentTracker(); // briefs and background endings (see subagents.js)
     // How each tool call of this session got its go-ahead, by tool-use id:
     // 'asked' (the human answered a prompt) or whatever `via` the owner's
     // permission callback reported (e.g. 'auto mode'). A call that never
@@ -121,6 +175,12 @@ export class ClaudeAdapter {
         // the target repo and nothing points the session there.
         cwd,
         includePartialMessages: true,
+        // Makes the CLI hand every user message that carries a uuid back as
+        // `isReplay: true` at the moment the session takes it up (measured: a
+        // message pushed during a running tool call came back with the tool
+        // result that it was folded into). That is the exact "read" signal for a
+        // waiting message; see the `isReplay` branch below.
+        extraArgs: { 'replay-user-messages': null },
         // On the newest models (this account's resolved default is
         // "sonnet" — checked via the SDK's own resolveSettings(), not
         // guessed) thinking already runs by default; what was missing
@@ -133,12 +193,23 @@ export class ClaudeAdapter {
         // want `adaptive` instead. Real, billed output tokens on every
         // turn.
         thinking: { type: 'adaptive', display: 'summarized' },
+        // Without this, a tool call that a permission rule from the user's,
+        // the project's or the local Claude settings already allows never
+        // reaches `canUseTool`: it runs without anyone being asked, with or
+        // without the chat's Auto mode. Ask rules are checked before allow
+        // rules whatever they are written for (Claude Code permissions docs:
+        // "deny, then ask, then allow"), so these make the chat ask for these
+        // tools every time; only Auto mode (see server/index.js) answers for
+        // the human. Read-only tools (Read, Grep, Glob) keep Claude's own
+        // default of not asking.
+        settings: { permissions: { ask: ASK_UNLESS_AUTO_MODE } },
         canUseTool: (toolName, input, opts) => this._handlePermission(toolName, input, opts),
         ...(resume ? { resume } : {}),
         // The model picked in the conversation's settings, if any — an
         // option of its own in the SDK (sdk.d.ts: "Claude model to use.
         // Defaults to the CLI default model."), left out entirely otherwise.
         ...(model ? { model } : {}),
+        ...(useWorktree ? { mcpServers: { juno: worktreeServer(useWorktree) } } : {}),
       },
     });
 
@@ -151,8 +222,10 @@ export class ClaudeAdapter {
         return;
       }
       this.onUpdate?.({ type: 'message', role: 'system', text: `Session error: ${err.message}` });
+      this._textBlocks.reset();
       this._pendingResolve?.();
       this._pendingResolve = null;
+      this._outstanding = 0;
     });
   }
 
@@ -192,6 +265,7 @@ export class ClaudeAdapter {
           id: parentId,
           subagentType: message.subagent_type,
           taskDescription: message.task_description,
+          prompt: this._subagents.brief(parentId),
         });
       }
       if (message.type === 'stream_event') {
@@ -205,6 +279,13 @@ export class ClaudeAdapter {
         for (const block of message.message?.content ?? []) {
           if (block.type === 'tool_use') {
             this.onUpdate?.({ type: 'subagent_tool_use', id: parentId, name: block.name, input: block.input });
+            // Its real report: shown at once, in case the end comes late.
+            const handback = this._subagents.rememberHandback(parentId, block);
+            if (handback) this.onUpdate?.({ type: 'subagent_message', id: parentId, text: handback });
+          } else if (block.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
+            // A sub-agent sends no partial messages; its finished text
+            // between tool calls only arrives here.
+            this.onUpdate?.({ type: 'subagent_message', id: parentId, text: block.text });
           }
         }
       }
@@ -218,8 +299,14 @@ export class ClaudeAdapter {
         // which model and effort level a session ended up running on
         // (org caps and model-support downgrades mean that's not
         // necessarily what profile.md asked for). Every other `system`
-        // subtype (task_notification, session_state_changed, …) falls
-        // through to `default`, unrendered for now same as before.
+        // subtype (session_state_changed, …) falls through, unrendered for
+        // now same as before. The sub-agent ones are read in subagents.js:
+        // a background sub-agent's answer arrives as a task_notification.
+        this._subagents.noteSystemMessage(message);
+        const ended = this._subagents.endFromNotification(message);
+        if (ended && this._openSubagents.delete(ended.id)) {
+          this.onUpdate?.({ type: 'subagent_end', id: ended.id, report: ended.report });
+        }
         if (message.subtype === 'init') {
           this.onUpdate?.({ type: 'session_info', model: message.model, effort: message.effort ?? null });
           // Separate from onUpdate on purpose (see the constructor
@@ -234,6 +321,8 @@ export class ClaudeAdapter {
         // text on its own channel — this is the part the native apps
         // show as "<name> is thinking…" before she acts.
         const delta = message.event?.delta;
+        const separator = this._textBlocks.separatorFor(message.event);
+        if (separator) this.onUpdate?.({ type: 'delta', text: separator });
         if (delta?.type === 'text_delta' && delta.text) {
           this.onUpdate?.({ type: 'delta', text: delta.text });
         } else if (delta?.type === 'thinking_delta' && delta.thinking) {
@@ -248,12 +337,24 @@ export class ClaudeAdapter {
         // not visibility.
         for (const block of message.message?.content ?? []) {
           if (block.type === 'tool_use') {
+            this._subagents.rememberToolUse(block);
             this.onUpdate?.({ type: 'tool_use', id: block.id, name: block.name, input: block.input });
+            // What she sends a running or finished sub-agent later is part of
+            // its window, next to the brief it was started with.
+            const sent = this._subagents.messageTo(block);
+            if (sent) this.onUpdate?.({ type: 'subagent_sent', id: sent.id, text: sent.text });
+          } else if (block.type === 'text') {
+            this._textBlocks.addText(block.text);
           }
         }
         return;
       }
       case 'user': {
+        // The session took up a message that was sent with a uuid: it is read.
+        if (message.isReplay) {
+          if (message.uuid) this.onUpdate?.({ type: 'message_read', uuid: message.uuid });
+          return;
+        }
         // The main loop's own tool_result for a finished Task call is
         // the closing signal for that subagent's thread — the subagent
         // itself never sends an explicit "I'm done".
@@ -272,28 +373,50 @@ export class ClaudeAdapter {
         if (Array.isArray(blocks)) {
           // A tool call has run once its result is back: say how it was
           // allowed, so the chat can show the ones nobody was asked about.
+          const results = blocks.filter((b) => b.type === 'tool_result');
+          if (results.length === 1) this._subagents.rememberLaunch(results[0].tool_use_id, message.tool_use_result);
           for (const block of blocks) {
-            if (block.type !== 'tool_result' || this._openSubagents.has(block.tool_use_id)) continue;
+            if (block.type !== 'tool_result') continue;
+            // A foreground sub-agent's result ends its thread (below); the
+            // "launched" notice of a background one is just a finished call.
+            if (this._openSubagents.has(block.tool_use_id) && !this._subagents.isBackground(block.tool_use_id)) continue;
             const approval = this._approvals.get(block.tool_use_id) || 'not asked';
             this._approvals.delete(block.tool_use_id);
             this.onUpdate?.({ type: 'tool_done', id: block.tool_use_id, approval });
           }
           for (const block of blocks) {
-            if (block.type === 'tool_result' && this._openSubagents.has(block.tool_use_id)) {
+            if (
+              block.type === 'tool_result' &&
+              this._openSubagents.has(block.tool_use_id) &&
+              !this._subagents.isBackground(block.tool_use_id)
+            ) {
               this._openSubagents.delete(block.tool_use_id);
               const result = message.tool_use_result;
-              const report = result && typeof result === 'object' && 'content' in result
+              const rawReport = result && typeof result === 'object' && 'content' in result
                 ? toolResultText(result.content)
                 : toolResultText(block.content);
+              const report = this._subagents.resolveReport(block.tool_use_id, rawReport);
+              this._subagents.forget(block.tool_use_id);
               this.onUpdate?.({ type: 'subagent_end', id: block.tool_use_id, report });
             }
           }
         }
         return;
       }
+      case 'rate_limit_event': {
+        const notice = limitFromEvent(message);
+        if (notice) this.onUpdate?.({ type: 'limit_notice', ...notice, log: limitLogFields(message) });
+        return;
+      }
       case 'result': {
-        if (message.subtype === 'success') {
-          this.onUpdate?.({ type: 'message', role: 'colleague', text: message.result });
+        const limit = limitFromResult(message);
+        if (limit) {
+          // The quota ended the turn: said as a notice, not as her answer.
+          this.onUpdate?.({ type: 'limit_notice', ...limit, log: limitLogFields(message) });
+        } else if (message.subtype === 'success') {
+          // The SDK's `result` is only the last text block of the turn;
+          // what was written before a tool call is kept (see textBlocks.js).
+          this.onUpdate?.({ type: 'message', role: 'colleague', text: this._textBlocks.turnText(message.result) });
         } else if (isStaleResumeError((message.errors || []).join(' '))) {
           this._handleStaleResume();
           return;
@@ -307,6 +430,12 @@ export class ClaudeAdapter {
         this.onUpdate?.({ type: 'usage', ...summarizeUsage(message) });
         this._pendingResolve?.();
         this._pendingResolve = null;
+        this._textBlocks.reset();
+        this._outstanding = Math.max(0, this._outstanding - 1);
+        if (this._outstanding === 0) {
+          this._resolvers.clear();
+          this.onIdle?.();
+        }
         return;
       }
       default:
@@ -325,8 +454,10 @@ export class ClaudeAdapter {
     if (this._staleResumeHandled) return;
     this._staleResumeHandled = true;
     this.onUpdate?.({ type: 'message', role: 'system', text: STALE_RESUME_MESSAGE });
+    this._textBlocks.reset();
     this._pendingResolve?.();
     this._pendingResolve = null;
+    this._outstanding = 0;
     this.onStaleResume?.();
   }
 
@@ -348,9 +479,20 @@ export class ClaudeAdapter {
       : { behavior: 'deny', message: decision.message || 'Denied.' };
   }
 
-  sendMessage(text, attachments) {
+  // True while a turn is in flight (sendMessage() sent, result not yet in).
+  get busy() {
+    return this._outstanding > 0;
+  }
+
+  // `uuid` names the message so it can be withdrawn again (see cancel());
+  // `priority: 'later'` makes it a turn of its own after the running one
+  // ends instead of being read at the next tool result (measured, see the
+  // server's waiting.js).
+  sendMessage(text, attachments, { uuid, priority } = {}) {
+    this._outstanding++;
     return new Promise((resolve) => {
       this._pendingResolve = resolve;
+      if (uuid) this._resolvers.set(uuid, resolve);
       // A plain string keeps the common case simple; the Messages API
       // only wants the array shape once there's more than text to say
       // (Base64ImageSource, verified against @anthropic-ai/sdk's own
@@ -368,11 +510,37 @@ export class ClaudeAdapter {
         type: 'user',
         message: { role: 'user', content },
         parent_tool_use_id: null,
+        ...(uuid ? { uuid } : {}),
+        ...(priority ? { priority } : {}),
       });
       const notify = this._notifyQueued;
       this._notifyQueued = null;
       notify?.();
     });
+  }
+
+  // Whether a message can be taken back at all: the SDK's
+  // cancelAsyncMessage() is in its control protocol but not in its public
+  // types, so it may be missing in another SDK version.
+  get canCancel() {
+    return typeof this._session?.cancelAsyncMessage === 'function';
+  }
+
+  // Takes a message back that the session has not read yet. true: it was
+  // dropped and will never be read; this turn's bookkeeping is undone (no
+  // result will ever come for it). false: the session had already taken it
+  // up (or it is unknown). Throws if the call itself fails.
+  async cancel(uuid) {
+    if (!uuid || !this.canCancel) return false;
+    const cancelled = (await this._session.cancelAsyncMessage(uuid)) === true;
+    if (cancelled) {
+      this._outstanding = Math.max(0, this._outstanding - 1);
+      const resolve = this._resolvers.get(uuid);
+      this._resolvers.delete(uuid);
+      resolve?.();
+      if (this._outstanding === 0) this.onIdle?.();
+    }
+    return cancelled;
   }
 
   // Showing Claude's own session/weekly usage limits, not just this

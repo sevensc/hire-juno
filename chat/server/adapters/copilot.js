@@ -37,6 +37,7 @@ export class CopilotAdapter {
     this._queue = [];
     this._notifyQueued = null;
     this._pendingResolve = null;
+    this._outstanding = 0; // messages sent whose turn has not ended yet
     this._closed = false;
 
     this._child = spawn('copilot', ['--acp'], { stdio: ['pipe', 'pipe', 'inherit'] });
@@ -101,6 +102,7 @@ export class CopilotAdapter {
       this.onUpdate?.({ type: 'message', role: 'colleague', text: fullText });
       this._pendingResolve?.();
       this._pendingResolve = null;
+      this._outstanding = Math.max(0, this._outstanding - 1);
     }
   }
 
@@ -131,7 +133,13 @@ export class CopilotAdapter {
     });
   }
 
+  // True while a turn is in flight (sendMessage() sent, result not yet in).
+  get busy() {
+    return this._outstanding > 0;
+  }
+
   sendMessage(text, attachments) {
+    this._outstanding++;
     return new Promise((resolve) => {
       this._pendingResolve = resolve;
       this._queue.push({ text, attachments });

@@ -44,6 +44,15 @@ md.renderer.rules.heading_close = (tokens, idx, options, env, self) => {
   return self.renderToken(tokens, idx, options);
 };
 
+// A code block gets a Copy button; app.js copies the block's own text when
+// it is clicked (see copyWithFeedback there). The button sits outside the
+// <pre>, so it never becomes part of the code.
+const copyButton = '<button type="button" class="code-copy" aria-label="Copy code">Copy</button>';
+for (const rule of ['fence', 'code_block']) {
+  const original = md.renderer.rules[rule];
+  md.renderer.rules[rule] = (...args) => `<div class="code-block">${copyButton}${original(...args)}</div>`;
+}
+
 // A wide table scrolls inside the bubble instead of widening it.
 md.renderer.rules.table_open = () => '<div class="table-scroll"><table>\n';
 md.renderer.rules.table_close = () => '</table></div>\n';

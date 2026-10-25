@@ -11,6 +11,11 @@ Record in the colleague's journal:
     - Criterion 2: …
     - Correction effort this week: <lower/same/higher>
     - New rules adopted into the personnel file: <count + short list>
+    - Outside the assignment: <count + sorting per `hr/feedback-review.md`
+      step 3>
+
+The feedback review only runs for active colleagues, so this line is what
+evaluates `Outside the assignment:` journal entries during probation.
 
 ## Decision at the end (the supervisor decides)
 - **active** — criteria met, the collaboration is a noticeable relief.

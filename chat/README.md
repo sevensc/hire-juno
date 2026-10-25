@@ -20,6 +20,14 @@ a different repo instead of the current directory (also useful for a
 project that predates hire-juno and uses the German-named layout — see
 below).
 
+`--port <n>` (1024 to 65535) serves on exactly that port and remembers it;
+if it is taken the start fails instead of picking another. Without it a
+workforce keeps the port it was first served on, and keeps it even after a
+start at which that port was taken. The separate command `hire-juno-chat`
+(`chat/bin/chat.js`) takes the same `--dir` and `--port`, and `--lan` as
+well, which makes the chat reachable from other devices on the same local
+network (plain http, anyone with the link; not for the internet).
+
 It starts a server bound to `127.0.0.1` only, with a random one-time
 token in the URL — the same access-control shape the installer's own
 browser step uses (`src/web/server.js`) — and opens it in your default
@@ -101,7 +109,10 @@ Also real, added after the first working slice:
   per colleague (carrying the unread/draft state of every session, and
   returning to the one you were last in), and the pane header names the
   open session when it isn't her main conversation. Nested rows in the
-  sidebar are for subagent exchanges only.
+  sidebar are for subagent exchanges only. Those windows are kept in
+  the chat database (brief, tool lines, report) and come back after a
+  reload or a server restart; they stay until you close one (the x on a
+  finished one), reset the owner's context or clear her chat.
 - **Model choice** per conversation — a dropdown in the conversation
   settings (⋮ in the pane header), 1:1 only. The list is what this
   account can use, as the SDK reports it for that colleague's own
@@ -134,14 +145,15 @@ Also real, added after the first working slice:
   the literal line `:::mode hiring-process:start` visually detaches
   that conversation (a banner, a tinted background) until a later
   `:::mode hiring-process:end` line closes it again, both lines
-  stripped from what's actually shown. Juno's own `profile.md`
-  (`team/juno/profile.md`) instructs her to emit these — start once
+  stripped from what's actually shown. The chat adds
+  `chat/server/skills/hiring-mode.md` to Juno's instructions only (her
+  personnel file stays free of chat details) and it tells her to emit these — start once
   the needs assessment has actually cleared and the process really
   begins, end once probation begins or she's told to stop; the exact
   end point is a first attempt, expected to move once it's been used
   for real. Scoped to Juno only in this repo — a
-  different HR colleague in a different install would need the same
-  instruction added to her own profile.
+  different HR colleague in a different install would need an entry for her id in
+  `CHAT_SKILL_FOR_COLLEAGUE` (`chat/server/agentAdapter.js`).
 
 ## Known gaps
 
