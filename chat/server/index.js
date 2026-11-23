@@ -54,6 +54,7 @@ import { addWorkforce, listWorkforces, removeWorkforce, setActiveWorkforce } fro
 import { getOrCreateSession, saveSessionPort } from '../../shared/chatSessions.js';
 import { portToRemember } from '../../shared/portFlag.js';
 import { cliSessionInfo, createHandovers, transferToTerminal } from './cliSession.js';
+import { loadToken, removeToken, saveToken } from './claudeToken.js';
 
 // One colleague can now have several independent, parallel
 // conversations running at once (e.g. one session per topic) — each is its own adapter
@@ -441,6 +442,9 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
       // doesn't exist — readRoster below will surface that the same
       // way it always has; nothing new to report here.
     }
+    // Only a socket server takes a Claude token from the chat: locally the
+    // person signs in to Claude Code in a terminal as usual.
+    let hasClaudeToken = socketPath ? loadToken() : null;
     const workforce = resolveWorkforce(targetDir);
     const store = openStore({ workforceId: workforce?.id, baseDir: workforce?.baseDir });
     // A recognised usage limit: its structural fields go to the limit log
@@ -670,7 +674,13 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
           // own comment above), same as the header always showed before
           // this existed.
           res.writeHead(200, { 'Content-Type': 'application/json' }).end(
-            JSON.stringify({ persisted: store.persisted, teamName: workforce?.id || 'hire-juno', version: PACKAGE_VERSION })
+            JSON.stringify({
+              persisted: store.persisted,
+              teamName: workforce?.id || 'hire-juno',
+              version: PACKAGE_VERSION,
+              // Present only on a socket server: whether a Claude token is set. Never the token.
+              ...(socketPath ? { claudeToken: hasClaudeToken ? 'set' : 'missing' } : {}),
+            })
           );
           return;
         }
@@ -1421,6 +1431,39 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
             const session = { id, colleagueId, title, createdAt: new Date().toISOString() };
             sessionsByColleague.set(colleagueId, [...sessionsFor(colleagueId), session]);
             broadcast({ type: 'session_created', colleagueId, session });
+            return;
+          }
+
+          if (payload.type === 'set_claude_token' || payload.type === 'remove_claude_token') {
+            if (!socketPath) {
+              broadcast({ type: 'claude_token_failed', message: 'Sign in to Claude Code in a terminal on this computer instead.' });
+              return;
+            }
+            try {
+              if (payload.type === 'set_claude_token') saveToken(payload.token);
+              else removeToken();
+            } catch (err) {
+              broadcast({ type: 'claude_token_failed', message: err.message });
+              return;
+            }
+            hasClaudeToken = payload.type === 'set_claude_token';
+            // Running agents keep the environment they started with. Idle ones
+            // are closed so the next message starts them with the new token;
+            // busy ones are replaced as soon as their turn ends.
+            for (const [key, adapter] of adapters) {
+              if (adapter.busy) {
+                const previous = adapter.onIdle;
+                adapter.onIdle = () => {
+                  previous?.();
+                  adapter.close?.();
+                  if (adapters.get(key) === adapter) adapters.delete(key);
+                };
+              } else {
+                adapter.close?.();
+                adapters.delete(key);
+              }
+            }
+            broadcast({ type: 'claude_token_status', claudeToken: hasClaudeToken ? 'set' : 'missing' });
             return;
           }
 

@@ -5836,6 +5836,12 @@
   var brandingLogoFileEl = document.getElementById("branding-logo-file");
   var brandingUploadButtonEl = document.getElementById("branding-upload-button");
   var brandingErrorEl = document.getElementById("branding-error");
+  var claudeTokenSectionEl = document.getElementById("claude-token-section");
+  var claudeTokenStatusEl = document.getElementById("claude-token-status");
+  var claudeTokenFormEl = document.getElementById("claude-token-form");
+  var claudeTokenInputEl = document.getElementById("claude-token-input");
+  var claudeTokenRemoveEl = document.getElementById("claude-token-remove");
+  var claudeTokenErrorEl = document.getElementById("claude-token-error");
   var DEFAULT_SESSION_ID = "default";
   function convKey(colleagueId, sessionId) {
     return `${colleagueId}::${sessionId || DEFAULT_SESSION_ID}`;
@@ -7112,6 +7118,23 @@
     brandingErrorEl.hidden = true;
     openDialog(settingsBackdropEl, settingsModalEl);
   }
+  function renderClaudeToken(state) {
+    claudeTokenSectionEl.hidden = !state;
+    if (!state) return;
+    claudeTokenStatusEl.textContent = state === "set" ? "A token is set. Paste a new one to replace it." : "No token yet: your colleagues cannot answer until one is set.";
+    claudeTokenRemoveEl.hidden = state !== "set";
+    claudeTokenErrorEl.hidden = true;
+  }
+  claudeTokenFormEl.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const token = claudeTokenInputEl.value.trim();
+    if (!token) return;
+    socket.send(JSON.stringify({ type: "set_claude_token", token }));
+    claudeTokenInputEl.value = "";
+  });
+  claudeTokenRemoveEl.addEventListener("click", () => {
+    socket.send(JSON.stringify({ type: "remove_claude_token" }));
+  });
   function closeSettingsModal() {
     closeDialog(settingsBackdropEl);
   }
@@ -7604,6 +7627,15 @@
       const { calls, inputTokens, outputTokens, totalTokens, costUsd } = update;
       gatekeeperUsage = { calls, inputTokens, outputTokens, totalTokens, costUsd };
       refreshSettingsModalIfOpen();
+      return;
+    }
+    if (update.type === "claude_token_status") {
+      renderClaudeToken(update.claudeToken);
+      return;
+    }
+    if (update.type === "claude_token_failed") {
+      claudeTokenErrorEl.textContent = update.message;
+      claudeTokenErrorEl.hidden = false;
       return;
     }
     if (update.type === "logo_updated") {
@@ -8774,7 +8806,8 @@
   }
   async function loadRoster({ preserveSelection = false } = {}) {
     const statusRes = await fetch("api/status");
-    const { persisted, teamName, version } = await statusRes.json();
+    const { persisted, teamName, version, claudeToken } = await statusRes.json();
+    renderClaudeToken(claudeToken);
     issueLinkEl.href = buildIssueUrl({ version, userAgent: navigator.userAgent });
     noPersistenceBannerEl.hidden = persisted;
     brandNameEl.textContent = teamName;
