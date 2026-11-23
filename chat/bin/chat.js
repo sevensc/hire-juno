@@ -51,7 +51,27 @@ try {
   process.exit(1);
 }
 
-runChatServer({ targetDir, lan, port }).catch((err) => {
+// `--socket <path>` serves the chat on a Unix domain socket instead of a
+// TCP port, for running behind an authenticating reverse proxy on a
+// server (see chat/README.md, "Running behind a login proxy"). Who may
+// connect is then decided by the socket file's owner and group alone, so
+// it excludes the two flags that widen or fix a TCP listener.
+const socketFlagIndex = process.argv.indexOf('--socket');
+let socketPath = null;
+if (socketFlagIndex !== -1) {
+  const value = process.argv[socketFlagIndex + 1];
+  if (!value || value.startsWith('--')) {
+    console.error('--socket needs a path, e.g. --socket /run/hire-juno/chat.sock');
+    process.exit(1);
+  }
+  if (lan || port) {
+    console.error('--socket cannot be combined with --lan or --port: the socket replaces the TCP listener.');
+    process.exit(1);
+  }
+  socketPath = resolve(value);
+}
+
+runChatServer({ targetDir, lan, port, socketPath, openBrowser: !socketPath }).catch((err) => {
   if (port) {
     console.error(err.message);
     process.exitCode = 1;

@@ -16,11 +16,20 @@
 // even the permission prompt) — worth knowing before turning it on,
 // which is why runChatServer prints an explicit warning when it does
 // rather than silently widening what "reaching this chat" means.
+//
+// `socketPath` (the `--socket` flag) is the server variant: no TCP port
+// and no URL token, the chat listens on a Unix domain socket instead.
+// Who may connect is decided by the socket file's owner and group, so an
+// authenticating reverse proxy in that group can reach it and other
+// accounts on the same machine cannot. One instance still serves exactly
+// one person: several people on one server each run their own instance
+// under their own system account (see chat/README.md).
 
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
-import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { connect as netConnect } from 'node:net';
+import { chmodSync, existsSync, lstatSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { networkInterfaces } from 'node:os';
 import { basename, dirname, join as joinPath, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -236,7 +245,7 @@ function serveStatic(route, res, token, teamName, req) {
       // same source of truth as the sidebar header/tab title).
       const rendered = body
         .toString('utf8')
-        .replace(/__TOKEN__/g, token)
+        .replace(/__TOKEN__/g, token || '')
         .replace(/__TEAM_NAME__/g, teamName);
       res.writeHead(200, { 'Content-Type': CONTENT_TYPES[ext] }).end(rendered);
       return;
@@ -328,8 +337,46 @@ export function workforcesStatus(servers = runningServers) {
   return out;
 }
 
+// Binds `server` to a Unix domain socket. A socket file left behind by a
+// crashed run is removed; one that still answers belongs to a running
+// instance, and taking it over would cut that instance off.
+export async function listenOnSocket(server, socketPath) {
+  let stat = null;
+  try {
+    stat = lstatSync(socketPath);
+  } catch {
+    // nothing there yet
+  }
+  if (stat) {
+    if (!stat.isSocket()) throw new Error(`${socketPath} exists and is not a socket. Remove it or choose another --socket path.`);
+    const alive = await new Promise((done) => {
+      const probe = netConnect(socketPath);
+      probe.once('connect', () => { probe.destroy(); done(true); });
+      probe.once('error', () => done(false));
+    });
+    if (alive) throw new Error(`Another chat is already listening on ${socketPath}.`);
+    unlinkSync(socketPath);
+  }
+  await new Promise((done, fail) => {
+    server.once('error', (err) => {
+      // Socket paths are capped at a little over 100 bytes (the exact limit
+      // depends on the OS); the bare EINVAL does not say so.
+      if (err.code === 'EINVAL' && Buffer.byteLength(socketPath) > 100) {
+        fail(new Error(`The --socket path is too long for a Unix socket (${Buffer.byteLength(socketPath)} bytes). Use a shorter one, e.g. under /run.`));
+        return;
+      }
+      fail(err);
+    });
+    server.listen(socketPath, () => {
+      server.removeAllListeners('error');
+      done();
+    });
+  });
+}
+
 // `port`: a port fixed with `--port`; the server uses exactly that one or fails, with no fallback.
-export function runChatServer({ targetDir = process.cwd(), openBrowser = true, onReady, lan = false, port: explicitPort = null } = {}) {
+// `socketPath`: listen on this Unix domain socket instead of a TCP port (see the file header).
+export function runChatServer({ targetDir = process.cwd(), openBrowser = true, onReady, lan = false, port: explicitPort = null, socketPath = null } = {}) {
   const runningKey = resolvePath(targetDir);
   const running = runningServers.get(runningKey);
   if (running && !running.closing) {
@@ -343,8 +390,17 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
     // token and an OS-assigned port every single launch. Which actual
     // port gets bound (the remembered one, or a fallback if that one's
     // taken) is decided down at server.listen() below.
-    const session = getOrCreateSession(targetDir);
+    // On a socket there is no token: the socket's file permissions are the
+    // gate, and the per-path record only exists to keep a TCP address stable.
+    const session = socketPath ? { token: null, port: null } : getOrCreateSession(targetDir);
     const token = session.token;
+    // Path segments that address this server: under /<token>/ on TCP, from
+    // the root on a socket. null when the request is not for this server.
+    const routeParts = (pathname) => {
+      const parts = pathname.split('/').filter(Boolean);
+      if (!token) return parts;
+      return parts[0] === token ? parts.slice(1) : null;
+    };
     // Registers whatever
     // `--dir` this launch points at, every time, not only the first.
     // Covers both a fresh install (which already registers itself at
@@ -356,6 +412,9 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
     // — a registry write failing here shouldn't stop the chat itself
     // from starting.
     try {
+      // A socket-mode server serves the one workforce it was started for; it
+      // does not register itself as the machine's active one.
+      if (socketPath) throw new Error('socket mode');
       addWorkforce(targetDir);
       // Only after addWorkforce has vouched for it (folder exists, has
       // a team/ or mitarbeiter/ in it) — "active" is what the next bare
@@ -559,13 +618,13 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
 
     const server = createServer(async (req, res) => {
       const url = new URL(req.url, 'http://127.0.0.1');
-      const parts = url.pathname.split('/').filter(Boolean);
+      const parts = routeParts(url.pathname);
 
-      if (parts[0] !== token) {
+      if (!parts) {
         res.writeHead(403).end('Not found.');
         return;
       }
-      const route = parts.slice(1).join('/');
+      const route = parts.join('/');
 
       try {
         if (req.method === 'GET' && route === 'api/status') {
@@ -936,8 +995,8 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
 
     server.on('upgrade', (req, socket, head) => {
       const url = new URL(req.url, 'http://127.0.0.1');
-      const parts = url.pathname.split('/').filter(Boolean);
-      if (parts[0] !== token || parts[1] !== 'ws') {
+      const parts = routeParts(url.pathname);
+      if (!parts || parts[0] !== 'ws' || parts.length !== 1) {
         socket.destroy();
         return;
       }
@@ -1614,6 +1673,14 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
             return;
           }
 
+          if (socketPath && ['add_workforce', 'remove_workforce', 'switch_workforce'].includes(payload.type)) {
+            // Switching would start a second server on a TCP port, outside the
+            // socket and the proxy in front of it.
+            const failed = payload.type === 'add_workforce' ? 'workforce_add_failed' : 'workforce_switch_failed';
+            broadcast({ type: failed, message: 'This chat serves one workforce only (started with --socket).' });
+            return;
+          }
+
           if (payload.type === 'add_workforce') {
             try {
               const workforce = addWorkforce(payload.path);
@@ -1779,6 +1846,28 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
       server.removeAllListeners('error');
       server.on('error', (err) => console.error('\nChat server error:', err));
 
+      if (socketPath) {
+        // Owner and group may connect, nobody else: the proxy in front gets
+        // access through the socket's group.
+        chmodSync(socketPath, 0o660);
+        const url = `unix:${socketPath}`;
+        runningServers.set(runningKey, {
+          url,
+          server,
+          closing: false,
+          name: workforce?.id || basename(runningKey),
+          status: () => ({
+            waiting: waitingYou.count(),
+            busy: [...adapters.values()].some((a) => a.busy),
+          }),
+        });
+        onReady?.(url);
+        console.log(`\nChat listening on ${socketPath} (owner and group only).`);
+        console.log('Put an authenticating reverse proxy in front of it; this server does no login of its own.');
+        resolve({ url, server });
+        return;
+      }
+
       const { port } = server.address();
       // Only writes when the bound port actually differs from what was
       // remembered (first-ever launch for this path, or the remembered
@@ -1843,19 +1932,33 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
     // line print twice). One `once` listener, reused across both
     // attempts, fires exactly once no matter which attempt succeeds.
     server.once('listening', finishListening);
-    server.listen(explicitPort ?? (session.port || 0), host);
-    server.once('error', (err) => {
-      if (err.code === 'EADDRINUSE' && explicitPort) {
-        reject(new Error(`Port ${explicitPort} is already in use. Stop whatever uses it, or start with a different --port.`));
-      } else if (err.code === 'EADDRINUSE' && session.port) {
-        server.listen(0, host);
-        server.once('error', reject);
-      } else {
-        reject(err);
-      }
-    });
+    if (socketPath) {
+      listenOnSocket(server, socketPath).catch(reject);
+    } else {
+      listenOnPort();
+    }
+    function listenOnPort() {
+      server.listen(explicitPort ?? (session.port || 0), host);
+      server.once('error', (err) => {
+        if (err.code === 'EADDRINUSE' && explicitPort) {
+          reject(new Error(`Port ${explicitPort} is already in use. Stop whatever uses it, or start with a different --port.`));
+        } else if (err.code === 'EADDRINUSE' && session.port) {
+          server.listen(0, host);
+          server.once('error', reject);
+        } else {
+          reject(err);
+        }
+      });
+    }
 
     server.on('close', () => {
+      if (socketPath) {
+        try {
+          unlinkSync(socketPath);
+        } catch {
+          // already gone
+        }
+      }
       // Each adapter holds its own subprocess/session alive — without
       // this, the process this server runs in never exits by itself
       // (found by running a real one against a live colleague: the
