@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { request } from 'node:http';
+import WebSocket from 'ws';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -82,6 +83,39 @@ test('--socket serves the chat from the root of a Unix socket, without a token, 
 
     // Nothing about a TCP address is written down for a socket server.
     assert.equal(existsSync(join(root, '.hire-juno', 'known-workforces.json')), false);
+  } finally {
+    child.kill('SIGTERM');
+    await exited;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('--socket takes a Claude token from the chat and only reports whether one is set', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hire-juno-socket-'));
+  const socketPath = join(root, 'chat.sock');
+  const { child, ready, exited } = startChat(['--dir', makeWorkforce(root), '--socket', socketPath], root);
+  try {
+    await ready;
+    assert.equal(JSON.parse((await get(socketPath, '/api/status')).body).claudeToken, 'missing');
+
+    const token = 'sk-ant-oat01-' + 'b'.repeat(40);
+    const ws = new WebSocket(`ws+unix://${socketPath}:/ws`);
+    await new Promise((resolve, reject) => { ws.once('open', resolve); ws.once('error', reject); });
+    const reply = new Promise((resolve) => {
+      ws.on('message', (raw) => {
+        const update = JSON.parse(raw);
+        if (update.type.startsWith('claude_token')) resolve(update);
+      });
+    });
+    ws.send(JSON.stringify({ type: 'set_claude_token', token }));
+    assert.deepEqual(await reply, { type: 'claude_token_status', claudeToken: 'set' });
+    ws.close();
+
+    const status = (await get(socketPath, '/api/status')).body;
+    assert.equal(JSON.parse(status).claudeToken, 'set');
+    assert.equal(status.includes(token), false);
+    const file = join(root, '.hire-juno', 'claude-token');
+    assert.equal(lstatSync(file).mode & 0o777, 0o600);
   } finally {
     child.kill('SIGTERM');
     await exited;
