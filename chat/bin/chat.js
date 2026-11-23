@@ -71,7 +71,28 @@ if (socketFlagIndex !== -1) {
   socketPath = resolve(value);
 }
 
-runChatServer({ targetDir, lan, port, socketPath, openBrowser: !socketPath }).catch((err) => {
+// `--person <name>` and `--context-file <path>` describe a socket server to
+// the colleagues: who this instance belongs to, and a note about the server
+// itself. They mean nothing on a personal machine, so they need --socket.
+function flagValue(name) {
+  const i = process.argv.indexOf(name);
+  if (i === -1) return null;
+  const value = process.argv[i + 1];
+  if (!value || value.startsWith('--')) {
+    console.error(`${name} needs a value.`);
+    process.exit(1);
+  }
+  return value;
+}
+const person = flagValue('--person');
+const contextFlag = flagValue('--context-file');
+if ((person || contextFlag) && !socketPath) {
+  console.error('--person and --context-file only apply together with --socket.');
+  process.exit(1);
+}
+const contextFile = contextFlag ? resolve(contextFlag) : null;
+
+runChatServer({ targetDir, lan, port, socketPath, person: person || '', contextFile, openBrowser: !socketPath }).catch((err) => {
   if (port) {
     console.error(err.message);
     process.exitCode = 1;

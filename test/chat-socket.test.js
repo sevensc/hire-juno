@@ -108,6 +108,20 @@ test('--socket refuses to take over a socket another chat still listens on', asy
   }
 });
 
+test('--person and --context-file need --socket', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hire-juno-socket-'));
+  try {
+    for (const extra of [['--person', 'ana'], ['--context-file', join(root, 'note.md')]]) {
+      const { exited } = startChat(['--dir', makeWorkforce(root), ...extra], root);
+      const { code, output } = await exited;
+      assert.notEqual(code, 0);
+      assert.match(output, /only apply together with --socket/);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('--socket cannot be combined with --lan or --port', async () => {
   const root = mkdtempSync(join(tmpdir(), 'hire-juno-socket-'));
   try {
