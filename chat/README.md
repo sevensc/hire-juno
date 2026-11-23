@@ -33,6 +33,40 @@ token in the URL — the same access-control shape the installer's own
 browser step uses (`src/web/server.js`) — and opens it in your default
 browser.
 
+## Running behind a login proxy
+
+To use the chat from a phone or from outside the local network, run it
+on a server behind a reverse proxy that does the login. `--socket`
+prepares it for that:
+
+```
+hire-juno-chat --dir <workforce> --socket /run/hire-juno/<person>.sock
+```
+
+The chat then listens on that Unix socket instead of a TCP port, with
+no token in the URL and no browser opened. The socket file gets mode
+`660`: its owner and its group may connect, no other account on the
+machine. The chat has no login of its own, so whoever reaches the
+socket is treated as the person this instance belongs to. `--socket`
+cannot be combined with `--lan` or `--port`, and switching to another
+workforce is disabled in this mode.
+
+One instance serves one person. For several people on one server:
+
+- Give each person their own system account, with their own clone of
+  the workforce, their own chat history and their own agent credentials
+  in that account's environment. Nothing of one person's is then
+  readable by the agents of another, including credentials.
+- Run one chat per account (e.g. as a systemd service with
+  `User=<person>`), each on its own socket. Put the socket in a group
+  that only the reverse proxy belongs to.
+- Let the reverse proxy authenticate the person and forward the request
+  to that person's socket only. A request for which the proxy cannot
+  name a person must not reach any socket.
+
+The web app manifest is served as before, so the chat can be added to a
+phone's home screen from the proxied address.
+
 ## Working on the frontend
 
 `chat/public/app.js` is a generated file (`npm run build:chat`, plain
