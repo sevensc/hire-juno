@@ -112,11 +112,26 @@ const CHAT_SKILL_FOR_COLLEAGUE = {
   juno: readFileSync(joinPath(SKILLS_DIR, 'hiring-mode.md'), 'utf8'),
 };
 
+// Only for a chat served with --socket on a server (see server/index.js).
+const SERVER_MODE_SKILL = readFileSync(joinPath(SKILLS_DIR, 'server-mode.md'), 'utf8');
+
+// What a colleague is told about running on a server: the fixed text, who
+// she is talking to (`person`), and the deployment's own note (`context`,
+// the contents of --context-file). Empty when the chat is not on a server.
+export function buildServerNote({ server = false, person = '', context = '' } = {}) {
+  if (!server) return '';
+  const who = person
+    ? `\n\nThe person you are talking to in this chat is ${person}. Messages from "the user" are from ${person}.`
+    : '';
+  const own = context.trim() ? `\n\n## About this server\n\n${context.trim()}` : '';
+  return `\n\n${SERVER_MODE_SKILL.trim()}${who}${own}`;
+}
+
 // The system prompt of a colleague in the chat: her personnel file body, the
 // worktree notes, the chat instructions for everyone, and the one only she gets.
-export function buildSystemPrompt({ colleagueId, ownProfile, worktreeNote = '', offer = '' }) {
+export function buildSystemPrompt({ colleagueId, ownProfile, worktreeNote = '', offer = '', serverNote = '' }) {
   const own = CHAT_SKILL_FOR_COLLEAGUE[colleagueId];
-  return `${ownProfile}${worktreeNote}${offer}\n\n${CHAT_UI_SKILL}${own ? `\n\n${own}` : ''}`;
+  return `${ownProfile}${worktreeNote}${offer}\n\n${CHAT_UI_SKILL}${own ? `\n\n${own}` : ''}${serverNote}`;
 }
 
 // Selects by the colleague's own `adapter:` frontmatter field. Note:
@@ -142,7 +157,8 @@ export function buildSystemPrompt({ colleagueId, ownProfile, worktreeNote = '', 
 // `useWorktree`: set when the conversation can have a worktree (see
 // useWorktree.js); it creates one and returns { ok, created, branch, path } or
 // { ok: false, message }. Claude only; it becomes her `use_worktree` tool.
-export function createAdapter(colleague, { targetDir, cwd = targetDir, resume, model, useWorktree, worktree }) {
+// `serverNote`: see buildServerNote; empty outside a server.
+export function createAdapter(colleague, { targetDir, cwd = targetDir, resume, model, useWorktree, worktree, serverNote = '' }) {
   const ownProfile = readProfileBody(targetDir, colleague.id) ?? `You are ${colleague.name}.`;
   const worktreeNote =
     worktree && cwd === targetDir
@@ -155,7 +171,7 @@ export function createAdapter(colleague, { targetDir, cwd = targetDir, resume, m
         `Work only inside it and do not change files in ${targetDir}.`;
   const wantsCopilot = colleague.adapter.some((a) => a.toLowerCase().includes('copilot'));
   const offer = useWorktree && !wantsCopilot ? `\n\n${WORKTREE_OFFER}` : '';
-  const systemPrompt = buildSystemPrompt({ colleagueId: colleague.id, ownProfile, worktreeNote, offer });
+  const systemPrompt = buildSystemPrompt({ colleagueId: colleague.id, ownProfile, worktreeNote, offer, serverNote });
   return wantsCopilot
     ? new CopilotAdapter(colleague, { cwd })
     : new ClaudeAdapter(colleague, { systemPrompt, cwd, resume, model, useWorktree });

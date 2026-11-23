@@ -37,7 +37,7 @@ import { fileURLToPath } from 'node:url';
 import open from 'open';
 import { WebSocketServer } from 'ws';
 
-import { createAdapter } from './agentAdapter.js';
+import { buildServerNote, createAdapter } from './agentAdapter.js';
 import { waitUntilIdle } from './drain.js';
 import { createPermissions, VIA_ALLOW_ALL, VIA_ALWAYS_ALLOW } from './permissions.js';
 import { validateModelChoice } from './modelChoice.js';
@@ -338,6 +338,16 @@ export function workforcesStatus(servers = runningServers) {
   return out;
 }
 
+// The text of --context-file, or '' when there is none or it cannot be read.
+function readContextFile(path) {
+  if (!path) return '';
+  try {
+    return readFileSync(path, 'utf8');
+  } catch {
+    return '';
+  }
+}
+
 // Binds `server` to a Unix domain socket. A socket file left behind by a
 // crashed run is removed; one that still answers belongs to a running
 // instance, and taking it over would cut that instance off.
@@ -377,7 +387,11 @@ export async function listenOnSocket(server, socketPath) {
 
 // `port`: a port fixed with `--port`; the server uses exactly that one or fails, with no fallback.
 // `socketPath`: listen on this Unix domain socket instead of a TCP port (see the file header).
-export function runChatServer({ targetDir = process.cwd(), openBrowser = true, onReady, lan = false, port: explicitPort = null, socketPath = null } = {}) {
+// `person`: on a socket server, the name of the person this instance belongs to.
+// `contextFile`: on a socket server, a file whose text every colleague is given
+// about this particular server; read again for every new session, so an edit
+// applies without a restart.
+export function runChatServer({ targetDir = process.cwd(), openBrowser = true, onReady, lan = false, port: explicitPort = null, socketPath = null, person = '', contextFile = null } = {}) {
   const runningKey = resolvePath(targetDir);
   const running = runningServers.get(runningKey);
   if (running && !running.closing) {
@@ -505,7 +519,15 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
               return result;
             }
           : undefined;
-        const adapter = createAdapter(colleague, { targetDir, cwd, resume, model, useWorktree, worktree: worktreeThere ? worktree : undefined });
+        const adapter = createAdapter(colleague, {
+          targetDir,
+          cwd,
+          resume,
+          model,
+          useWorktree,
+          worktree: worktreeThere ? worktree : undefined,
+          serverNote: socketPath ? buildServerNote({ server: true, person, context: readContextFile(contextFile) }) : '',
+        });
         adapter.onIdle = () => {
           if (!replaceWhenIdle) return;
           adapter.close?.();
@@ -616,7 +638,9 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
     // network with the link is "reaching this chat" too and is still
     // answered as the user. Whether that is acceptable depends on who else
     // is on that network, which this file cannot judge.
-    const OPERATOR_NAME = 'You';
+    // On a socket server one instance belongs to one person, so the name
+    // given with --person is used instead.
+    const OPERATOR_NAME = (socketPath && person) || 'You';
     const displayNameFor = (senderId) =>
       senderId === 'you' ? OPERATOR_NAME : readRoster(targetDir).find((c) => c.id === senderId)?.name || senderId;
 
