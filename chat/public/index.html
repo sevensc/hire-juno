@@ -273,6 +273,21 @@ try {
          buried in this dialog, a sidebar showing one workforce's
          colleagues reads as "this is everyone", and the way to the rest
          is a dialog nobody has a reason to open. -->
+    <!-- Only on a chat served with --socket (see server/claudeToken.js):
+         there is no terminal to sign in to Claude Code, so the person
+         pastes a token from `claude setup-token` here. The token is
+         never shown again, only whether one is set. -->
+    <section id="claude-token-section" hidden>
+      <h3>Claude sign-in</h3>
+      <p id="claude-token-status"></p>
+      <form id="claude-token-form" autocomplete="off">
+        <input id="claude-token-input" type="password" autocomplete="off" spellcheck="false" aria-label="Claude token" placeholder="Paste the token" />
+        <button type="submit">Save</button>
+      </form>
+      <button id="claude-token-remove" type="button" hidden>Remove token</button>
+      <div id="claude-token-error" role="alert" hidden></div>
+      <p class="claude-token__note">Run <code>claude setup-token</code> in a terminal on your own computer and paste the token it prints. Your colleagues here then work with your Claude plan. The token is kept in your account on this server only.</p>
+    </section>
     <section>
       <h3>Usage</h3>
       <div id="usage-summary"></div>
