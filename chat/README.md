@@ -67,6 +67,27 @@ One instance serves one person. For several people on one server:
 The web app manifest is served as before, so the chat can be added to a
 phone's home screen from the proxied address.
 
+### Team room
+
+`hire-juno-room` adds one shared conversation for the people on such a
+server. Each person's chat shows it as the channel `#team`:
+
+```
+hire-juno-room --socket /run/hire-juno-room/room.sock --db <file> --members <members.json>
+hire-juno-chat ... --socket <own socket> --room-socket /run/hire-juno-room/room.sock --room-token-file <file>
+```
+
+- `members.json` lists `{ "id", "name", "tokenSha256" }` per person. Each
+  person's chat reads its own token from `--room-token-file`; the room
+  only keeps the SHA-256. A connection always posts as its own member.
+- Browsers never talk to the room, only to their own chat.
+- A colleague answers in the room only when the person writing
+  `@mentions` her, and runs on that person's chat and credentials. Her
+  reply is labelled with her name and, for the others, whose request it
+  answered.
+- The camera button in `#team` shares a video call link (any `https://`
+  address) with everyone.
+
 ## Working on the frontend
 
 `chat/public/app.js` is a generated file (`npm run build:chat`, plain

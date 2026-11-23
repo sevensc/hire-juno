@@ -24,7 +24,8 @@
   ],
   "bin": {
     "hire-juno": "./bin/cli.js",
-    "hire-juno-chat": "./chat/bin/chat.js"
+    "hire-juno-chat": "./chat/bin/chat.js",
+    "hire-juno-room": "./chat/bin/room.js"
   },
   "scripts": {
     "test": "node --test",
@@ -37,6 +38,7 @@
     "shared",
     "chat/bin",
     "chat/server",
+    "chat/room",
     "chat/public",
     "CONSTITUTION.md",
     "hr",

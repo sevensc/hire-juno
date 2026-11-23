@@ -1632,6 +1632,7 @@ button.workforce-row__pick:disabled { cursor: default; opacity: 0.55; }
   flex-shrink: 0;
 }
 .pane-header__search-toggle,
+.pane-header__call,
 .pane-header__menu {
   display: flex;
   align-items: center;
@@ -1645,7 +1646,8 @@ button.workforce-row__pick:disabled { cursor: default; opacity: 0.55; }
   min-height: 2.75rem;
   cursor: pointer;
 }
-.pane-header__search-toggle .icon { width: 1.2rem; height: 1.2rem; }
+.pane-header__search-toggle .icon,
+.pane-header__call .icon { width: 1.2rem; height: 1.2rem; }
 /* Was sized in font-size/line-height to fit the text glyph "⋮"; now an
    SVG (see renderPaneHeader), so it gets an explicit box like the
    search toggle next to it instead of depending on font metrics that
@@ -1653,6 +1655,7 @@ button.workforce-row__pick:disabled { cursor: default; opacity: 0.55; }
 .pane-header__menu .icon { width: 1.3rem; height: 1.3rem; }
 @media (hover: hover) {
   .pane-header__search-toggle:hover,
+  .pane-header__call:hover,
   .pane-header__menu:hover { color: var(--fg); }
 }
 .pane-header__search-toggle[aria-expanded="true"] { color: var(--accent); background: var(--bg-message); }

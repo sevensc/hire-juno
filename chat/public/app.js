@@ -6553,6 +6553,24 @@
     }
     convSettingsTerminalEl.append(hint, commandEl, status, error2);
   }
+  function callButtonEl(channelId) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "pane-header__call";
+    button.title = "Share a video call link";
+    button.setAttribute("aria-label", "Share a video call link");
+    button.innerHTML = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="M16 10l6-3v10l-6-3z"/></svg>';
+    button.addEventListener("click", () => {
+      const link2 = (window.prompt("Link to the video call (e.g. Google Meet):") || "").trim();
+      if (!link2) return;
+      if (!/^https:\/\/[^\s]+$/.test(link2)) {
+        window.alert("Please paste a full https:// link.");
+        return;
+      }
+      socket.send(JSON.stringify({ type: "channel_message", channelId, text: `Video call: ${link2}`, attachments: [] }));
+    });
+    return button;
+  }
   function renderPaneHeader() {
     paneHeaderEl.innerHTML = "";
     let hasContent = false;
@@ -6603,7 +6621,14 @@
       hasContent = true;
     } else {
       paneHeaderEl.classList.remove("pane-header--auto-mode");
-      if (activeChannelId) {
+      if (activeChannelId && channelsById.get(activeChannelId)?.room) {
+        const { connected, members = [] } = channelsById.get(activeChannelId).room;
+        const span = document.createElement("span");
+        span.className = "pane-header__entry";
+        span.textContent = connected ? members.map((m3) => m3.name).join(", ") || "Team" : "Team room not reachable";
+        entries.appendChild(span);
+        hasContent = true;
+      } else if (activeChannelId) {
         const channel = channelsById.get(activeChannelId);
         let totalTokens = 0;
         let totalCost = 0;
@@ -6647,6 +6672,7 @@
         searchToggle.setAttribute("aria-expanded", "true");
         openConvSearchPanel(searchToggle);
       });
+      if (activeChannelId && channelsById.get(activeChannelId)?.room) actions.appendChild(callButtonEl(activeChannelId));
       actions.appendChild(searchToggle);
       const menuButton = document.createElement("button");
       menuButton.type = "button";
@@ -7629,6 +7655,13 @@
       refreshSettingsModalIfOpen();
       return;
     }
+    if (update.type === "room_state") {
+      for (const channel of channelsById.values()) {
+        if (channel.room) channel.room = { connected: update.connected, members: update.members || channel.room.members };
+      }
+      if (activeChannelId && channelsById.get(activeChannelId)?.room) renderPaneHeader();
+      return;
+    }
     if (update.type === "claude_token_status") {
       renderClaudeToken(update.claudeToken);
       return;
@@ -7702,6 +7735,7 @@
       channelPendingTrail.delete(update.senderId);
       channelMessages.get(update.channelId).push({
         senderId: update.senderId,
+        senderName: update.senderName || null,
         text: text2,
         attachments,
         createdAt: (/* @__PURE__ */ new Date()).toISOString(),
@@ -7718,7 +7752,7 @@
       if (isColleagueMessage && !(document.hasFocus() && update.channelId === activeChannelId)) {
         const channel = channelsById.get(update.channelId);
         const sender = colleaguesById.get(update.senderId);
-        notify(`#${channel?.name || "channel"} \u2014 ${sender?.name || update.senderId}`, text2, () => {
+        notify(`#${channel?.name || "channel"} \u2014 ${update.senderName || sender?.name || update.senderId}`, text2, () => {
           if (channel) selectChannel(channel);
         });
       }
@@ -8327,13 +8361,13 @@
     const row = (item, i2) => {
       const isYou = item.senderId === "you";
       const isSystem = item.senderId === "system";
-      const sender = isYou || isSystem ? null : colleaguesById.get(item.senderId);
+      const sender = isYou || isSystem ? null : colleaguesById.get(item.senderId) || (item.senderName ? { id: item.senderId, name: item.senderName, hasAvatar: false } : null);
       const role = isYou ? "you" : isSystem ? "system" : "colleague";
       return m2`<${MessageRow}
       key=${i2}
       role=${role}
       avatarColleague=${sender}
-      nameTag=${sender?.name || null}
+      nameTag=${item.senderName || sender?.name || null}
       item=${item}
       toolText=${item.text}
       onToggle=${() => {
@@ -8403,7 +8437,7 @@
     input.disabled = false;
     sendButton.disabled = false;
     attachButtonEl.style.display = "";
-    input.placeholder = `Message #${channel.name}\u2026 (@name/@all to address someone directly, or just ask)`;
+    input.placeholder = channel.room ? `Message #${channel.name}\u2026 (@name brings a colleague in)` : `Message #${channel.name}\u2026 (@name/@all to address someone directly, or just ask)`;
     input.value = drafts.get(channelConvKey(channel.id)) || "";
     autoResizeComposer();
     renderPaneHeader();
@@ -8419,6 +8453,9 @@
       channelId,
       rows.map((row) => ({
         senderId: row.sender_id,
+        // Set for people and for colleagues answering for someone else in the
+        // team room (see server/room.js); a plain channel has none.
+        senderName: row.sender_name || null,
         text: row.text,
         createdAt: row.created_at,
         attachments: storedAttachments(row.attachments)
