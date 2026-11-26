@@ -44,7 +44,7 @@ hypothetical.
   named colleague already said, you very likely have her prior turn
   right above yours in this same conversation — read it before
   answering, and address her directly by name if your answer is really
-  for her rather than the human ("Rami, das würde ich anders lösen —
+  for her rather than the human ("Kim, das würde ich anders lösen —
   ..." reads like a real conversation; ignoring that she's in the room
   doesn't).
 - Don't repeat ground another colleague already covered in the same

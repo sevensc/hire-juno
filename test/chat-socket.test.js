@@ -77,6 +77,9 @@ test('--socket serves the chat from the root of a Unix socket, without a token, 
     const colleagues = JSON.parse((await get(socketPath, '/api/colleagues')).body);
     assert.deepEqual(colleagues.map((c) => c.id), ['juno']);
 
+    assert.equal(Buffer.from(JSON.parse(status.body).pushKey, 'base64url').length, 65);
+    assert.match((await get(socketPath, '/sw.js')).body, /showNotification/);
+
     const page = await get(socketPath, '/');
     assert.equal(page.status, 200);
     assert.match(page.body, /<html/i);

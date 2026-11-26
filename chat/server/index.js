@@ -30,7 +30,7 @@ import { execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { connect as netConnect } from 'node:net';
 import { chmodSync, existsSync, lstatSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
-import { networkInterfaces } from 'node:os';
+import { homedir, networkInterfaces } from 'node:os';
 import { basename, dirname, join as joinPath, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -46,7 +46,7 @@ import { WaitingMessages } from './waiting.js';
 import { decideRelevance } from './gatekeeper.js';
 import { extractMentions, extractVocativeAddresses } from './mentions.js';
 import { findLayout, readRoster, resolveAvatarPath } from './roster.js';
-import { DEFAULT_SESSION_ID, openStore } from './store.js';
+import { ATTACHMENT_MIME_TYPES, DEFAULT_SESSION_ID, openStore } from './store.js';
 import { resolveWorkforce } from './workforceId.js';
 import { activateWorktree, canOfferWorktree, worktreeIsStartRepo } from './useWorktree.js';
 import { currentBranch, gitRoot, resolveGitDir } from './worktree.js';
@@ -56,7 +56,10 @@ import { portToRemember } from '../../shared/portFlag.js';
 import { cliSessionInfo, createHandovers, transferToTerminal } from './cliSession.js';
 import { loadToken, removeToken, saveToken } from './claudeToken.js';
 import { connectRoom } from './roomClient.js';
-import { ROOM_CHANNEL_ID, roomContextLines, roomMentions, roomRow } from './room.js';
+import { reactionHint } from './reactions.js';
+import { createPusher } from './pushNotify.js';
+import { turnIceServers } from './turn.js';
+import { ROOM_CHANNEL_ID, TEAM_NOTIFY_MODES, mentionsPerson, roomContextLines, roomMentions, roomRow, shouldNotify } from './room.js';
 
 // One colleague can now have several independent, parallel
 // conversations running at once (e.g. one session per topic) — each is its own adapter
@@ -167,6 +170,9 @@ const CONTENT_TYPES = {
   // text file besides index.html that needs a placeholder filled in
   // (see TEMPLATED below), not a third kind of static file.
   '.webmanifest': 'application/manifest+json',
+  // The speech model runtime for call transcripts (vendor/transformers, vendor/ort).
+  '.mjs': 'text/javascript',
+  '.wasm': 'application/wasm',
   // Only for the two fixed files in VENDOR_FILES below.
   '.svg': 'image/svg+xml',
 };
@@ -215,7 +221,8 @@ function serveStatic(route, res, token, teamName, req) {
   // module ships — a chat message is never a path, but staying
   // deliberate here costs nothing.
   const ext = '.' + file.split('.').pop();
-  if (!CONTENT_TYPES[ext] || file.includes('..') || (file.includes('/') && !VENDOR_FILES.has(file))) {
+  const runtimeFile = /^vendor\/(transformers|ort)\/[A-Za-z0-9._-]+$/.test(file);
+  if (!CONTENT_TYPES[ext] || file.includes('..') || (file.includes('/') && !VENDOR_FILES.has(file) && !runtimeFile)) {
     res.writeHead(404).end('Not found.');
     return;
   }
@@ -395,7 +402,8 @@ export async function listenOnSocket(server, socketPath) {
 // applies without a restart.
 // `room`: on a socket server, { socketPath, tokenFile } of the team room
 // (chat/room/server.js); it then shows as the channel ROOM_CHANNEL_ID.
-export function runChatServer({ targetDir = process.cwd(), openBrowser = true, onReady, lan = false, port: explicitPort = null, socketPath = null, person = '', contextFile = null, room = null } = {}) {
+// `turn`: { url, secretFile } of a TURN server for video calls in that room.
+export function runChatServer({ targetDir = process.cwd(), openBrowser = true, onReady, lan = false, port: explicitPort = null, socketPath = null, person = '', contextFile = null, room = null, turn = null } = {}) {
   const runningKey = resolvePath(targetDir);
   const running = runningServers.get(runningKey);
   if (running && !running.closing) {
@@ -449,6 +457,8 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
     // Only a socket server takes a Claude token from the chat: locally the
     // person signs in to Claude Code in a terminal as usual.
     let hasClaudeToken = socketPath ? loadToken() : null;
+    // Push notifications to the person's devices (socket servers only).
+    const pusher = socketPath ? createPusher({ subject: 'https://github.com/sevensc/hire-juno' }) : null;
     const workforce = resolveWorkforce(targetDir);
     const store = openStore({ workforceId: workforce?.id, baseDir: workforce?.baseDir });
     // A recognised usage limit: its structural fields go to the limit log
@@ -622,7 +632,9 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
 
     // "Allow all tools" and "Always allow <tool>", per 1:1 session and per
     // channel member. In memory only (see permissions.js).
-    const permissions = createPermissions();
+    const permissions = createPermissions({
+      file: socketPath ? joinPath(homedir(), '.hire-juno', `permissions-${workforce?.id || 'chat'}.json`) : null,
+    });
     // The key for the conversation a message names: a channel member when
     // it carries a channelId, else a 1:1 session.
     const permissionKey = (p) =>
@@ -683,7 +695,7 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
               teamName: workforce?.id || 'hire-juno',
               version: PACKAGE_VERSION,
               // Present only on a socket server: whether a Claude token is set. Never the token.
-              ...(socketPath ? { claudeToken: hasClaudeToken ? 'set' : 'missing' } : {}),
+              ...(socketPath ? { claudeToken: hasClaudeToken ? 'set' : 'missing', pushKey: pusher.publicKey() } : {}),
             })
           );
           return;
@@ -916,6 +928,45 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
           return;
         }
 
+        if (req.method === 'GET' && route === 'api/open-questions') {
+          res.writeHead(200, { 'Content-Type': 'application/json' }).end(
+            JSON.stringify(roomState.enabled ? roomState.questions : null)
+          );
+          return;
+        }
+
+        if (req.method === 'GET' && route === 'api/room-artifact') {
+          const id = Number(url.searchParams.get('id'));
+          const artifact = roomConnection && Number.isInteger(id) ? await roomConnection.getArtifact(id) : null;
+          res.writeHead(artifact ? 200 : 404, { 'Content-Type': 'application/json' }).end(JSON.stringify(artifact));
+          return;
+        }
+
+        if (req.method === 'GET' && route === 'api/room-attachment') {
+          const id = Number(url.searchParams.get('id'));
+          const attachment = roomConnection && Number.isInteger(id) ? await roomConnection.getAttachment(id) : null;
+          if (!attachment || !ATTACHMENT_MIME_TYPES.includes(attachment.mimeType)) {
+            res.writeHead(404).end('Not found.');
+            return;
+          }
+          res.writeHead(200, {
+            'Content-Type': attachment.mimeType,
+            'X-Content-Type-Options': 'nosniff',
+            'Cache-Control': 'private, max-age=31536000, immutable',
+          }).end(Buffer.from(attachment.data, 'base64'));
+          return;
+        }
+
+        if (req.method === 'GET' && route === 'api/ice') {
+          // ICE servers for a video call in the team room: the TURN server
+          // given with --turn-url, with short-lived credentials made from
+          // --turn-secret-file (the "TURN REST" scheme), else none.
+          res.writeHead(200, { 'Content-Type': 'application/json' }).end(
+            JSON.stringify({ you: roomState.you, iceServers: turn ? turnIceServers(turn, roomState.you?.id || 'user') : [] })
+          );
+          return;
+        }
+
         if (req.method === 'GET' && route === 'api/channel-history') {
           const channelId = url.searchParams.get('channelId') || '';
           if (channelId === ROOM_CHANNEL_ID && roomState.enabled) {
@@ -1027,6 +1078,57 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
       for (const conn of connections) {
         if (conn.readyState === conn.OPEN) conn.send(json);
       }
+      if (pusher) pushIfAway(payload);
+    };
+
+    // A finished reply or someone else's message in a channel reaches the
+    // person's devices as a push notification, but only while no tab of
+    // the chat is in view (tabs report that, see 'visibility'): a phone
+    // keeps a backgrounded connection open for a while.
+    // A tab counts as in view only while it says so and still answers the
+    // heartbeat below: a phone freezes a closed app before it can report
+    // being hidden, and its connection stays open without answering.
+    const HEARTBEAT_MS = 10000;
+    // In view: the tab said so within the last 25 seconds (it repeats that
+    // every 10 seconds from its own code, which a phone freezes in the
+    // background) and still answers the connection heartbeat.
+    const isInView = (c) =>
+      c.readyState === c.OPEN &&
+      c.visible !== false &&
+      Date.now() - (c.lastSeen || 0) < 25000 &&
+      Date.now() - (c.lastPong || 0) < 2 * HEARTBEAT_MS + 1000;
+    const heartbeat = pusher
+      ? setInterval(() => {
+          for (const c of connections) {
+            if (c.readyState !== c.OPEN) continue;
+            if (Date.now() - (c.lastPong || 0) > 6 * HEARTBEAT_MS) {
+              c.terminate();
+              continue;
+            }
+            try { c.ping(); } catch { /* closing */ }
+          }
+        }, HEARTBEAT_MS)
+      : null;
+    heartbeat?.unref?.();
+
+    const pushIfAway = (payload) => {
+      const inView = [...connections].some(isInView);
+      if (inView || !pusher.count()) return;
+      let title = null;
+      if (payload.type === 'message' && payload.role === 'colleague' && payload.colleagueId && !payload.channelId) {
+        title = displayNameFor(payload.colleagueId);
+      } else if (payload.type === 'channel_message' && payload.senderId !== 'you' && payload.senderId !== 'system' && payload.notify !== false) {
+        const channelName = payload.channelId === ROOM_CHANNEL_ID ? 'team' : channelsById.get(payload.channelId)?.name || 'channel';
+        const from = payload.senderName || displayNameFor(payload.senderId);
+        title = payload.channelId === ROOM_CHANNEL_ID && mentionsPerson(payload.text, roomState.you?.name)
+          ? `${from} mentioned you in #team`
+          : `#${channelName} — ${from}`;
+      }
+      if (!title) return;
+      const body = String(payload.text || '').replace(/\s+/g, ' ').slice(0, 180);
+      // `open`: the conversation a tap on the notification leads to.
+      const open = payload.channelId ? { channelId: payload.channelId } : { colleagueId: payload.colleagueId, sessionId: payload.sessionId || DEFAULT_SESSION_ID };
+      pusher.notify({ title, body, tag: payload.channelId || payload.colleagueId, open }).catch(() => {});
     };
 
     // A conversation's context reset or cleared chat takes its sub-agent
@@ -1043,32 +1145,56 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
     // not in this instance's store. A colleague answers there only when
     // this instance's own person @mentions her, and then on this person's
     // Claude account; her reply goes to the room labelled as hers.
-    const roomState = { enabled: Boolean(socketPath && room), connected: false, you: null, members: [], messages: [] };
+    const roomState = { enabled: Boolean(socketPath && room), connected: false, you: null, members: [], messages: [], questions: [] };
+    // This person's choice of which team room messages notify them, kept in
+    // ~/.hire-juno like the other per-person settings of a socket server.
+    const teamNotifyFile = joinPath(homedir(), '.hire-juno', 'team-notifications.json');
+    let teamNotify = 'all';
+    try {
+      const saved = JSON.parse(readFileSync(teamNotifyFile, 'utf8')).mode;
+      if (TEAM_NOTIFY_MODES.includes(saved)) teamNotify = saved;
+    } catch {
+      // not chosen yet
+    }
     const roomChannel = () => ({
       id: ROOM_CHANNEL_ID,
       name: 'team',
       memberIds: readRoster(targetDir).map((c) => c.id),
-      room: { connected: roomState.connected, members: roomState.members },
+      room: { connected: roomState.connected, members: roomState.members, you: roomState.you, notify: teamNotify },
     });
     const broadcastRoomMessage = (message) => {
       const known = new Set(readRoster(targetDir).map((c) => c.id));
       const row = roomRow(message, roomState.you?.id, known);
-      broadcast({ channelId: ROOM_CHANNEL_ID, type: 'channel_message', senderId: row.sender_id, senderName: row.sender_name, text: row.text });
+      // `notify`: whether this message notifies this person (their setting).
+      const notify = shouldNotify(teamNotify, message, roomState.you);
+      broadcast({ channelId: ROOM_CHANNEL_ID, type: 'channel_message', senderId: row.sender_id, senderName: row.sender_name, text: row.text, artifact: row.artifact, ...(row.attachments ? { attachments: row.attachments } : {}), notify });
     };
     const roomConnection = roomState.enabled
       ? connectRoom({
           socketPath: room.socketPath,
           tokenFile: room.tokenFile,
-          onWelcome: ({ you, members, messages }) => {
+          onWelcome: ({ you, members, messages, questions = [] }) => {
+            roomState.questions = questions;
+            broadcast({ type: 'open_questions', questions });
             roomState.you = you;
             roomState.members = members;
             roomState.messages = messages;
-            broadcast({ type: 'room_state', connected: true, members });
+            // `synced`: the room's history is here now, tabs can load it.
+            broadcast({ type: 'room_state', connected: true, members, you, synced: true });
           },
           onMessage: (message) => {
             roomState.messages.push(message);
             if (roomState.messages.length > 500) roomState.messages.splice(0, roomState.messages.length - 500);
             broadcastRoomMessage(message);
+          },
+          onSignal: (from, data) => broadcast({ type: 'call_signal', from, data }),
+          onQuestions: (questions) => {
+            roomState.questions = questions;
+            broadcast({ type: 'open_questions', questions });
+          },
+          onCleared: () => {
+            roomState.messages = [];
+            broadcast({ type: 'chat_cleared', channelId: ROOM_CHANNEL_ID });
           },
           onState: (connected) => {
             roomState.connected = connected;
@@ -1080,13 +1206,23 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
     // The person's own message in the room: posted there (it comes back as
     // the room's echo, which is what the tabs show), then every colleague it
     // @mentions answers from this instance.
-    const postToRoom = async (text) => {
-      if (!roomConnection?.post(text)) {
+    // `replyTo`: the colleague whose message this answers (she answers then,
+    // no @ needed); `reaction`: a quick reaction key (see reactions.js).
+    // `attachments`: pictures as the browser sends them ({ name, mimeType,
+    // data }); the room keeps them, mentioned colleagues get them too.
+    const postToRoom = async (text, { replyTo = null, reaction = null, attachments = [] } = {}) => {
+      // Waits for the room's echo: the person's message reaches the tabs
+      // before a colleague starts typing, else it would look like it was
+      // written during her answer (and be shown below it, as waiting).
+      if (!roomConnection || !(await roomConnection.postAndWait(text, null, attachments))) {
         broadcast({ channelId: ROOM_CHANNEL_ID, type: 'channel_message', senderId: 'system', text: 'The team room is not reachable right now; the message was not sent.' });
         return;
       }
       const roster = readRoster(targetDir);
-      for (const colleagueId of roomMentions(text, roster)) {
+      const targets = roomMentions(text, roster);
+      if (replyTo && roster.some((c) => c.id === replyTo) && !targets.includes(replyTo)) targets.push(replyTo);
+      const hint = reactionHint(reaction);
+      for (const colleagueId of targets) {
         if (handovers.has(adapterKey(colleagueId, DEFAULT_SESSION_ID))) continue;
         const colleague = roster.find((c) => c.id === colleagueId);
         const adapter = adapterFor(colleagueId, ROOM_CHANNEL_ID);
@@ -1122,10 +1258,11 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
           `${OPERATOR_NAME} mentioned you; your reply is posted to the room for everyone. ` +
           `Only answer what you were asked.]\n` +
           (context ? `${context}\n` : '') +
-          `[Team room] ${OPERATOR_NAME}: ${text}`;
+          `[Team room] ${OPERATOR_NAME}: ${text}` +
+          (hint ? `\n[${hint}]` : '');
         broadcast({ channelId: ROOM_CHANNEL_ID, colleagueId, type: 'channel_typing', active: true });
         try {
-          await adapter.sendMessage(prompt, []);
+          await adapter.sendMessage(prompt, attachments);
         } finally {
           broadcast({ channelId: ROOM_CHANNEL_ID, colleagueId, type: 'channel_typing', active: false });
         }
@@ -1141,29 +1278,38 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
       }
       wss.handleUpgrade(req, socket, head, (ws) => {
         connections.add(ws);
+        ws.lastPong = Date.now();
+        ws.lastSeen = Date.now();
+        ws.on('pong', () => { ws.lastPong = Date.now(); });
         ws.on('close', () => connections.delete(ws));
 
         // A tab that opens (or reloads) while a colleague is mid-turn only
         // hears the rest of the stream; what came before — thinking, reply
         // text so far, tool lines — is told to it once, here. Only for
         // turns still running (an adapter that is not busy has nothing live).
-        const turns = [];
-        for (const [key, adapter] of adapters) {
-          if (!adapter.busy) continue;
-          const thinking = pendingThinking.get(key);
-          const text = pendingText.get(key);
-          const trail = pendingTrails.get(key);
-          // Messages written during the turn that are still not read: the tab
-          // draws them as waiting again (with a Withdraw button if possible).
-          const waiting = waitingYou
-            .list(key)
-            .filter((e) => e.uuid)
-            .map((e) => ({ id: e.uuid, kind: e.kind, canCancel: Boolean(adapter.canCancel) }));
-          if (!thinking && !text && !trail?.length && !waiting.length) continue;
-          const [colleagueId, sessionId] = key.split('::');
-          turns.push({ colleagueId, sessionId, thinking, text, trail, waiting });
-        }
-        if (turns.length) ws.send(JSON.stringify({ type: 'live_state', turns }));
+        // Sent always, also empty: it is the whole truth about running turns,
+        // and the tab clears what is no longer running. Asked for again when
+        // a tab comes back into view ('get_live_state').
+        const sendLiveState = () => {
+          const turns = [];
+          for (const [key, adapter] of adapters) {
+            if (!adapter.busy) continue;
+            const thinking = pendingThinking.get(key);
+            const text = pendingText.get(key);
+            const trail = pendingTrails.get(key);
+            // Messages written during the turn that are still not read: the tab
+            // draws them as waiting again (with a Withdraw button if possible).
+            const waiting = waitingYou
+              .list(key)
+              .filter((e) => e.uuid)
+              .map((e) => ({ id: e.uuid, kind: e.kind, canCancel: Boolean(adapter.canCancel) }));
+            if (!thinking && !text && !trail?.length && !waiting.length) continue;
+            const [colleagueId, sessionId] = key.split('::');
+            turns.push({ colleagueId, sessionId, thinking, text, trail, waiting });
+          }
+          ws.send(JSON.stringify({ type: 'live_state', turns }));
+        };
+        sendLiveState();
 
         // Bound on the adapter itself, not passed into each
         // sendMessage() call — see agentAdapter.js. A colleague can run
@@ -1539,6 +1685,74 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
             return;
           }
 
+          if (payload.type === 'set_team_notify') {
+            if (!TEAM_NOTIFY_MODES.includes(payload.mode)) return;
+            teamNotify = payload.mode;
+            try {
+              writeFileSync(teamNotifyFile, JSON.stringify({ mode: teamNotify }) + '\n', { mode: 0o600 });
+            } catch (err) {
+              console.error(`Could not save the notification setting: ${err.message}`);
+            }
+            broadcast({ type: 'team_notify', mode: teamNotify });
+            return;
+          }
+
+          if (payload.type === 'question_add' || payload.type === 'question_done') {
+            roomConnection?.send({ type: payload.type, text: payload.text, source: payload.source, id: payload.id });
+            return;
+          }
+
+          if (payload.type === 'room_artifact') {
+            if (roomConnection && typeof payload.title === 'string' && typeof payload.content === 'string') {
+              roomConnection.postArtifact(payload.kind, payload.title, payload.content);
+            }
+            return;
+          }
+
+          if (payload.type === 'call_signal') {
+            if (roomConnection && typeof payload.to === 'string' && payload.data && typeof payload.data === 'object') {
+              roomConnection.signal(payload.to, payload.data);
+              // The room does not send a signal back to the connection it came
+              // from, so this person's other tabs (a phone and a laptop) get
+              // it from here.
+              const me = roomState.you?.id;
+              if (me && (payload.to === '*' || payload.to === me)) {
+                const json = JSON.stringify({ type: 'call_signal', from: me, data: payload.data });
+                for (const conn of connections) {
+                  if (conn !== ws && conn.readyState === conn.OPEN) conn.send(json);
+                }
+              }
+            }
+            return;
+          }
+
+          if (payload.type === 'visibility') {
+            ws.visible = payload.visible !== false;
+            ws.lastSeen = Date.now();
+            return;
+          }
+
+          if (payload.type === 'ping') {
+            ws.send(JSON.stringify({ type: 'pong' }));
+            return;
+          }
+
+          if (payload.type === 'get_live_state') {
+            sendLiveState();
+            return;
+          }
+
+          if (payload.type === 'push_subscribe' || payload.type === 'push_unsubscribe') {
+            if (!pusher) return;
+            if (payload.type === 'push_subscribe') {
+              const ok = pusher.subscribe(payload.subscription);
+              ws.send(JSON.stringify({ type: ok ? 'push_subscribed' : 'push_failed', message: ok ? undefined : 'The browser sent no usable subscription.' }));
+            } else if (typeof payload.endpoint === 'string') {
+              pusher.unsubscribe(payload.endpoint);
+            }
+            return;
+          }
+
           if (payload.type === 'set_claude_token' || payload.type === 'remove_claude_token') {
             if (!socketPath) {
               broadcast({ type: 'claude_token_failed', message: 'Sign in to Claude Code in a terminal on this computer instead.' });
@@ -1815,6 +2029,10 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
             // gated this behind its own two-step "Clear chat" button
             // (see conv-settings modal in app.js); a second native
             // confirm() would just be a second copy of the same gate.
+            if (payload.channelId === ROOM_CHANNEL_ID && roomConnection) {
+              roomConnection.clear();
+              return;
+            }
             if (payload.channelId) {
               const channel = channelsById.get(payload.channelId);
               if (!channel) return;
@@ -1943,7 +2161,11 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
 
           if (payload.type === 'channel_message' && payload.channelId === ROOM_CHANNEL_ID && roomState.enabled) {
             const text = typeof payload.text === 'string' ? payload.text.trim() : '';
-            if (text) await postToRoom(text);
+            const replyTo = typeof payload.replyTo === 'string' ? payload.replyTo : null;
+            const attachments = (Array.isArray(payload.attachments) ? payload.attachments : [])
+              .filter((a) => a && ATTACHMENT_MIME_TYPES.includes(a.mimeType) && typeof a.data === 'string')
+              .map((a) => ({ name: typeof a.name === 'string' ? a.name : 'image', mimeType: a.mimeType, data: a.data }));
+            if (text || attachments.length) await postToRoom(text, { replyTo, reaction: payload.reaction, attachments });
             return;
           }
 
@@ -2006,7 +2228,9 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
               canCancel: Boolean(adapter.canCancel),
             });
           }
-          await adapter.sendMessage(text, attachments, { uuid, ...(kind === 'queue' ? { priority: 'later' } : {}) });
+          // A reaction's meaning goes to her with it; the transcript keeps the emoji.
+          const hint = reactionHint(payload.reaction);
+          await adapter.sendMessage(hint ? `${text}\n\n[${hint}]` : text, attachments, { uuid, ...(kind === 'queue' ? { priority: 'later' } : {}) });
         });
       });
     });
@@ -2144,6 +2368,7 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
       // there anyway, kept up by the still-running `claude` child).
       if (runningServers.get(runningKey)?.server === server) runningServers.delete(runningKey);
       roomConnection?.close();
+      if (heartbeat) clearInterval(heartbeat);
       for (const adapter of adapters.values()) adapter.close?.();
       store.close();
     });

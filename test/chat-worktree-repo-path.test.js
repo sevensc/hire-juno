@@ -82,12 +82,12 @@ test('activateWorktree with repoPath branches from that repo and saves it', () =
   const { repo, other, store, rows, done } = setup();
   try {
     const result = activateWorktree({
-      store, workforceId: 'wf1', repoDir: repo, repoPath: other, colleagueId: 'mila', sessionId: 's1',
+      store, workforceId: 'wf1', repoDir: repo, repoPath: other, colleagueId: 'kim', sessionId: 's1',
     });
     assert.equal(result.ok, true);
     assert.equal(result.repoPath, other);
     assert.ok(existsSync(join(result.path, 'b.txt')));
-    assert.equal(rows.get('mila::s1').repoPath, other);
+    assert.equal(rows.get('kim::s1').repoPath, other);
     const listed = execFileSync('git', ['worktree', 'list', '--porcelain'], { cwd: other, encoding: 'utf8' });
     assert.ok(listed.includes(`worktree ${result.path}`));
     assert.equal(worktreeIsStartRepo(result.repoPath, repo), false);
@@ -99,7 +99,7 @@ test('activateWorktree with repoPath branches from that repo and saves it', () =
 test('activateWorktree with a bad repoPath fails and saves nothing', () => {
   const { repo, plain, store, rows, done } = setup();
   try {
-    const args = { store, workforceId: 'wf1', repoDir: repo, colleagueId: 'mila', sessionId: 's1' };
+    const args = { store, workforceId: 'wf1', repoDir: repo, colleagueId: 'kim', sessionId: 's1' };
     assert.match(activateWorktree({ ...args, repoPath: '/etc' }).message, /not a git repository/);
     assert.match(activateWorktree({ ...args, repoPath: plain }).message, /not a git repository/);
     assert.match(activateWorktree({ ...args, repoPath: 'rel' }).message, /absolute/);
@@ -113,7 +113,7 @@ test('with repoPath the workforce folder need not be a repo', () => {
   const { other, plain, store, done } = setup();
   try {
     const result = activateWorktree({
-      store, workforceId: 'wf1', repoDir: plain, repoPath: other, colleagueId: 'mila', sessionId: 's1',
+      store, workforceId: 'wf1', repoDir: plain, repoPath: other, colleagueId: 'kim', sessionId: 's1',
     });
     assert.equal(result.ok, true);
   } finally {
@@ -146,9 +146,9 @@ test('the tool result says her working directory stays for another repo', () => 
 test('the system prompt names the worktree of another repo and keeps cwd', () => {
   const { repo, done } = setup();
   try {
-    const colleague = { id: 'mila', name: 'Mila', adapter: ['claude'] };
+    const colleague = { id: 'kim', name: 'Kim', adapter: ['claude'] };
     const adapter = createAdapter(colleague, {
-      targetDir: repo, cwd: repo, worktree: { path: '/w/x-1', branch: 'chat/mila-s1' },
+      targetDir: repo, cwd: repo, worktree: { path: '/w/x-1', branch: 'chat/kim-s1' },
     });
     assert.equal(adapter.cwd, repo);
     assert.match(adapter.systemPrompt, /\/w\/x-1/);
@@ -159,12 +159,12 @@ test('the system prompt names the worktree of another repo and keeps cwd', () =>
 
 test('the store keeps repo_path with the worktree, null when none is given', () => {
   const store = openStore({});
-  store.setWorktree('mila', 's1', '/w/a', 'chat/a', '/r/one');
-  store.setWorktree('mila', 's2', '/w/b', 'chat/b');
-  assert.deepEqual(store.getWorktree('mila', 's1'), { path: '/w/a', branch: 'chat/a', repoPath: '/r/one' });
-  assert.equal(store.getWorktree('mila', 's2').repoPath, null);
-  store.setWorktree('mila', 's1', '/w/c', 'chat/c', '/r/two'); // still one row per conversation
-  assert.equal(store.getWorktree('mila', 's1').repoPath, '/r/two');
+  store.setWorktree('kim', 's1', '/w/a', 'chat/a', '/r/one');
+  store.setWorktree('kim', 's2', '/w/b', 'chat/b');
+  assert.deepEqual(store.getWorktree('kim', 's1'), { path: '/w/a', branch: 'chat/a', repoPath: '/r/one' });
+  assert.equal(store.getWorktree('kim', 's2').repoPath, null);
+  store.setWorktree('kim', 's1', '/w/c', 'chat/c', '/r/two'); // still one row per conversation
+  assert.equal(store.getWorktree('kim', 's1').repoPath, '/r/two');
 });
 
 test('a database from before repo_path gets the column and keeps its rows', () => {
@@ -177,13 +177,13 @@ test('a database from before repo_path gets the column and keeps its rows', () =
       branch TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
       PRIMARY KEY (colleague_id, session_id))`);
     old.prepare('INSERT INTO conversation_worktrees (colleague_id, session_id, path, branch) VALUES (?, ?, ?, ?)').run(
-      'mila', 's1', '/w/a', 'chat/a'
+      'kim', 's1', '/w/a', 'chat/a'
     );
     old.close();
     const store = openStore({ workforceId: 'acme', baseDir: dir });
-    assert.deepEqual(store.getWorktree('mila', 's1'), { path: '/w/a', branch: 'chat/a', repoPath: null });
-    store.setWorktree('mila', 's2', '/w/b', 'chat/b', '/r');
-    assert.equal(store.getWorktree('mila', 's2').repoPath, '/r');
+    assert.deepEqual(store.getWorktree('kim', 's1'), { path: '/w/a', branch: 'chat/a', repoPath: null });
+    store.setWorktree('kim', 's2', '/w/b', 'chat/b', '/r');
+    assert.equal(store.getWorktree('kim', 's2').repoPath, '/r');
     store.close?.();
     openStore({ workforceId: 'acme', baseDir: dir }).close?.(); // reopening is fine
   } finally {
