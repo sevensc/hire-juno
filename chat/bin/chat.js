@@ -92,7 +92,17 @@ if ((person || contextFlag) && !socketPath) {
 }
 const contextFile = contextFlag ? resolve(contextFlag) : null;
 
-runChatServer({ targetDir, lan, port, socketPath, person: person || '', contextFile, openBrowser: !socketPath }).catch((err) => {
+// `--room-socket <path> --room-token-file <path>`: connect to a team room
+// (hire-juno-room) and show it as the channel #team. Socket servers only.
+const roomSocket = flagValue('--room-socket');
+const roomTokenFile = flagValue('--room-token-file');
+if ((roomSocket || roomTokenFile) && !(roomSocket && roomTokenFile && socketPath)) {
+  console.error('--room-socket and --room-token-file go together, and only with --socket.');
+  process.exit(1);
+}
+const room = roomSocket ? { socketPath: resolve(roomSocket), tokenFile: resolve(roomTokenFile) } : null;
+
+runChatServer({ targetDir, lan, port, socketPath, person: person || '', contextFile, room, openBrowser: !socketPath }).catch((err) => {
   if (port) {
     console.error(err.message);
     process.exitCode = 1;

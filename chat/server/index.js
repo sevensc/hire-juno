@@ -55,6 +55,8 @@ import { getOrCreateSession, saveSessionPort } from '../../shared/chatSessions.j
 import { portToRemember } from '../../shared/portFlag.js';
 import { cliSessionInfo, createHandovers, transferToTerminal } from './cliSession.js';
 import { loadToken, removeToken, saveToken } from './claudeToken.js';
+import { connectRoom } from './roomClient.js';
+import { ROOM_CHANNEL_ID, roomContextLines, roomMentions, roomRow } from './room.js';
 
 // One colleague can now have several independent, parallel
 // conversations running at once (e.g. one session per topic) — each is its own adapter
@@ -391,7 +393,9 @@ export async function listenOnSocket(server, socketPath) {
 // `contextFile`: on a socket server, a file whose text every colleague is given
 // about this particular server; read again for every new session, so an edit
 // applies without a restart.
-export function runChatServer({ targetDir = process.cwd(), openBrowser = true, onReady, lan = false, port: explicitPort = null, socketPath = null, person = '', contextFile = null } = {}) {
+// `room`: on a socket server, { socketPath, tokenFile } of the team room
+// (chat/room/server.js); it then shows as the channel ROOM_CHANNEL_ID.
+export function runChatServer({ targetDir = process.cwd(), openBrowser = true, onReady, lan = false, port: explicitPort = null, socketPath = null, person = '', contextFile = null, room = null } = {}) {
   const runningKey = resolvePath(targetDir);
   const running = runningServers.get(runningKey);
   if (running && !running.closing) {
@@ -828,7 +832,7 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
 
         if (req.method === 'GET' && route === 'api/channels') {
           res.writeHead(200, { 'Content-Type': 'application/json' }).end(
-            JSON.stringify([...channelsById.values()])
+            JSON.stringify([...(roomState.enabled ? [roomChannel()] : []), ...channelsById.values()])
           );
           return;
         }
@@ -914,6 +918,13 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
 
         if (req.method === 'GET' && route === 'api/channel-history') {
           const channelId = url.searchParams.get('channelId') || '';
+          if (channelId === ROOM_CHANNEL_ID && roomState.enabled) {
+            const known = new Set(readRoster(targetDir).map((c) => c.id));
+            res.writeHead(200, { 'Content-Type': 'application/json' }).end(
+              JSON.stringify(roomState.messages.map((m) => roomRow(m, roomState.you?.id, known)))
+            );
+            return;
+          }
           res.writeHead(200, { 'Content-Type': 'application/json' }).end(
             JSON.stringify(store.getChannelHistory(channelId))
           );
@@ -1025,6 +1036,100 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
       const ids = store.deleteSubagentThreadsOf(colleagueId, sessionId);
       for (const id of ids) pendingTrails.delete(`sub:${id}`);
       if (ids.length) broadcast({ type: 'subagent_removed', ids });
+    };
+
+    // The team room (socket servers only): the people of the workforce in
+    // one conversation, shown here as a channel. Messages live in the room,
+    // not in this instance's store. A colleague answers there only when
+    // this instance's own person @mentions her, and then on this person's
+    // Claude account; her reply goes to the room labelled as hers.
+    const roomState = { enabled: Boolean(socketPath && room), connected: false, you: null, members: [], messages: [] };
+    const roomChannel = () => ({
+      id: ROOM_CHANNEL_ID,
+      name: 'team',
+      memberIds: readRoster(targetDir).map((c) => c.id),
+      room: { connected: roomState.connected, members: roomState.members },
+    });
+    const broadcastRoomMessage = (message) => {
+      const known = new Set(readRoster(targetDir).map((c) => c.id));
+      const row = roomRow(message, roomState.you?.id, known);
+      broadcast({ channelId: ROOM_CHANNEL_ID, type: 'channel_message', senderId: row.sender_id, senderName: row.sender_name, text: row.text });
+    };
+    const roomConnection = roomState.enabled
+      ? connectRoom({
+          socketPath: room.socketPath,
+          tokenFile: room.tokenFile,
+          onWelcome: ({ you, members, messages }) => {
+            roomState.you = you;
+            roomState.members = members;
+            roomState.messages = messages;
+            broadcast({ type: 'room_state', connected: true, members });
+          },
+          onMessage: (message) => {
+            roomState.messages.push(message);
+            if (roomState.messages.length > 500) roomState.messages.splice(0, roomState.messages.length - 500);
+            broadcastRoomMessage(message);
+          },
+          onState: (connected) => {
+            roomState.connected = connected;
+            broadcast({ type: 'room_state', connected, members: roomState.members });
+          },
+        })
+      : null;
+
+    // The person's own message in the room: posted there (it comes back as
+    // the room's echo, which is what the tabs show), then every colleague it
+    // @mentions answers from this instance.
+    const postToRoom = async (text) => {
+      if (!roomConnection?.post(text)) {
+        broadcast({ channelId: ROOM_CHANNEL_ID, type: 'channel_message', senderId: 'system', text: 'The team room is not reachable right now; the message was not sent.' });
+        return;
+      }
+      const roster = readRoster(targetDir);
+      for (const colleagueId of roomMentions(text, roster)) {
+        if (handovers.has(adapterKey(colleagueId, DEFAULT_SESSION_ID))) continue;
+        const colleague = roster.find((c) => c.id === colleagueId);
+        const adapter = adapterFor(colleagueId, ROOM_CHANNEL_ID);
+        if (!adapter || !colleague) continue;
+        const key = adapterKey(colleagueId, ROOM_CHANNEL_ID);
+        adapter.onUpdate = (update) => {
+          if (update.type === 'limit_notice') {
+            broadcast({ channelId: ROOM_CHANNEL_ID, colleagueId, ...takeLimitNotice(update) });
+            return;
+          }
+          if (update.type === 'message') {
+            roomConnection.post(update.text, { id: colleague.id, name: colleague.name });
+            return;
+          }
+          if (update.type.startsWith('subagent_') || update.type === 'message_read') return;
+          recordStats(colleagueStats, key, update);
+          rememberStats(key, update);
+          broadcast({ channelId: ROOM_CHANNEL_ID, colleagueId, ...update });
+        };
+        adapter.onPermissionRequest = (request) => {
+          const via = permissions.decide(key, request.toolName);
+          if (via) return Promise.resolve({ allow: true, via });
+          return new Promise((resolve) => {
+            const requestId = randomUUID();
+            pendingPermissions.set(requestId, { resolve });
+            broadcast({ channelId: ROOM_CHANNEL_ID, colleagueId, type: 'permission_request', requestId, ...request });
+          });
+        };
+        const people = roomState.members.map((m) => m.name).join(', ');
+        const context = roomContextLines(roomState.messages.slice(-12, -1));
+        const prompt =
+          `[Team room — the shared group chat of the people here (${people}), not a private chat. ` +
+          `${OPERATOR_NAME} mentioned you; your reply is posted to the room for everyone. ` +
+          `Only answer what you were asked.]\n` +
+          (context ? `${context}\n` : '') +
+          `[Team room] ${OPERATOR_NAME}: ${text}`;
+        broadcast({ channelId: ROOM_CHANNEL_ID, colleagueId, type: 'channel_typing', active: true });
+        try {
+          await adapter.sendMessage(prompt, []);
+        } finally {
+          broadcast({ channelId: ROOM_CHANNEL_ID, colleagueId, type: 'channel_typing', active: false });
+        }
+      }
     };
 
     server.on('upgrade', (req, socket, head) => {
@@ -1836,6 +1941,12 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
             return;
           }
 
+          if (payload.type === 'channel_message' && payload.channelId === ROOM_CHANNEL_ID && roomState.enabled) {
+            const text = typeof payload.text === 'string' ? payload.text.trim() : '';
+            if (text) await postToRoom(text);
+            return;
+          }
+
           if (payload.type === 'channel_message') {
             const attachments = Array.isArray(payload.attachments) ? payload.attachments : [];
             await relayChannelMessage(payload.channelId, 'you', payload.text, 0, attachments);
@@ -2032,6 +2143,7 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
       // WebSocket closed, the HTTP server closed, and the process sat
       // there anyway, kept up by the still-running `claude` child).
       if (runningServers.get(runningKey)?.server === server) runningServers.delete(runningKey);
+      roomConnection?.close();
       for (const adapter of adapters.values()) adapter.close?.();
       store.close();
     });

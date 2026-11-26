@@ -1139,6 +1139,27 @@ async function renderConvSettingsTerminal({ reload = true } = {}) {
   convSettingsTerminalEl.append(hint, commandEl, status, error);
 }
 
+// Shares a video call in the team room: takes a meeting link (any https
+// address, e.g. a Google Meet link) and posts it, so everyone can join.
+function callButtonEl(channelId) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'pane-header__call';
+  button.title = 'Share a video call link';
+  button.setAttribute('aria-label', 'Share a video call link');
+  button.innerHTML = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="M16 10l6-3v10l-6-3z"/></svg>';
+  button.addEventListener('click', () => {
+    const link = (window.prompt('Link to the video call (e.g. Google Meet):') || '').trim();
+    if (!link) return;
+    if (!/^https:\/\/[^\s]+$/.test(link)) {
+      window.alert('Please paste a full https:// link.');
+      return;
+    }
+    socket.send(JSON.stringify({ type: 'channel_message', channelId, text: `Video call: ${link}`, attachments: [] }));
+  });
+  return button;
+}
+
 function renderPaneHeader() {
   paneHeaderEl.innerHTML = '';
   let hasContent = false;
@@ -1213,7 +1234,15 @@ function renderPaneHeader() {
     hasContent = true;
   } else {
     paneHeaderEl.classList.remove('pane-header--auto-mode');
-    if (activeChannelId) {
+    if (activeChannelId && channelsById.get(activeChannelId)?.room) {
+      // The team room: who is in it, and whether this chat reaches it.
+      const { connected, members = [] } = channelsById.get(activeChannelId).room;
+      const span = document.createElement('span');
+      span.className = 'pane-header__entry';
+      span.textContent = connected ? members.map((m) => m.name).join(', ') || 'Team' : 'Team room not reachable';
+      entries.appendChild(span);
+      hasContent = true;
+    } else if (activeChannelId) {
       // A single summed value across all members — one line
       // per member (name + her own model/tokens/cost) crowded the header
       // in any channel with more than one or two people. A single total
@@ -1271,6 +1300,7 @@ function renderPaneHeader() {
       searchToggle.setAttribute('aria-expanded', 'true');
       openConvSearchPanel(searchToggle);
     });
+    if (activeChannelId && channelsById.get(activeChannelId)?.room) actions.appendChild(callButtonEl(activeChannelId));
     actions.appendChild(searchToggle);
 
     // Opens the conversation settings dialog, which holds the Permissions
@@ -2721,6 +2751,14 @@ const handleSocketMessage = (event) => {
     return;
   }
 
+  if (update.type === 'room_state') {
+    for (const channel of channelsById.values()) {
+      if (channel.room) channel.room = { connected: update.connected, members: update.members || channel.room.members };
+    }
+    if (activeChannelId && channelsById.get(activeChannelId)?.room) renderPaneHeader();
+    return;
+  }
+
   if (update.type === 'claude_token_status') {
     renderClaudeToken(update.claudeToken);
     return;
@@ -2835,6 +2873,7 @@ const handleSocketMessage = (event) => {
     // through the whole relay/dispatch path just for this.
     channelMessages.get(update.channelId).push({
       senderId: update.senderId,
+      senderName: update.senderName || null,
       text,
       attachments,
       createdAt: new Date().toISOString(),
@@ -2855,7 +2894,7 @@ const handleSocketMessage = (event) => {
     if (isColleagueMessage && !(document.hasFocus() && update.channelId === activeChannelId)) {
       const channel = channelsById.get(update.channelId);
       const sender = colleaguesById.get(update.senderId);
-      notify(`#${channel?.name || 'channel'} — ${sender?.name || update.senderId}`, text, () => {
+      notify(`#${channel?.name || 'channel'} — ${update.senderName || sender?.name || update.senderId}`, text, () => {
         if (channel) selectChannel(channel);
       });
     }
@@ -3746,13 +3785,16 @@ function renderChannelMessages({ forceScrollToBottom = false } = {}) {
   const row = (item, i) => {
     const isYou = item.senderId === 'you';
     const isSystem = item.senderId === 'system';
-    const sender = isYou || isSystem ? null : colleaguesById.get(item.senderId);
+    // A person in the team room is no colleague: an initial instead of a photo.
+    const sender = isYou || isSystem
+      ? null
+      : colleaguesById.get(item.senderId) || (item.senderName ? { id: item.senderId, name: item.senderName, hasAvatar: false } : null);
     const role = isYou ? 'you' : isSystem ? 'system' : 'colleague';
     return html`<${MessageRow}
       key=${i}
       role=${role}
       avatarColleague=${sender}
-      nameTag=${sender?.name || null}
+      nameTag=${item.senderName || sender?.name || null}
       item=${item}
       toolText=${item.text}
       onToggle=${() => {
@@ -3829,7 +3871,9 @@ async function selectChannel(channel) {
   input.disabled = false;
   sendButton.disabled = false;
   attachButtonEl.style.display = '';
-  input.placeholder = `Message #${channel.name}… (@name/@all to address someone directly, or just ask)`;
+  input.placeholder = channel.room
+    ? `Message #${channel.name}… (@name brings a colleague in)`
+    : `Message #${channel.name}… (@name/@all to address someone directly, or just ask)`;
   input.value = drafts.get(channelConvKey(channel.id)) || '';
   autoResizeComposer();
 
@@ -3855,6 +3899,9 @@ async function loadChannelHistory(channelId, { force = false } = {}) {
     channelId,
     rows.map((row) => ({
       senderId: row.sender_id,
+      // Set for people and for colleagues answering for someone else in the
+      // team room (see server/room.js); a plain channel has none.
+      senderName: row.sender_name || null,
       text: row.text,
       createdAt: row.created_at,
       attachments: storedAttachments(row.attachments),
