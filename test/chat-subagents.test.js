@@ -74,10 +74,10 @@ test('a background sub-agent notification with the placeholder ends with the han
 
 test('a SendMessage to a sub-agent lands in that sub-agent\'s window, found through the agent id of its launch', () => {
   const t = new SubagentTracker();
-  const send = { type: 'tool_use', id: 's1', name: 'SendMessage', input: { to: 'a123', message: 'Go on, Sven agreed.', summary: 'go on' } };
+  const send = { type: 'tool_use', id: 's1', name: 'SendMessage', input: { to: 'a123', message: 'Go on, the user agreed.', summary: 'go on' } };
   assert.equal(t.messageTo(send), null); // launch not seen yet
   t.rememberLaunch('toolu_1', { isAsync: true, status: 'async_launched', agentId: 'a123' });
-  assert.deepEqual(t.messageTo(send), { id: 'toolu_1', text: 'Go on, Sven agreed.' });
+  assert.deepEqual(t.messageTo(send), { id: 'toolu_1', text: 'Go on, the user agreed.' });
 });
 
 test('SendMessage to someone else, without text, or other tools are not sub-agent messages', () => {

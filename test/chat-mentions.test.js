@@ -5,7 +5,7 @@ import { extractMentions, extractVocativeAddresses } from '../chat/server/mentio
 
 test('extractMentions finds member ids mentioned with @, case-insensitively', () => {
   assert.deepEqual(
-    extractMentions('Kannst du @Nora und @remy fragen?', ['nora', 'remy', 'ada'], 'you'),
+    extractMentions('Kannst du @Nora und @remy fragen?', ['nora', 'remy', 'una'], 'you'),
     ['nora', 'remy']
   );
 });
@@ -27,54 +27,54 @@ test('extractMentions returns an empty array when there are no @ mentions at all
 });
 
 test('extractMentions expands @all to every other member', () => {
-  assert.deepEqual(extractMentions('@all please chime in', ['nora', 'remy', 'ada'], 'you'), ['nora', 'remy', 'ada']);
+  assert.deepEqual(extractMentions('@all please chime in', ['nora', 'remy', 'una'], 'you'), ['nora', 'remy', 'una']);
 });
 
 test('extractMentions expands @everyone the same way as @all', () => {
-  assert.deepEqual(extractMentions('@everyone please chime in', ['nora', 'remy', 'ada'], 'you'), ['nora', 'remy', 'ada']);
+  assert.deepEqual(extractMentions('@everyone please chime in', ['nora', 'remy', 'una'], 'you'), ['nora', 'remy', 'una']);
 });
 
 test('extractMentions excludes the sender herself from an @all expansion', () => {
-  assert.deepEqual(extractMentions('@all please chime in', ['nora', 'remy', 'ada'], 'nora'), ['remy', 'ada']);
+  assert.deepEqual(extractMentions('@all please chime in', ['nora', 'remy', 'una'], 'nora'), ['remy', 'una']);
 });
 
 test('extractMentions treats @all alongside specific @names as just @all (no duplicate dispatch)', () => {
-  assert.deepEqual(extractMentions('@nora @all', ['nora', 'remy', 'ada'], 'you'), ['nora', 'remy', 'ada']);
+  assert.deepEqual(extractMentions('@nora @all', ['nora', 'remy', 'una'], 'you'), ['nora', 'remy', 'una']);
 });
 
-const NAMES = new Map([['rami', 'rami'], ['noran', 'noran'], ['jo', 'jo']]);
+const NAMES = new Map([['kim', 'kim'], ['noran', 'noran'], ['jo', 'jo']]);
 
 test('extractVocativeAddresses recognizes a plain name addressed at the start of a paragraph, em-dash style', () => {
   assert.deepEqual(
-    extractVocativeAddresses('Rami — du hattest architektonischen Blick angeboten, genau jetzt wär der Moment.', NAMES, ['rami', 'noran'], 'noran'),
-    ['rami']
+    extractVocativeAddresses('Kim — du hattest architektonischen Blick angeboten, genau jetzt wär der Moment.', NAMES, ['kim', 'noran'], 'noran'),
+    ['kim']
   );
 });
 
 test('extractVocativeAddresses also recognizes comma and colon as the address punctuation', () => {
-  assert.deepEqual(extractVocativeAddresses('Rami, kannst du kurz schauen?', NAMES, ['rami', 'noran'], 'noran'), ['rami']);
-  assert.deepEqual(extractVocativeAddresses('Rami: kurze Frage.', NAMES, ['rami', 'noran'], 'noran'), ['rami']);
+  assert.deepEqual(extractVocativeAddresses('Kim, kannst du kurz schauen?', NAMES, ['kim', 'noran'], 'noran'), ['kim']);
+  assert.deepEqual(extractVocativeAddresses('Kim: kurze Frage.', NAMES, ['kim', 'noran'], 'noran'), ['kim']);
 });
 
 test('extractVocativeAddresses ignores a name mentioned in passing, mid-sentence', () => {
-  assert.deepEqual(extractVocativeAddresses('Das hat schon Rami geprüft, alles gut.', NAMES, ['rami', 'noran'], 'noran'), []);
+  assert.deepEqual(extractVocativeAddresses('Das hat schon Kim geprüft, alles gut.', NAMES, ['kim', 'noran'], 'noran'), []);
 });
 
 test('extractVocativeAddresses ignores a name at line start with no address punctuation after it', () => {
-  assert.deepEqual(extractVocativeAddresses('Rami ist gerade nicht online.', NAMES, ['rami', 'noran'], 'noran'), []);
+  assert.deepEqual(extractVocativeAddresses('Kim ist gerade nicht online.', NAMES, ['kim', 'noran'], 'noran'), []);
 });
 
 test('extractVocativeAddresses ignores someone who is not a channel member', () => {
-  assert.deepEqual(extractVocativeAddresses('Jo — kurze Frage.', NAMES, ['rami', 'noran'], 'noran'), []);
+  assert.deepEqual(extractVocativeAddresses('Jo — kurze Frage.', NAMES, ['kim', 'noran'], 'noran'), []);
 });
 
 test('extractVocativeAddresses excludes the sender addressing herself', () => {
-  assert.deepEqual(extractVocativeAddresses('Rami — nur laut gedacht.', NAMES, ['rami', 'noran'], 'rami'), []);
+  assert.deepEqual(extractVocativeAddresses('Kim — nur laut gedacht.', NAMES, ['kim', 'noran'], 'kim'), []);
 });
 
 test('extractVocativeAddresses is case-insensitive and matches across multiple paragraphs, de-duplicated', () => {
   assert.deepEqual(
-    extractVocativeAddresses('RAMI — erster Absatz.\n\nrami, zweiter Absatz auch an dich.', NAMES, ['rami', 'noran'], 'noran'),
-    ['rami']
+    extractVocativeAddresses('KIM — erster Absatz.\n\nrami, zweiter Absatz auch an dich.', NAMES, ['kim', 'noran'], 'noran'),
+    ['kim']
   );
 });

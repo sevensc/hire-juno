@@ -37,12 +37,12 @@ function setup() {
 test('activateWorktree creates the worktree, saves it and reports it', () => {
   const { repo, store, rows, done } = setup();
   try {
-    const result = activateWorktree({ store, workforceId: 'wf1', repoDir: repo, colleagueId: 'mila', sessionId: 's1' });
+    const result = activateWorktree({ store, workforceId: 'wf1', repoDir: repo, colleagueId: 'kim', sessionId: 's1' });
     assert.equal(result.ok, true);
     assert.equal(result.created, true);
-    assert.match(result.branch, /^chat\/mila-s1$/);
+    assert.match(result.branch, /^chat\/kim-s1$/);
     assert.ok(existsSync(join(result.path, 'a.txt')));
-    assert.deepEqual(rows.get('mila::s1'), { path: result.path, branch: result.branch, repoPath: repo });
+    assert.deepEqual(rows.get('kim::s1'), { path: result.path, branch: result.branch, repoPath: repo });
     assert.equal(result.repoPath, repo);
   } finally {
     done();
@@ -52,7 +52,7 @@ test('activateWorktree creates the worktree, saves it and reports it', () => {
 test('activateWorktree returns the existing worktree without creating another', () => {
   const { repo, store, done } = setup();
   try {
-    const args = { store, workforceId: 'wf1', repoDir: repo, colleagueId: 'mila', sessionId: 's1' };
+    const args = { store, workforceId: 'wf1', repoDir: repo, colleagueId: 'kim', sessionId: 's1' };
     const first = activateWorktree(args);
     const again = activateWorktree({ ...args, busy: true });
     assert.deepEqual(again, { ok: true, created: false, branch: first.branch, path: first.path, repoPath: repo });
@@ -64,7 +64,7 @@ test('activateWorktree returns the existing worktree without creating another', 
 test('activateWorktree says why it cannot', () => {
   const { base, repo, store, rows, done } = setup();
   try {
-    const args = { store, workforceId: 'wf1', repoDir: repo, colleagueId: 'mila', sessionId: 's1' };
+    const args = { store, workforceId: 'wf1', repoDir: repo, colleagueId: 'kim', sessionId: 's1' };
     assert.match(activateWorktree({ ...args, workforceId: undefined }).message, /workforce id/);
     const plain = join(base, 'plain');
     execFileSync('mkdir', [plain]);

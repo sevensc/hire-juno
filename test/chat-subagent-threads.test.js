@@ -80,7 +80,7 @@ test('the windows of one conversation go with its reset or cleared chat', () => 
   const store = openStore({});
   startThread(store, 'a', 'sam', 'default');
   startThread(store, 'b', 'sam', 's2');
-  startThread(store, 'c', 'ada', 'default');
+  startThread(store, 'c', 'una', 'default');
   assert.deepEqual(store.deleteSubagentThreadsOf('sam', 'default'), ['a']);
   assert.deepEqual(store.listSubagentThreads().map((t) => t.id).sort(), ['b', 'c']);
   assert.deepEqual(store.getHistory('sub:a'), []);
@@ -161,7 +161,7 @@ test('through the adapter: a later SendMessage to a launched sub-agent becomes s
     message: {
       content: [
         { type: 'tool_use', id: 's1', name: 'SendMessage', input: { to: 'agent42', message: 'Please go on.' } },
-        { type: 'tool_use', id: 's2', name: 'SendMessage', input: { to: 'romy', message: 'unrelated' } },
+        { type: 'tool_use', id: 's2', name: 'SendMessage', input: { to: 'remy', message: 'unrelated' } },
       ],
     },
   });

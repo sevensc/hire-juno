@@ -102,7 +102,17 @@ if ((roomSocket || roomTokenFile) && !(roomSocket && roomTokenFile && socketPath
 }
 const room = roomSocket ? { socketPath: resolve(roomSocket), tokenFile: resolve(roomTokenFile) } : null;
 
-runChatServer({ targetDir, lan, port, socketPath, person: person || '', contextFile, room, openBrowser: !socketPath }).catch((err) => {
+// `--turn-url <host:port> --turn-secret-file <path>`: a TURN server for
+// video calls in the team room. Only together with the room.
+const turnUrl = flagValue('--turn-url');
+const turnSecretFile = flagValue('--turn-secret-file');
+if ((turnUrl || turnSecretFile) && !(turnUrl && turnSecretFile && room)) {
+  console.error('--turn-url and --turn-secret-file go together, and only with --room-socket.');
+  process.exit(1);
+}
+const turn = turnUrl ? { url: turnUrl, secretFile: resolve(turnSecretFile) } : null;
+
+runChatServer({ targetDir, lan, port, socketPath, person: person || '', contextFile, room, turn, openBrowser: !socketPath }).catch((err) => {
   if (port) {
     console.error(err.message);
     process.exitCode = 1;

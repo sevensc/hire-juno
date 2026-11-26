@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import WebSocket from 'ws';
 
 import { hashToken, memberForToken, runRoomServer } from '../chat/room/server.js';
-import { roomContextLines, roomMentions, roomRow } from '../chat/server/room.js';
+import { mentionsPerson, personHandle, roomContextLines, roomMentions, roomRow, shouldNotify } from '../chat/server/room.js';
 
 const CHAT_BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'chat', 'bin', 'chat.js');
 
@@ -42,19 +42,19 @@ function client(socketPath, token) {
 }
 
 test('room helpers: explicit @names only, rows per sender kind, context lines', () => {
-  const roster = [{ id: 'rami', name: 'Rami' }, { id: 'vera', name: 'Vera' }];
-  assert.deepEqual(roomMentions('@Rami and @vera, also @rami again', roster), ['rami', 'vera']);
+  const roster = [{ id: 'kim', name: 'Kim' }, { id: 'ida', name: 'Ida' }];
+  assert.deepEqual(roomMentions('@Kim and @ida, also @kim again', roster), ['kim', 'ida']);
   assert.deepEqual(roomMentions('@all please look', roster), []);
-  const known = new Set(['rami']);
+  const known = new Set(['kim']);
   const human = { memberId: 'ben', memberName: 'Ben', agent: null, text: 'hi', createdAt: 't' };
-  assert.deepEqual(roomRow(human, 'ana', known), { text: 'hi', created_at: 't', attachments: null, sender_id: 'human:ben', sender_name: 'Ben' });
+  assert.deepEqual(roomRow(human, 'ana', known), { text: 'hi', created_at: 't', attachments: null, artifact: null, sender_id: 'human:ben', sender_name: 'Ben' });
   assert.equal(roomRow({ ...human, memberId: 'ana' }, 'ana', known).sender_id, 'you');
-  const agent = { ...human, agent: { id: 'rami', name: 'Rami' } };
-  assert.equal(roomRow(agent, 'ana', known).sender_id, 'rami');
-  assert.equal(roomRow(agent, 'ana', known).sender_name, 'Rami · for Ben');
-  assert.equal(roomRow({ ...agent, memberId: 'ana' }, 'ana', known).sender_name, 'Rami');
+  const agent = { ...human, agent: { id: 'kim', name: 'Kim' } };
+  assert.equal(roomRow(agent, 'ana', known).sender_id, 'kim');
+  assert.equal(roomRow(agent, 'ana', known).sender_name, 'Kim · for Ben');
+  assert.equal(roomRow({ ...agent, memberId: 'ana' }, 'ana', known).sender_name, 'Kim');
   assert.equal(roomRow({ ...agent, agent: { id: 'zed', name: 'Zed' } }, 'ana', known).sender_id, 'agent:zed');
-  assert.equal(roomContextLines([human, agent]), '[Team room] Ben: hi\n[Team room] Rami (for Ben): hi');
+  assert.equal(roomContextLines([human, agent]), '[Team room] Ben: hi\n[Team room] Kim (for Ben): hi');
 });
 
 test('the room only lets members in, by token, and posts are always labelled with the token\'s member', async () => {
@@ -80,9 +80,9 @@ test('the room only lets members in, by token, and posts are always labelled wit
     assert.equal(seenByBen.message.text, 'Hallo');
     await ana.next((m) => m.type === 'message');
 
-    ben.ws.send(JSON.stringify({ type: 'post', text: 'Antwort', agent: { id: 'rami', name: 'Rami' } }));
+    ben.ws.send(JSON.stringify({ type: 'post', text: 'Antwort', agent: { id: 'kim', name: 'Kim' } }));
     const agentPost = await ana.next((m) => m.type === 'message');
-    assert.deepEqual(agentPost.message.agent, { id: 'rami', name: 'Rami' });
+    assert.deepEqual(agentPost.message.agent, { id: 'kim', name: 'Kim' });
     assert.equal(agentPost.message.memberId, 'ben');
 
     ben.ws.send(JSON.stringify({ type: 'post', text: 'x', agent: { id: 'bad id!', name: 'X' } }));
@@ -117,8 +117,8 @@ test('a chat instance shows the room as #team and posts for its own person', asy
   const cfg = setupRoom(root);
   const server = await runRoomServer(cfg);
   const dir = join(root, 'workforce');
-  mkdirSync(join(dir, 'team', 'rami'), { recursive: true });
-  writeFileSync(join(dir, 'team', 'rami', 'profile.md'), '---\nname: Rami\nrole: Dev\nstatus: active\nadapter: [claude-code]\n---\n\nBody.\n');
+  mkdirSync(join(dir, 'team', 'kim'), { recursive: true });
+  writeFileSync(join(dir, 'team', 'kim', 'profile.md'), '---\nname: Kim\nrole: Dev\nstatus: active\nadapter: [claude-code]\n---\n\nBody.\n');
   writeFileSync(join(dir, 'CONSTITUTION.md'), '---\nworkforce: roomtest\n---\n');
   const tokenFile = join(root, 'ana.token');
   writeFileSync(tokenFile, cfg.members[0].token + '\n');
@@ -129,11 +129,13 @@ test('a chat instance shows the room as #team and posts for its own person', asy
   child.stdout.on('data', (d) => { output += d; });
   child.stderr.on('data', (d) => { output += d; });
   const exited = new Promise((resolve) => child.once('exit', resolve));
+  const openSockets = [];
   try {
     for (let i = 0; i < 100 && !output.includes('Chat listening on'); i++) await new Promise((r) => setTimeout(r, 100));
     assert.match(output, /Chat listening on/);
 
     const ben = client(cfg.socketPath, cfg.members[1].token);
+    openSockets.push(ben.ws);
     await ben.opened;
     await ben.next((m) => m.type === 'welcome');
     ben.ws.send(JSON.stringify({ type: 'post', text: 'Von Ben' }));
@@ -155,10 +157,25 @@ test('a chat instance shows the room as #team and posts for its own person', asy
       if (u.type === 'channel_message' && u.channelId === 'team-room') resolve(u);
     }));
     tab.send(JSON.stringify({ type: 'channel_message', channelId: 'team-room', text: 'Von Ana', attachments: [] }));
-    assert.deepEqual(await echo, { channelId: 'team-room', type: 'channel_message', senderId: 'you', senderName: null, text: 'Von Ana' });
+    assert.deepEqual(await echo, { channelId: 'team-room', type: 'channel_message', senderId: 'you', senderName: null, text: 'Von Ana', artifact: null, notify: false });
     const fromAna = await ben.next((m) => m.type === 'message');
     assert.equal(fromAna.message.memberId, 'ana');
     tab.close();
+
+    // A call signal from one of Ana's tabs reaches her other tab too (phone and laptop).
+    const tab1 = new WebSocket(`ws+unix://${chatSocket}:/ws`);
+    const tab2 = new WebSocket(`ws+unix://${chatSocket}:/ws`);
+    await Promise.all([tab1, tab2].map((t) => new Promise((resolve, reject) => { t.once('open', resolve); t.once('error', reject); })));
+    const onOtherTab = new Promise((resolve) => tab2.on('message', (raw) => {
+      const u = JSON.parse(raw);
+      if (u.type === 'call_signal') resolve(u);
+    }));
+    tab1.send(JSON.stringify({ type: 'call_signal', to: '*', data: { kind: 'join', tab: 'p1' } }));
+    assert.deepEqual(await onOtherTab, { type: 'call_signal', from: 'ana', data: { kind: 'join', tab: 'p1' } });
+    const atBen = await ben.next((m) => m.type === 'signal');
+    assert.deepEqual(atBen, { type: 'signal', from: 'ana', data: { kind: 'join', tab: 'p1' } });
+    tab1.close();
+    tab2.close();
 
     const history = await get(chatSocket, '/api/channel-history?channelId=team-room');
     assert.deepEqual(history.map((r) => [r.sender_id, r.text]), [['human:ben', 'Von Ben'], ['you', 'Von Ana']]);
@@ -166,6 +183,100 @@ test('a chat instance shows the room as #team and posts for its own person', asy
   } finally {
     child.kill('SIGTERM');
     await exited;
+    for (const ws of openSockets) ws.terminate();
+    server.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('people are mentioned by their handle, which never brings in a colleague', () => {
+  assert.equal(personHandle('Jürgen Müller-Lüdenscheidt'), 'jurgenmuller-ludenscheidt');
+  assert.equal(mentionsPerson('Kannst du mal schauen, @Lena?', 'Lena'), true);
+  assert.equal(mentionsPerson('@lenai meinte etwas anderes', 'Lena'), false);
+  assert.deepEqual(roomMentions('@lena und @kim', [{ id: 'kim', name: 'Kim' }]), ['kim']);
+});
+
+test('team notifications follow the person\'s choice', () => {
+  const you = { id: 'ana', name: 'Ana' };
+  const fromBen = { memberId: 'ben', memberName: 'Ben', agent: null, text: 'Hallo' };
+  const toAna = { ...fromBen, text: '@ana schau mal' };
+  const replyToAna = { ...fromBen, text: '> **Ana:** Frage\n\nAntwort' };
+  const ramiForAna = { memberId: 'ana', memberName: 'Ana', agent: { id: 'kim', name: 'Kim' }, text: 'Fertig' };
+  const ramiForBen = { ...ramiForAna, memberId: 'ben', memberName: 'Ben' };
+  const own = { memberId: 'ana', memberName: 'Ana', agent: null, text: 'Ich' };
+  const all = [fromBen, toAna, replyToAna, ramiForAna, ramiForBen];
+  const pick = (mode) => all.filter((m) => shouldNotify(mode, m, you));
+  assert.equal(shouldNotify('all', own, you), false);
+  assert.deepEqual(pick('all'), all);
+  assert.deepEqual(pick('mentions'), [toAna, replyToAna]);
+  assert.deepEqual(pick('people'), [fromBen, toAna, replyToAna]);
+  assert.deepEqual(pick('mine'), [ramiForAna]);
+});
+
+test('pictures in the room: kept with the message, fetched by id, only images and only a few', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hire-juno-room-'));
+  const cfg = setupRoom(root);
+  const server = await runRoomServer(cfg);
+  try {
+    const ana = client(cfg.socketPath, cfg.members[0].token);
+    const ben = client(cfg.socketPath, cfg.members[1].token);
+    await Promise.all([ana.opened, ben.opened]);
+    await Promise.all([ana.next((m) => m.type === 'welcome'), ben.next((m) => m.type === 'welcome')]);
+
+    const png = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex').toString('base64');
+    // A picture without text is a message too.
+    ana.ws.send(JSON.stringify({ type: 'post', text: '', attachments: [{ name: 'shot.png', mimeType: 'image/png', data: png }] }));
+    const seen = (await ben.next((m) => m.type === 'message')).message;
+    assert.equal(seen.text, '');
+    assert.equal(seen.attachments.length, 1);
+    const { id, name, mimeType, data } = seen.attachments[0];
+    assert.deepEqual({ name, mimeType, data }, { name: 'shot.png', mimeType: 'image/png', data: undefined });
+
+    ben.ws.send(JSON.stringify({ type: 'get_attachment', id, ref: 7 }));
+    const got = await ben.next((m) => m.type === 'attachment');
+    assert.equal(got.ref, 7);
+    assert.equal(got.attachment.data, png);
+    assert.equal(got.attachment.mimeType, 'image/png');
+
+    const row = roomRow(seen, 'ben', new Set());
+    assert.equal(row.attachments[0].url, `api/room-attachment?id=${id}`);
+    assert.equal(roomRow({ ...seen, attachments: [] }, 'ben', new Set()).attachments, null);
+
+    ana.ws.send(JSON.stringify({ type: 'post', text: 'x', attachments: [{ name: 'a.svg', mimeType: 'image/svg+xml', data: png }] }));
+    assert.match((await ana.next((m) => m.type === 'post_failed')).message, /pictures/);
+    const many = Array.from({ length: 5 }, () => ({ name: 'p.png', mimeType: 'image/png', data: png }));
+    ana.ws.send(JSON.stringify({ type: 'post', text: 'x', attachments: many }));
+    assert.match((await ana.next((m) => m.type === 'post_failed')).message, /pictures/);
+
+    // History carries the list, not the bytes.
+    const again = client(cfg.socketPath, cfg.members[1].token);
+    await again.opened;
+    const history = await again.next((m) => m.type === 'welcome');
+    assert.deepEqual(history.messages.at(-1).attachments, [{ id, name: 'shot.png', mimeType: 'image/png' }]);
+    for (const c of [ana, ben, again]) c.ws.close();
+  } finally {
+    server.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('postAndWait resolves only after the room\'s echo reached onMessage', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hire-juno-room-'));
+  const cfg = setupRoom(root);
+  const server = await runRoomServer(cfg);
+  const { connectRoom } = await import('../chat/server/roomClient.js');
+  const tokenFile = join(root, 'ana.token');
+  writeFileSync(tokenFile, cfg.members[0].token + '\n');
+  const seen = [];
+  let ready;
+  const welcomed = new Promise((r) => { ready = r; });
+  const conn = connectRoom({ socketPath: cfg.socketPath, tokenFile, onWelcome: () => ready(), onMessage: (m) => seen.push(m.text) });
+  try {
+    await welcomed;
+    assert.equal(await conn.postAndWait('Frage an @kim'), true);
+    assert.deepEqual(seen, ['Frage an @kim']);
+  } finally {
+    conn.close();
     server.close();
     rmSync(root, { recursive: true, force: true });
   }
