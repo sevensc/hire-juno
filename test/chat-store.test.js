@@ -270,3 +270,37 @@ test('finishOrphanedSubagentThreads marks running windows without a live owner s
     rmSync(baseDir, { recursive: true, force: true });
   }
 });
+
+test('an ended session no longer lists, its messages stay', () => {
+  const baseDir = mkdtempSync(join(tmpdir(), 'hire-juno-chat-store-'));
+  try {
+    const store = openStore({ workforceId: 'acme', baseDir });
+    store.createSession('s1', 'juno', 'First');
+    store.createSession('s2', 'juno', 'Second');
+    store.appendMessage('juno', 's1', 'you', 'hi');
+    assert.equal(store.closeSession('s1', 'juno'), true);
+    assert.equal(store.closeSession('s1', 'juno'), false, 'already ended');
+    assert.equal(store.closeSession('s2', 'other'), false, 'wrong colleague');
+    assert.deepEqual(store.listSessions('juno').map((s) => s.id), ['s2']);
+    assert.deepEqual(store.getHistory('juno', 's1').map((m) => m.text), ['hi']);
+    store.close();
+  } finally {
+    rmSync(baseDir, { recursive: true, force: true });
+  }
+});
+
+test('sdk sessions of ended sessions are free again', () => {
+  const baseDir = mkdtempSync(join(tmpdir(), 'hire-juno-chat-store-'));
+  try {
+    const store = openStore({ workforceId: 'acme', baseDir });
+    store.createSession('s1', 'juno', 'First');
+    store.saveAdapterSession('juno', 'default', 'sdk-main');
+    store.saveAdapterSession('juno', 's1', 'sdk-extra');
+    assert.deepEqual(store.allAdapterSessionIds().sort(), ['sdk-extra', 'sdk-main']);
+    store.closeSession('s1', 'juno');
+    assert.deepEqual(store.allAdapterSessionIds(), ['sdk-main']);
+    store.close();
+  } finally {
+    rmSync(baseDir, { recursive: true, force: true });
+  }
+});

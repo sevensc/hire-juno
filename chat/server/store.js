@@ -216,6 +216,13 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
     if (!/duplicate column/i.test(err.message)) throw err;
   }
 
+  // And for ending a session: its tab goes away, its rows stay (closed_at set).
+  try {
+    db.exec('ALTER TABLE sessions ADD COLUMN closed_at TEXT');
+  } catch (err) {
+    if (!/duplicate column/i.test(err.message)) throw err;
+  }
+
   const insertStmt = db.prepare(
     'INSERT INTO messages (colleague_id, session_id, role, text, trail) VALUES (?, ?, ?, ?, ?)'
   );
@@ -268,7 +275,10 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
   );
   const insertSessionStmt = db.prepare('INSERT INTO sessions (id, colleague_id, title) VALUES (?, ?, ?)');
   const listSessionsStmt = db.prepare(
-    'SELECT id, colleague_id, title, created_at FROM sessions WHERE colleague_id = ? ORDER BY created_at ASC'
+    'SELECT id, colleague_id, title, created_at FROM sessions WHERE colleague_id = ? AND closed_at IS NULL ORDER BY created_at ASC'
+  );
+  const closeSessionStmt = db.prepare(
+    "UPDATE sessions SET closed_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ? AND colleague_id = ? AND closed_at IS NULL"
   );
   const insertChannelStmt = db.prepare(
     'INSERT OR REPLACE INTO channels (id, name, member_ids) VALUES (?, ?, ?)'
@@ -287,6 +297,13 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
   );
   const getAdapterSessionStmt = db.prepare(
     'SELECT sdk_session_id FROM adapter_sessions WHERE colleague_id = ? AND session_id = ?'
+  );
+  // Conversations that are still open: the main ones (no sessions row) and
+  // extra sessions not ended.
+  const allAdapterSessionIdsStmt = db.prepare(
+    `SELECT a.sdk_session_id FROM adapter_sessions a
+     LEFT JOIN sessions s ON s.id = a.session_id AND s.colleague_id = a.colleague_id
+     WHERE s.closed_at IS NULL`
   );
   const saveStatsStmt = db.prepare(
     `INSERT INTO conversation_stats
@@ -441,6 +458,11 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
     createSession(id, colleagueId, title) {
       insertSessionStmt.run(id, colleagueId, title);
     },
+    // Ends an extra session: it no longer lists, its messages stay in the
+    // database. True if there was an open session to end.
+    closeSession(id, colleagueId) {
+      return closeSessionStmt.run(id, colleagueId).changes > 0;
+    },
     listSessions(colleagueId) {
       return listSessionsStmt.all(colleagueId).map((row) => ({
         id: row.id,
@@ -529,6 +551,10 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
     },
     getAdapterSession(colleagueId, sessionId) {
       return getAdapterSessionStmt.get(colleagueId, sessionId || DEFAULT_SESSION_ID)?.sdk_session_id ?? null;
+    },
+    // Every sdk session id an open conversation of the chat resumes.
+    allAdapterSessionIds() {
+      return allAdapterSessionIdsStmt.all().map((row) => row.sdk_session_id);
     },
     // The SDK-side counterpart to closing the in-memory adapter (see
     // index.js's 'reset_context' handler, which does both together

@@ -882,6 +882,7 @@ function renderTeamNotify() {
 }
 
 function openConvSettingsModal() {
+  takeOverDone.clear();
   renderTeamNotify();
   if (activeChannelId) {
     convSettingsTitleEl.textContent = `#${channelsById.get(activeChannelId)?.name || activeChannelId} settings`;
@@ -1176,6 +1177,88 @@ async function renderConvSettingsTerminal({ reload = true } = {}) {
     convSettingsTerminalEl.append(handed);
   }
   convSettingsTerminalEl.append(hint, commandEl, status, error);
+  convSettingsTerminalEl.append(takeOverEl(colleagueId, sessionId));
+}
+
+// "Take over a terminal session": lists the sessions started in the CLI in
+// this conversation's folder (newest first) and lets this conversation resume
+// one of them from the next message on.
+let takeOverForm = null; // { colleagueId, sessionId, status, error } while shown
+const takeOverDone = new Set(); // conversation keys taken over while the dialog is open
+const TAKEN_OVER = 'Taken over. Your next message here continues the terminal session; its earlier messages are not shown in this chat.';
+function takeOverEl(colleagueId, sessionId) {
+  const box = document.createElement('div');
+  box.className = 'cli-takeover';
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.textContent = 'Take over a terminal session…';
+  const list = document.createElement('ul');
+  list.className = 'cli-takeover__list';
+  list.hidden = true;
+  const status = document.createElement('p');
+  status.className = 'model-picker__hint';
+  status.setAttribute('role', 'status');
+  const error = document.createElement('p');
+  error.className = 'model-picker__error';
+  error.setAttribute('role', 'alert');
+  error.hidden = true;
+  takeOverForm = { colleagueId, sessionId, status, error, list };
+  if (takeOverDone.has(convKey(colleagueId, sessionId))) status.textContent = TAKEN_OVER;
+
+  const when = (iso) => {
+    const date = new Date(iso);
+    return Number.isNaN(date.getTime()) ? '' : date.toLocaleString([], { dateStyle: 'short', timeStyle: 'short' });
+  };
+  button.addEventListener('click', async () => {
+    takeOverDone.delete(convKey(colleagueId, sessionId));
+    error.hidden = true;
+    status.textContent = 'Looking for terminal sessions…';
+    let sessions = [];
+    try {
+      const res = await fetch(
+        `api/cli-sessions?colleagueId=${encodeURIComponent(colleagueId)}&sessionId=${encodeURIComponent(sessionId)}`
+      );
+      sessions = (await res.json()).sessions || [];
+    } catch {
+      sessions = [];
+    }
+    list.innerHTML = '';
+    if (!sessions.length) {
+      list.hidden = true;
+      status.textContent = 'No terminal session started in this folder.';
+      return;
+    }
+    status.textContent = 'From the next message on, this conversation continues the chosen session. Close it in the terminal first.';
+    for (const session of sessions) {
+      const li = document.createElement('li');
+      const pick = document.createElement('button');
+      pick.type = 'button';
+      pick.className = 'cli-takeover__item';
+      const title = document.createElement('span');
+      title.className = 'cli-takeover__title';
+      title.textContent = session.lastPrompt || session.firstPrompt;
+      const meta = document.createElement('span');
+      meta.className = 'cli-takeover__meta';
+      meta.textContent = [session.agent, when(session.updatedAt), session.firstPrompt && session.firstPrompt !== session.lastPrompt ? `started with: ${session.firstPrompt}` : '']
+        .filter(Boolean)
+        .join(' · ');
+      pick.append(title, meta);
+      pick.addEventListener('click', () => {
+        if (isTyping(convKey(colleagueId, sessionId))) {
+          error.textContent = 'She is still answering. Take the session over once she is done.';
+          error.hidden = false;
+          return;
+        }
+        status.textContent = 'Taking over…';
+        socket.send(JSON.stringify({ type: 'adopt_cli_session', colleagueId, sessionId, sdkSessionId: session.id }));
+      });
+      li.appendChild(pick);
+      list.appendChild(li);
+    }
+    list.hidden = false;
+  });
+  box.append(button, list, status, error);
+  return box;
 }
 
 // Shares a meeting link in the team room (any https address, e.g. a
@@ -1281,6 +1364,33 @@ function renderSessionTabs() {
     appendDraftBadge(tab, key);
     if (selected) activeTab = tab;
     else tab.addEventListener('click', () => selectColleague(colleague, session.id));
+    if (session.id !== DEFAULT_SESSION_ID) {
+      // The tab is itself a button, so the "end" control is a span with a
+      // button role next to the label rather than a nested <button>.
+      const end = document.createElement('span');
+      end.className = 'session-tab__end';
+      end.setAttribute('role', 'button');
+      end.tabIndex = 0;
+      const what = `End session "${session.title || 'Untitled session'}"`;
+      end.title = what;
+      end.setAttribute('aria-label', what);
+      end.textContent = '×';
+      const endIt = (event) => {
+        event.stopPropagation();
+        event.preventDefault();
+        if (isTyping(key)) {
+          window.alert('She is still answering. End the session once she is done.');
+          return;
+        }
+        if (!window.confirm(`${what}? The tab closes and her process stops. The messages stay stored.`)) return;
+        socket.send(JSON.stringify({ type: 'close_session', colleagueId: colleague.id, sessionId: session.id }));
+      };
+      end.addEventListener('click', endIt);
+      end.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') endIt(event);
+      });
+      tab.appendChild(end);
+    }
     sessionTabsEl.appendChild(tab);
   }
   const add = document.createElement('button');
@@ -2862,6 +2972,24 @@ const handleSocketMessage = (event) => {
     return;
   }
 
+  if (update.type === 'session_closed') {
+    const list = colleagueSessions.get(update.colleagueId) || [];
+    colleagueSessions.set(update.colleagueId, list.filter((session) => session.id !== update.sessionId));
+    const colleague = colleaguesById.get(update.colleagueId);
+    if (colleague && activeColleagueId === update.colleagueId && activeSessionId === update.sessionId) {
+      selectColleague(colleague, DEFAULT_SESSION_ID);
+    } else {
+      renderSidebar();
+      if (activeColleagueId === update.colleagueId) renderSessionTabs();
+    }
+    return;
+  }
+
+  if (update.type === 'session_close_failed') {
+    window.alert(`Session not ended: ${update.message || 'failed'}`);
+    return;
+  }
+
   if (update.type === 'permissions_changed') {
     applyPermissionState(update);
     renderPaneHeader();
@@ -2895,6 +3023,26 @@ const handleSocketMessage = (event) => {
     if (key === activeConvKey()) {
       renderHandoverNotice();
       if (!update.failed && !convSettingsBackdropEl.hidden && !update.handedOver) renderConvSettingsTerminal({ reload: false });
+    }
+    return;
+  }
+
+  if (update.type === 'cli_session_adopted') {
+    const form = takeOverForm;
+    if (form && form.colleagueId === update.colleagueId && form.sessionId === update.sessionId) {
+      if (update.ok) {
+        form.list.hidden = true;
+        form.error.hidden = true;
+        form.status.textContent = TAKEN_OVER;
+      } else {
+        form.status.textContent = '';
+        form.error.textContent = `Not taken over: ${update.message || 'failed'}`;
+        form.error.hidden = false;
+      }
+    }
+    if (update.ok) {
+      takeOverDone.add(convKey(update.colleagueId, update.sessionId));
+      loadCliInfo(update.colleagueId, update.sessionId);
     }
     return;
   }
