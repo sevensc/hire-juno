@@ -59,6 +59,7 @@ import {
   cliSessionInfo,
   createHandovers,
   listCliSessions,
+  readCliTranscript,
   transferToTerminal,
   withNotes,
 } from './cliSession.js';
@@ -1982,7 +1983,15 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
               sdkSessionId: payload.sdkSessionId,
               offered,
             });
-            if (result.ok) takenOver.add(adapterKey(colleagueId, sessionId));
+            if (result.ok) {
+              takenOver.add(adapterKey(colleagueId, sessionId));
+              // Her last messages from the terminal, so the tab shows where it left off.
+              store.importMessages(
+                colleagueId,
+                sessionId,
+                readCliTranscript({ cwd: conversationCwd(colleagueId, sessionId), sdkSessionId: payload.sdkSessionId })
+              );
+            }
             reply(result);
             return;
           }
