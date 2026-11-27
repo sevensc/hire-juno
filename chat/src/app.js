@@ -12,8 +12,10 @@
 // package still never requires a build step on the user's side.
 import { Fragment, render } from 'preact';
 import { html } from 'htm/preact';
+import { useState } from 'preact/hooks';
 
 import { renderMarkdown } from './markdown.js';
+import { youtubeEmbedUrl, youtubeThumbnail, youtubeVideos } from './youtube.js';
 import { nextMenuIndex, pickSendKind } from './send-kind.js';
 import { pickConversationToRestore, recallOpenConversation, rememberOpenConversation } from './open-conversation.js';
 import { buildIssueUrl } from './issue-link.js';
@@ -4256,6 +4258,29 @@ async function copyWithFeedback(text, button) {
   button.dataset.timer = String(setTimeout(() => { button.textContent = label; }, 1500));
 }
 
+// A YouTube link plays right in the chat: first only its picture (nothing
+// from YouTube itself loads), a tap starts the player in place, inline on
+// phones. Browsers do not let a video start with sound on its own, so the
+// tap is what starts it.
+function YouTubeCard({ video }) {
+  const [playing, setPlaying] = useState(false);
+  if (playing) {
+    return html`<div class="youtube-card youtube-card--playing">
+      <iframe
+        src=${youtubeEmbedUrl(video)}
+        title="YouTube video"
+        allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
+        allowfullscreen
+        referrerpolicy="strict-origin-when-cross-origin"
+      ></iframe>
+    </div>`;
+  }
+  return html`<button type="button" class="youtube-card" aria-label="Play the YouTube video here" onClick=${(e) => { e.stopPropagation(); setPlaying(true); }}>
+    <img src=${youtubeThumbnail(video.id)} alt="" loading="lazy" referrerpolicy="no-referrer" />
+    <span class="youtube-card__play" aria-hidden="true"></span>
+  </button>`;
+}
+
 function MessageRow({ role, avatarColleague, nameTag, item, toolText, onToggle, onToggleTrailEntry, onWithdraw, variant = null, onReply = null, onReact = null, accent = null }) {
   const isToolUse = item.toolInput !== undefined;
   const time = formatMessageTime(item.createdAt);
@@ -4279,6 +4304,9 @@ function MessageRow({ role, avatarColleague, nameTag, item, toolText, onToggle, 
                       <span class="artifact-card__open">Open</span>
                     </button>`
                   : item.text ? html`<span dangerouslySetInnerHTML=${{ __html: renderMarkdown(item.text) }} />` : null}
+                ${item.text && !item.artifact
+                  ? youtubeVideos(item.text).map((video) => html`<${YouTubeCard} key=${video.id} video=${video} />`)
+                  : null}
                 ${(item.attachments || []).map(
                   (attachment, i) => html`<img key=${i} class="attachment-thumb" src=${attachment.dataUrl} alt=${attachment.name} role="button" tabindex="0" />`
                 )}
