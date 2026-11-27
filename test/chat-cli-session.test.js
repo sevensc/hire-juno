@@ -1,11 +1,20 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { cliSessionInfo, createHandovers, isSessionUuid, shellQuote, transferToTerminal } from '../chat/server/cliSession.js';
+import {
+  adoptCliSession,
+  cliProjectDir,
+  cliSessionInfo,
+  createHandovers,
+  isSessionUuid,
+  listCliSessions,
+  shellQuote,
+  transferToTerminal,
+} from '../chat/server/cliSession.js';
 
 const ID = '5b3f2c1a-8d4e-4f6b-9a7c-2e1d0f9b8a6c';
 
@@ -71,4 +80,94 @@ test('handing over is refused while she answers, and without an adapter it still
   assert.equal(handovers.has('a::default'), false);
   assert.deepEqual(transferToTerminal({ handovers, key: 'a::default', adapter: undefined }), { ok: true });
   assert.ok(handovers.has('a::default'));
+});
+
+const OTHER = '7c1e9a2b-3d4f-4a5b-8c6d-9e0f1a2b3c4d';
+const SDK = '0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d';
+
+function writeSession(dir, id, lines, mtimeSeconds) {
+  const file = join(dir, `${id}.jsonl`);
+  writeFileSync(file, lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+  utimesSync(file, mtimeSeconds, mtimeSeconds);
+}
+
+function withProjects(fn) {
+  const configDir = realpathSync(mkdtempSync(join(tmpdir(), 'cli-config-')));
+  try {
+    const cwd = '/work/my.repo';
+    const dir = cliProjectDir(cwd, configDir);
+    mkdirSync(dir, { recursive: true });
+    fn({ configDir, cwd, dir });
+  } finally {
+    rmSync(configDir, { recursive: true, force: true });
+  }
+}
+
+test('the project folder replaces every non-alphanumeric character with a dash', () => {
+  assert.equal(cliProjectDir('/Users/a/.x/my_repo', '/cfg'), join('/cfg', 'projects', '-Users-a--x-my-repo'));
+});
+
+test('lists terminal sessions newest first, without sdk sessions and excluded ids', () => {
+  withProjects(({ configDir, cwd, dir }) => {
+    const user = (text, extra = {}) => ({ type: 'user', entrypoint: 'cli', message: { role: 'user', content: text }, ...extra });
+    writeSession(dir, ID, [
+      { type: 'agent-setting', agentSetting: 'juno' },
+      user('<command-name>/clear</command-name>'),
+      user('caveat', { isMeta: true }),
+      user('Look at the onboarding flow'),
+      { type: 'last-prompt', lastPrompt: 'Ready to ship?' },
+    ], 2000);
+    writeSession(dir, OTHER, [user([{ type: 'text', text: 'Older one' }])], 1000);
+    writeSession(dir, SDK, [{ type: 'user', entrypoint: 'sdk-ts', message: { role: 'user', content: 'From the chat' } }], 3000);
+    writeFileSync(join(dir, 'not-a-session.jsonl'), '{}\n');
+
+    const sessions = listCliSessions({ cwd, configDir });
+    assert.deepEqual(sessions.map((s) => s.id), [ID, OTHER]);
+    assert.equal(sessions[0].agent, 'juno');
+    assert.equal(sessions[0].firstPrompt, 'Look at the onboarding flow');
+    assert.equal(sessions[0].lastPrompt, 'Ready to ship?');
+    assert.equal(sessions[1].lastPrompt, 'Older one');
+
+    assert.deepEqual(listCliSessions({ cwd, configDir, exclude: [ID] }).map((s) => s.id), [OTHER]);
+    assert.deepEqual(listCliSessions({ cwd, configDir, limit: 1 }).map((s) => s.id), [ID]);
+    assert.deepEqual(listCliSessions({ cwd: '/elsewhere', configDir }), []);
+  });
+});
+
+test('taking over saves the id, closes the running adapter and ends a handover', () => {
+  const saved = [];
+  const store = { saveAdapterSession: (...args) => saved.push(args) };
+  const handovers = createHandovers();
+  handovers.add('juno::default');
+  let closed = 0;
+  const adapters = new Map([['juno::default', { busy: false, close: () => closed++ }]]);
+  const base = { store, handovers, adapters, key: 'juno::default', colleagueId: 'juno', sessionId: 'default', offered: [{ id: ID }] };
+
+  assert.equal(adoptCliSession({ ...base, sdkSessionId: OTHER }).ok, false, 'not offered');
+  assert.equal(adoptCliSession({ ...base, sdkSessionId: 'x; rm -rf /' }).ok, false, 'not a uuid');
+  assert.deepEqual(saved, []);
+
+  assert.deepEqual(adoptCliSession({ ...base, sdkSessionId: ID }), { ok: true });
+  assert.deepEqual(saved, [['juno', 'default', ID]]);
+  assert.equal(closed, 1);
+  assert.equal(adapters.has('juno::default'), false);
+  assert.equal(handovers.has('juno::default'), false);
+});
+
+test('taking over is refused while she is answering', () => {
+  const saved = [];
+  const adapters = new Map([['juno::default', { busy: true, close: () => {} }]]);
+  const result = adoptCliSession({
+    store: { saveAdapterSession: (...args) => saved.push(args) },
+    handovers: createHandovers(),
+    adapters,
+    key: 'juno::default',
+    colleagueId: 'juno',
+    sessionId: 'default',
+    sdkSessionId: ID,
+    offered: [{ id: ID }],
+  });
+  assert.equal(result.ok, false);
+  assert.deepEqual(saved, []);
+  assert.ok(adapters.has('juno::default'));
 });

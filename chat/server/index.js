@@ -53,7 +53,7 @@ import { currentBranch, gitRoot, resolveGitDir } from './worktree.js';
 import { addWorkforce, listWorkforces, removeWorkforce, setActiveWorkforce } from '../../shared/workforceRegistry.js';
 import { getOrCreateSession, saveSessionPort } from '../../shared/chatSessions.js';
 import { portToRemember } from '../../shared/portFlag.js';
-import { cliSessionInfo, createHandovers, transferToTerminal } from './cliSession.js';
+import { adoptCliSession, cliSessionInfo, createHandovers, listCliSessions, transferToTerminal } from './cliSession.js';
 import { loadToken, removeToken, saveToken } from './claudeToken.js';
 import { connectRoom } from './roomClient.js';
 import { reactionHint } from './reactions.js';
@@ -873,6 +873,20 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
           return;
         }
 
+        if (req.method === 'GET' && route === 'api/cli-sessions') {
+          // Terminal sessions this 1:1 conversation could take over: started
+          // in the CLI, in the conversation's own folder, and not already
+          // used by any conversation of the chat.
+          const colleagueId = url.searchParams.get('colleagueId') || '';
+          const sessionId = url.searchParams.get('sessionId') || DEFAULT_SESSION_ID;
+          const known = readRoster(targetDir).some((c) => c.id === colleagueId);
+          const sessions = known
+            ? listCliSessions({ cwd: conversationCwd(colleagueId, sessionId), exclude: store.allAdapterSessionIds() })
+            : [];
+          res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ sessions }));
+          return;
+        }
+
         if (req.method === 'GET' && route === 'api/models') {
           // What the conversation's settings dialog offers. Asked of the
           // colleague's own adapter, so opening the dialog starts her
@@ -1685,6 +1699,30 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
             return;
           }
 
+          if (payload.type === 'close_session') {
+            // Ends an extra session (the main conversation has none to end):
+            // her process stops, the tab goes away, the messages stay stored.
+            const colleagueId = payload.colleagueId;
+            const sessionId = payload.sessionId;
+            const fail = (message) => broadcast({ type: 'session_close_failed', colleagueId, sessionId, message });
+            if (!colleagueId || !sessionId || sessionId === DEFAULT_SESSION_ID) return;
+            if (!sessionsFor(colleagueId).some((session) => session.id === sessionId)) return;
+            const key = adapterKey(colleagueId, sessionId);
+            const adapter = adapters.get(key);
+            if (adapter?.busy) {
+              fail('She is still answering. End the session once she is done.');
+              return;
+            }
+            adapter?.close?.();
+            adapters.delete(key);
+            handovers.remove(key);
+            store.closeSession(sessionId, colleagueId);
+            sessionsByColleague.set(colleagueId, sessionsFor(colleagueId).filter((session) => session.id !== sessionId));
+            dropSubagentThreadsOf(colleagueId, sessionId);
+            broadcast({ type: 'session_closed', colleagueId, sessionId });
+            return;
+          }
+
           if (payload.type === 'set_team_notify') {
             if (!TEAM_NOTIFY_MODES.includes(payload.mode)) return;
             teamNotify = payload.mode;
@@ -1904,6 +1942,35 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
             const result = transferToTerminal({ handovers, key, adapter: adapters.get(key) });
             if (result.ok) adapters.delete(key);
             reply(result.ok ? { handedOver: true } : { handedOver: false, failed: true, message: result.message });
+            return;
+          }
+
+          if (payload.type === 'adopt_cli_session') {
+            // "Take over a terminal session": this conversation resumes a
+            // session started in the CLI from the next message on.
+            const colleagueId = payload.colleagueId;
+            const sessionId = payload.sessionId || DEFAULT_SESSION_ID;
+            const reply = (extra) => broadcast({ type: 'cli_session_adopted', colleagueId, sessionId, ...extra });
+            if (!readRoster(targetDir).some((c) => c.id === colleagueId)) {
+              reply({ ok: false, message: 'Unknown colleague.' });
+              return;
+            }
+            const offered = listCliSessions({
+              cwd: conversationCwd(colleagueId, sessionId),
+              exclude: store.allAdapterSessionIds(),
+              limit: Infinity,
+            });
+            const result = adoptCliSession({
+              store,
+              handovers,
+              adapters,
+              key: adapterKey(colleagueId, sessionId),
+              colleagueId,
+              sessionId,
+              sdkSessionId: payload.sdkSessionId,
+              offered,
+            });
+            reply(result);
             return;
           }
 
