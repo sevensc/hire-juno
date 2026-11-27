@@ -76,13 +76,13 @@
     }
   }
   function L(n3, l3, u3, t4, i3, r3, o3, e3, f3, c3, a3) {
-    var s3, h2, p3, v3, y3, _2, g2 = t4 && t4.__k || w, m4 = l3.length;
-    for (f3 = T(u3, l3, g2, f3, m4), s3 = 0; s3 < m4; s3++) null != (p3 = u3.__k[s3]) && (h2 = -1 != p3.__i && g2[p3.__i] || d, p3.__i = s3, _2 = q(n3, p3, h2, i3, r3, o3, e3, f3, c3, a3), v3 = p3.__e, p3.ref && h2.ref != p3.ref && (h2.ref && J(h2.ref, null, p3), a3.push(p3.ref, p3.__c || v3, p3)), null == y3 && null != v3 && (y3 = v3), 4 & p3.__u ? (f3 = j(p3, f3, n3), h2.__e && (h2.__e = null)) : "function" == typeof p3.type && void 0 !== _2 ? f3 = _2 : v3 && (f3 = v3.nextSibling), p3.__u &= -7);
+    var s3, h3, p3, v3, y3, _2, g2 = t4 && t4.__k || w, m4 = l3.length;
+    for (f3 = T(u3, l3, g2, f3, m4), s3 = 0; s3 < m4; s3++) null != (p3 = u3.__k[s3]) && (h3 = -1 != p3.__i && g2[p3.__i] || d, p3.__i = s3, _2 = q(n3, p3, h3, i3, r3, o3, e3, f3, c3, a3), v3 = p3.__e, p3.ref && h3.ref != p3.ref && (h3.ref && J(h3.ref, null, p3), a3.push(p3.ref, p3.__c || v3, p3)), null == y3 && null != v3 && (y3 = v3), 4 & p3.__u ? (f3 = j(p3, f3, n3), h3.__e && (h3.__e = null)) : "function" == typeof p3.type && void 0 !== _2 ? f3 = _2 : v3 && (f3 = v3.nextSibling), p3.__u &= -7);
     return u3.__e = y3, f3;
   }
   function T(n3, l3, u3, t4, i3) {
-    var r3, o3, e3, f3, c3, a3 = u3.length, s3 = a3, h2 = 0;
-    for (n3.__k = new Array(i3), r3 = 0; r3 < i3; r3++) null != (o3 = l3[r3]) && "boolean" != typeof o3 && "function" != typeof o3 ? ("string" == typeof o3 || "number" == typeof o3 || "bigint" == typeof o3 || o3.constructor == String ? o3 = n3.__k[r3] = x(null, o3, null, null, null) : g(o3) ? o3 = n3.__k[r3] = x(S, { children: o3 }, null, null, null) : void 0 === o3.constructor && o3.__b > 0 ? o3 = n3.__k[r3] = x(o3.type, o3.props, o3.key, o3.ref ? o3.ref : null, o3.__v) : n3.__k[r3] = o3, f3 = r3 + h2, o3.__ = n3, o3.__b = n3.__b + 1, e3 = null, -1 != (c3 = o3.__i = O(o3, u3, f3, s3)) && (s3--, (e3 = u3[c3]) && (e3.__u |= 2)), null == e3 || null == e3.__v ? (-1 == c3 && (i3 > a3 ? h2-- : i3 < a3 && h2++), "function" != typeof o3.type && (o3.__u |= 4)) : c3 != f3 && (c3 == f3 - 1 ? h2-- : c3 == f3 + 1 ? h2++ : (c3 > f3 ? h2-- : h2++, o3.__u |= 4))) : n3.__k[r3] = null;
+    var r3, o3, e3, f3, c3, a3 = u3.length, s3 = a3, h3 = 0;
+    for (n3.__k = new Array(i3), r3 = 0; r3 < i3; r3++) null != (o3 = l3[r3]) && "boolean" != typeof o3 && "function" != typeof o3 ? ("string" == typeof o3 || "number" == typeof o3 || "bigint" == typeof o3 || o3.constructor == String ? o3 = n3.__k[r3] = x(null, o3, null, null, null) : g(o3) ? o3 = n3.__k[r3] = x(S, { children: o3 }, null, null, null) : void 0 === o3.constructor && o3.__b > 0 ? o3 = n3.__k[r3] = x(o3.type, o3.props, o3.key, o3.ref ? o3.ref : null, o3.__v) : n3.__k[r3] = o3, f3 = r3 + h3, o3.__ = n3, o3.__b = n3.__b + 1, e3 = null, -1 != (c3 = o3.__i = O(o3, u3, f3, s3)) && (s3--, (e3 = u3[c3]) && (e3.__u |= 2)), null == e3 || null == e3.__v ? (-1 == c3 && (i3 > a3 ? h3-- : i3 < a3 && h3++), "function" != typeof o3.type && (o3.__u |= 4)) : c3 != f3 && (c3 == f3 - 1 ? h3-- : c3 == f3 + 1 ? h3++ : (c3 > f3 ? h3-- : h3++, o3.__u |= 4))) : n3.__k[r3] = null;
     if (s3) for (r3 = 0; r3 < a3; r3++) null != (e3 = u3[r3]) && 0 == (2 & e3.__u) && (e3.__e == t4 && (t4 = $(e3)), K(e3, e3));
     return t4;
   }
@@ -138,11 +138,11 @@
     };
   }
   function q(n3, u3, t4, i3, r3, o3, e3, f3, c3, a3) {
-    var s3, h2, p3, v3, y3, d3, _2, k3, x2, M, I2, P3, A2, H2, T2, j3, F = u3.type;
+    var s3, h3, p3, v3, y3, d3, _2, k3, x2, M, I2, P3, A3, H2, T3, j3, F = u3.type;
     if (void 0 !== u3.constructor) return null;
     128 & t4.__u && (c3 = !!(32 & t4.__u), o3 = [f3 = u3.__e = t4.__e]), (s3 = l.__b) && s3(u3);
     n: if ("function" == typeof F) {
-      h2 = e3.length;
+      h3 = e3.length;
       try {
         if (x2 = u3.props, M = F.prototype && F.prototype.render, I2 = (s3 = F.contextType) && i3[s3.__c], P3 = s3 ? I2 ? I2.props.value : s3.__ : i3, t4.__c ? k3 = (p3 = u3.__c = t4.__c).__ = p3.__E : (M ? u3.__c = p3 = new F(x2, P3) : (u3.__c = p3 = new C(x2, P3), p3.constructor = F, p3.render = Q), I2 && I2.sub(p3), p3.state || (p3.state = {}), p3.__n = i3, v3 = p3.__d = true, p3.__h = [], p3._sb = []), M && null == p3.__s && (p3.__s = p3.state), M && null != F.getDerivedStateFromProps && (p3.__s == p3.state && (p3.__s = m({}, p3.__s)), m(p3.__s, F.getDerivedStateFromProps(x2, p3.__s))), y3 = p3.props, d3 = p3.state, p3.__v = u3, v3) M && null == F.getDerivedStateFromProps && null != p3.componentWillMount && p3.componentWillMount(), M && null != p3.componentDidMount && p3.__h.push(p3.componentDidMount);
         else {
@@ -156,13 +156,13 @@
             p3.componentDidUpdate(y3, d3, _2);
           });
         }
-        if (p3.context = P3, p3.props = x2, p3.__P = n3, p3.__e = false, A2 = l.__r, H2 = 0, M) p3.state = p3.__s, p3.__d = false, A2 && A2(u3), s3 = p3.render(p3.props, p3.state, p3.context), w.push.apply(p3.__h, p3._sb), p3._sb = [];
+        if (p3.context = P3, p3.props = x2, p3.__P = n3, p3.__e = false, A3 = l.__r, H2 = 0, M) p3.state = p3.__s, p3.__d = false, A3 && A3(u3), s3 = p3.render(p3.props, p3.state, p3.context), w.push.apply(p3.__h, p3._sb), p3._sb = [];
         else do {
-          p3.__d = false, A2 && A2(u3), s3 = p3.render(p3.props, p3.state, p3.context), p3.state = p3.__s;
+          p3.__d = false, A3 && A3(u3), s3 = p3.render(p3.props, p3.state, p3.context), p3.state = p3.__s;
         } while (p3.__d && ++H2 < 25);
-        p3.state = p3.__s, null != p3.getChildContext && (i3 = m(m({}, i3), p3.getChildContext())), M && !v3 && null != p3.getSnapshotBeforeUpdate && (_2 = p3.getSnapshotBeforeUpdate(y3, d3)), T2 = null != s3 && s3.type === S && null == s3.key ? E(s3.props.children) : s3, f3 = L(n3, g(T2) ? T2 : [T2], u3, t4, i3, r3, o3, e3, f3, c3, a3), p3.base = u3.__e, u3.__u &= -161, p3.__h.length && e3.push(p3), k3 && (p3.__E = p3.__ = null);
+        p3.state = p3.__s, null != p3.getChildContext && (i3 = m(m({}, i3), p3.getChildContext())), M && !v3 && null != p3.getSnapshotBeforeUpdate && (_2 = p3.getSnapshotBeforeUpdate(y3, d3)), T3 = null != s3 && s3.type === S && null == s3.key ? E(s3.props.children) : s3, f3 = L(n3, g(T3) ? T3 : [T3], u3, t4, i3, r3, o3, e3, f3, c3, a3), p3.base = u3.__e, u3.__u &= -161, p3.__h.length && e3.push(p3), k3 && (p3.__E = p3.__ = null);
       } catch (n4) {
-        if (e3.length = h2, u3.__v = null, c3 || null != o3) {
+        if (e3.length = h3, u3.__v = null, c3 || null != o3) {
           if (n4.then) {
             for (u3.__u |= c3 ? 160 : 128; f3 && 8 == f3.nodeType && f3.nextSibling; ) f3 = f3.nextSibling;
             null != o3 && (o3[o3.indexOf(f3)] = null), u3.__e = f3;
@@ -192,7 +192,7 @@
     return "object" != typeof n3 || null == n3 || n3.__b > 0 ? n3 : g(n3) ? n3.map(E) : void 0 !== n3.constructor ? null : m({}, n3);
   }
   function G(u3, t4, i3, r3, o3, e3, f3, c3, a3) {
-    var s3, h2, p3, v3, y3, w3, _2, m4 = i3.props || d, k3 = t4.props, x2 = t4.type;
+    var s3, h3, p3, v3, y3, w3, _2, m4 = i3.props || d, k3 = t4.props, x2 = t4.type;
     if ("svg" == x2 ? o3 = "http://www.w3.org/2000/svg" : "math" == x2 ? o3 = "http://www.w3.org/1998/Math/MathML" : o3 || (o3 = "http://www.w3.org/1999/xhtml"), null != e3) {
       for (s3 = 0; s3 < e3.length; s3++) if ((y3 = e3[s3]) && "setAttribute" in y3 == !!x2 && (x2 ? y3.localName == x2 : 3 == y3.nodeType)) {
         u3 = y3, e3[s3] = null;
@@ -207,8 +207,8 @@
     else {
       if (e3 = "textarea" == x2 && null != k3.defaultValue ? null : e3 && n.call(u3.childNodes), !c3 && null != e3) for (m4 = {}, s3 = 0; s3 < u3.attributes.length; s3++) m4[(y3 = u3.attributes[s3]).name] = y3.value;
       for (s3 in m4) y3 = m4[s3], "dangerouslySetInnerHTML" == s3 ? p3 = y3 : "children" == s3 || s3 in k3 || "value" == s3 && "defaultValue" in k3 || "checked" == s3 && "defaultChecked" in k3 || N(u3, s3, null, y3, o3);
-      for (s3 in k3) y3 = k3[s3], "children" == s3 ? v3 = y3 : "dangerouslySetInnerHTML" == s3 ? h2 = y3 : "value" == s3 ? w3 = y3 : "checked" == s3 ? _2 = y3 : c3 && "function" != typeof y3 || m4[s3] === y3 || N(u3, s3, y3, m4[s3], o3);
-      if (h2) c3 || p3 && (h2.__html == p3.__html || h2.__html == u3.innerHTML) || (u3.innerHTML = h2.__html), t4.__k = [];
+      for (s3 in k3) y3 = k3[s3], "children" == s3 ? v3 = y3 : "dangerouslySetInnerHTML" == s3 ? h3 = y3 : "value" == s3 ? w3 = y3 : "checked" == s3 ? _2 = y3 : c3 && "function" != typeof y3 || m4[s3] === y3 || N(u3, s3, y3, m4[s3], o3);
+      if (h3) c3 || p3 && (h3.__html == p3.__html || h3.__html == u3.innerHTML) || (u3.innerHTML = h3.__html), t4.__k = [];
       else if (p3 && (u3.innerHTML = ""), L("template" == t4.type ? u3.content : u3, g(v3) ? v3 : [v3], t4, i3, r3, "foreignObject" == x2 ? "http://www.w3.org/1999/xhtml" : o3, e3, f3, e3 ? e3[0] : i3.__k && $(i3, 0), c3, a3), null != e3) for (s3 = e3.length; s3--; ) b(e3[s3]);
       c3 && "textarea" != x2 || (s3 = "value", "progress" == x2 && null == w3 ? u3.removeAttribute("value") : null != w3 && (w3 !== u3[s3] || "progress" == x2 && !w3 || "option" == x2 && w3 != m4[s3]) && N(u3, s3, w3, m4[s3], o3), s3 = "checked", null != _2 && _2 != u3[s3] && N(u3, s3, _2, m4[s3], o3));
     }
@@ -266,9 +266,9 @@
   var n2 = function(t4, s3, r3, e3) {
     var u3;
     s3[0] = 0;
-    for (var h2 = 1; h2 < s3.length; h2++) {
-      var p3 = s3[h2++], a3 = s3[h2] ? (s3[0] |= p3 ? 1 : 2, r3[s3[h2++]]) : s3[++h2];
-      3 === p3 ? e3[0] = a3 : 4 === p3 ? e3[1] = Object.assign(e3[1] || {}, a3) : 5 === p3 ? (e3[1] = e3[1] || {})[s3[++h2]] = a3 : 6 === p3 ? e3[1][s3[++h2]] += a3 + "" : p3 ? (u3 = t4.apply(a3, n2(t4, a3, r3, ["", null])), e3.push(u3), a3[0] ? s3[0] |= 2 : (s3[h2 - 2] = 0, s3[h2] = u3)) : e3.push(a3);
+    for (var h3 = 1; h3 < s3.length; h3++) {
+      var p3 = s3[h3++], a3 = s3[h3] ? (s3[0] |= p3 ? 1 : 2, r3[s3[h3++]]) : s3[++h3];
+      3 === p3 ? e3[0] = a3 : 4 === p3 ? e3[1] = Object.assign(e3[1] || {}, a3) : 5 === p3 ? (e3[1] = e3[1] || {})[s3[++h3]] = a3 : 6 === p3 ? e3[1][s3[++h3]] += a3 + "" : p3 ? (u3 = t4.apply(a3, n2(t4, a3, r3, ["", null])), e3.push(u3), a3[0] ? s3[0] |= 2 : (s3[h3 - 2] = 0, s3[h3] = u3)) : e3.push(a3);
     }
     return e3;
   };
@@ -276,13 +276,13 @@
   function htm_module_default(s3) {
     var r3 = t2.get(this);
     return r3 || (r3 = /* @__PURE__ */ new Map(), t2.set(this, r3)), (r3 = n2(this, r3.get(s3) || (r3.set(s3, r3 = (function(n3) {
-      for (var t4, s4, r4 = 1, e3 = "", u3 = "", h2 = [0], p3 = function(n4) {
-        1 === r4 && (n4 || (e3 = e3.replace(/^\s*\n\s*|\s*\n\s*$/g, ""))) ? h2.push(0, n4, e3) : 3 === r4 && (n4 || e3) ? (h2.push(3, n4, e3), r4 = 2) : 2 === r4 && "..." === e3 && n4 ? h2.push(4, n4, 0) : 2 === r4 && e3 && !n4 ? h2.push(5, 0, true, e3) : r4 >= 5 && ((e3 || !n4 && 5 === r4) && (h2.push(r4, 0, e3, s4), r4 = 6), n4 && (h2.push(r4, n4, 0, s4), r4 = 6)), e3 = "";
+      for (var t4, s4, r4 = 1, e3 = "", u3 = "", h3 = [0], p3 = function(n4) {
+        1 === r4 && (n4 || (e3 = e3.replace(/^\s*\n\s*|\s*\n\s*$/g, ""))) ? h3.push(0, n4, e3) : 3 === r4 && (n4 || e3) ? (h3.push(3, n4, e3), r4 = 2) : 2 === r4 && "..." === e3 && n4 ? h3.push(4, n4, 0) : 2 === r4 && e3 && !n4 ? h3.push(5, 0, true, e3) : r4 >= 5 && ((e3 || !n4 && 5 === r4) && (h3.push(r4, 0, e3, s4), r4 = 6), n4 && (h3.push(r4, n4, 0, s4), r4 = 6)), e3 = "";
       }, a3 = 0; a3 < n3.length; a3++) {
         a3 && (1 === r4 && p3(), p3(a3));
-        for (var l3 = 0; l3 < n3[a3].length; l3++) t4 = n3[a3][l3], 1 === r4 ? "<" === t4 ? (p3(), h2 = [h2], r4 = 3) : e3 += t4 : 4 === r4 ? "--" === e3 && ">" === t4 ? (r4 = 1, e3 = "") : e3 = t4 + e3[0] : u3 ? t4 === u3 ? u3 = "" : e3 += t4 : '"' === t4 || "'" === t4 ? u3 = t4 : ">" === t4 ? (p3(), r4 = 1) : r4 && ("=" === t4 ? (r4 = 5, s4 = e3, e3 = "") : "/" === t4 && (r4 < 5 || ">" === n3[a3][l3 + 1]) ? (p3(), 3 === r4 && (h2 = h2[0]), r4 = h2, (h2 = h2[0]).push(2, 0, r4), r4 = 0) : " " === t4 || "	" === t4 || "\n" === t4 || "\r" === t4 ? (p3(), r4 = 2) : e3 += t4), 3 === r4 && "!--" === e3 && (r4 = 4, h2 = h2[0]);
+        for (var l3 = 0; l3 < n3[a3].length; l3++) t4 = n3[a3][l3], 1 === r4 ? "<" === t4 ? (p3(), h3 = [h3], r4 = 3) : e3 += t4 : 4 === r4 ? "--" === e3 && ">" === t4 ? (r4 = 1, e3 = "") : e3 = t4 + e3[0] : u3 ? t4 === u3 ? u3 = "" : e3 += t4 : '"' === t4 || "'" === t4 ? u3 = t4 : ">" === t4 ? (p3(), r4 = 1) : r4 && ("=" === t4 ? (r4 = 5, s4 = e3, e3 = "") : "/" === t4 && (r4 < 5 || ">" === n3[a3][l3 + 1]) ? (p3(), 3 === r4 && (h3 = h3[0]), r4 = h3, (h3 = h3[0]).push(2, 0, r4), r4 = 0) : " " === t4 || "	" === t4 || "\n" === t4 || "\r" === t4 ? (p3(), r4 = 2) : e3 += t4), 3 === r4 && "!--" === e3 && (r4 = 4, h3 = h3[0]);
       }
-      return p3(), h2;
+      return p3(), h3;
     })(s3)), r3), arguments, [])).length > 1 ? r3 : r3[0];
   }
 
@@ -343,6 +343,19 @@
       }, r2.shouldComponentUpdate = f3;
     }
     return o3.__N || o3.__;
+  }
+  function h2(n3, u3) {
+    var i3 = s2(t3++, 3);
+    !c2.__s && C2(i3.__H, u3) && (i3.__ = n3, i3.u = u3, r2.__H.__h.push(i3));
+  }
+  function A2(n3) {
+    return o2 = 5, T2(function() {
+      return { current: n3 };
+    }, []);
+  }
+  function T2(n3, r3) {
+    var u3 = s2(t3++, 7);
+    return C2(u3.__H, r3) && (u3.__ = n3(), u3.__H = r3, u3.__h = n3), u3.__;
   }
   function j2() {
     for (var n3; n3 = f2.shift(); ) {
@@ -407,6 +420,11 @@
   function B2(n3) {
     var t4 = r2;
     n3.__c = n3.__(), r2 = t4;
+  }
+  function C2(n3, t4) {
+    return !n3 || n3.length !== t4.length || t4.some(function(t5, r3) {
+      return t5 !== n3[r3];
+    });
   }
   function D2(n3, t4) {
     return "function" == typeof t4 ? t4(n3) : t4;
@@ -7374,6 +7392,14 @@
             return;
           }
           status.textContent = "Taking over\u2026";
+          if (sessionId === NEW_SESSION) {
+            if (pendingFirstMessage) return;
+            const requestId = newMessageId();
+            pendingFirstMessage = { requestId, takeOver: session.id };
+            const title2 = (session.lastPrompt || session.firstPrompt || "Terminal session").replace(/\s+/g, " ").slice(0, 40);
+            socket.send(JSON.stringify({ type: "create_session", colleagueId, title: title2, requestId }));
+            return;
+          }
           socket.send(JSON.stringify({ type: "adopt_cli_session", colleagueId, sessionId, sdkSessionId: session.id }));
         });
         li.appendChild(pick);
@@ -8567,6 +8593,11 @@
       closeConvSettingsModal();
       const colleague = colleaguesById.get(update.colleagueId);
       if (!colleague) return;
+      if (first?.takeOver) {
+        socket.send(JSON.stringify({ type: "adopt_cli_session", colleagueId: colleague.id, sessionId: update.session.id, sdkSessionId: first.takeOver }));
+        selectColleague(colleague, update.session.id);
+        return;
+      }
       selectColleague(colleague, update.session.id).then(() => {
         if (!first) return;
         input.value = first.text;
@@ -9776,8 +9807,17 @@
           ${card.fields.map((f3) => m2`<${S}><dt>${f3.label}</dt><dd>${f3.value}</dd><//>`)}
         </dl>` : null}
     ${card?.text ? card.text.split("\n\n").map((para) => m2`<p class="profile-card__text">${para}</p>`) : null}
-    <p class="profile-card__hint">Write below to start a conversation with ${colleague.name}.</p>
+    <p class="profile-card__hint">Write below to start a conversation with ${colleague.name}, or continue one from a terminal.</p>
+    <${CardTakeOver} colleagueId=${colleague.id} />
   </section>`;
+  }
+  function CardTakeOver({ colleagueId }) {
+    const ref = A2(null);
+    h2(() => {
+      if (!ref.current) return;
+      ref.current.replaceChildren(takeOverEl(colleagueId, NEW_SESSION));
+    }, [colleagueId]);
+    return m2`<div class="profile-card__takeover" ref=${ref}></div>`;
   }
   function EmptyConversation({ text: text2 }) {
     return m2`<p class="conversation-empty">${text2}</p>`;
@@ -10711,9 +10751,9 @@
     const ids = (room?.members || []).map((m4) => m4.id).sort();
     const index = ids.indexOf(id);
     if (index !== -1) return PERSON_COLORS[index % PERSON_COLORS.length];
-    let h2 = 0;
-    for (const ch of id) h2 = h2 * 31 + ch.charCodeAt(0) >>> 0;
-    return PERSON_COLORS[h2 % PERSON_COLORS.length];
+    let h3 = 0;
+    for (const ch of id) h3 = h3 * 31 + ch.charCodeAt(0) >>> 0;
+    return PERSON_COLORS[h3 % PERSON_COLORS.length];
   }
   function personHandle(name) {
     return String(name || "").toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9_-]/g, "");

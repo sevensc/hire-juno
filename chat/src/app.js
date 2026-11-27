@@ -12,7 +12,7 @@
 // package still never requires a build step on the user's side.
 import { Fragment, render } from 'preact';
 import { html } from 'htm/preact';
-import { useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 
 import { renderMarkdown } from './markdown.js';
 import { youtubeEmbedUrl, youtubeThumbnail, youtubeVideos } from './youtube.js';
@@ -200,7 +200,7 @@ function sessionKeysFor(colleagueId) {
   ];
 }
 const showSessionForm = new Set(); // colleagueId currently showing its "+ New session" form
-let pendingFirstMessage = null; // { requestId, text, attachment } while a session for it is being created
+let pendingFirstMessage = null; // { requestId, text, attachment } or { requestId, takeOver } while a session for it is being created
 // Standing tool permissions, as the server holds them (see
 // server/permissions.js): key -> { allowAll, tools: Set }. Keys are
 // convKey-shaped for a 1:1 and channelKey-shaped for a channel member.
@@ -1252,6 +1252,17 @@ function takeOverEl(colleagueId, sessionId) {
           return;
         }
         status.textContent = 'Taking over…';
+        if (sessionId === NEW_SESSION) {
+          // On her card there is no conversation yet: start one named after
+          // the terminal session, then take the session over into it (see
+          // the 'session_created' update).
+          if (pendingFirstMessage) return;
+          const requestId = newMessageId();
+          pendingFirstMessage = { requestId, takeOver: session.id };
+          const title = (session.lastPrompt || session.firstPrompt || 'Terminal session').replace(/\s+/g, ' ').slice(0, 40);
+          socket.send(JSON.stringify({ type: 'create_session', colleagueId, title, requestId }));
+          return;
+        }
         socket.send(JSON.stringify({ type: 'adopt_cli_session', colleagueId, sessionId, sdkSessionId: session.id }));
       });
       li.appendChild(pick);
@@ -2977,6 +2988,11 @@ const handleSocketMessage = (event) => {
     // find it again would defeat the point.
     const colleague = colleaguesById.get(update.colleagueId);
     if (!colleague) return;
+    if (first?.takeOver) {
+      socket.send(JSON.stringify({ type: 'adopt_cli_session', colleagueId: colleague.id, sessionId: update.session.id, sdkSessionId: first.takeOver }));
+      selectColleague(colleague, update.session.id);
+      return;
+    }
     selectColleague(colleague, update.session.id).then(() => {
       if (!first) return;
       // The message written on her card goes out as this session's first.
@@ -4589,8 +4605,19 @@ function ProfileCard({ colleague, card }) {
         </dl>`
       : null}
     ${card?.text ? card.text.split('\n\n').map((para) => html`<p class="profile-card__text">${para}</p>`) : null}
-    <p class="profile-card__hint">Write below to start a conversation with ${colleague.name}.</p>
+    <p class="profile-card__hint">Write below to start a conversation with ${colleague.name}, or continue one from a terminal.</p>
+    <${CardTakeOver} colleagueId=${colleague.id} />
   </section>`;
+}
+
+// The "Take over a terminal session…" control (takeOverEl) on her card.
+function CardTakeOver({ colleagueId }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!ref.current) return;
+    ref.current.replaceChildren(takeOverEl(colleagueId, NEW_SESSION));
+  }, [colleagueId]);
+  return html`<div class="profile-card__takeover" ref=${ref}></div>`;
 }
 
 // Shown in #messages when there is genuinely nothing to show. Kept to
