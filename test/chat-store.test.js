@@ -322,3 +322,34 @@ test('imported messages keep their own times and come after the stored ones', ()
     rmSync(baseDir, { recursive: true, force: true });
   }
 });
+
+test('the pre-sessions conversation lists while it has messages and until it is ended', () => {
+  const baseDir = mkdtempSync(join(tmpdir(), 'hire-juno-chat-store-'));
+  try {
+    const store = openStore({ workforceId: 'acme', baseDir });
+    assert.equal(store.defaultListed('juno'), false, 'nothing said yet');
+    store.appendMessage('juno', 'default', 'system', 'Context reset');
+    assert.equal(store.defaultListed('juno'), false, 'a notice alone is no conversation');
+    store.appendMessage('juno', 'default', 'you', 'hi');
+    assert.equal(store.defaultListed('juno'), true);
+    assert.equal(store.closeDefault('juno'), true);
+    assert.equal(store.defaultListed('juno'), false);
+    assert.equal(store.getHistory('juno', 'default').length, 2, 'messages stay');
+    store.close();
+  } finally {
+    rmSync(baseDir, { recursive: true, force: true });
+  }
+});
+
+test('the sidebar preview takes her latest message from any conversation', () => {
+  const baseDir = mkdtempSync(join(tmpdir(), 'hire-juno-chat-store-'));
+  try {
+    const store = openStore({ workforceId: 'acme', baseDir });
+    store.appendMessage('juno', 'default', 'you', 'old');
+    store.appendMessage('juno', 's1', 'colleague', 'newest');
+    assert.equal(store.getLastMessages().get('juno').text, 'newest');
+    store.close();
+  } finally {
+    rmSync(baseDir, { recursive: true, force: true });
+  }
+});

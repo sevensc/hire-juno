@@ -3291,3 +3291,42 @@ html.keyboard-open #mobile-tabbar { display: none; }
 html.keyboard-open #pane-header { display: none !important; }
 html.keyboard-open #mobile-back-button { padding-top: calc(0.25rem + var(--safe-top)); padding-bottom: 0.25rem; }
 html.keyboard-open #session-tabs .session-tab { min-height: 2rem; }
+
+/* Her card while no conversation is open (app.js ProfileCard). */
+.profile-card {
+  max-width: 34rem;
+  margin: 2.5rem auto 1rem;
+  padding: 0 1rem;
+  text-align: center;
+}
+.profile-card__avatar {
+  width: 6rem;
+  height: 6rem;
+  border-radius: 50%;
+  object-fit: cover;
+  display: block;
+  margin: 0 auto 0.9rem;
+}
+.profile-card__avatar--initial {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--border);
+  color: var(--fg);
+  font-size: 2.2rem;
+  font-weight: 600;
+}
+.profile-card__name { margin: 0 0 0.3rem; font-size: 1.25rem; }
+.profile-card__role { margin: 0 0 0.8rem; color: var(--fg-muted); }
+.profile-card__fields {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.25rem 0.75rem;
+  margin: 1rem auto;
+  text-align: left;
+  font-size: 0.9rem;
+}
+.profile-card__fields dt { color: var(--fg-muted); }
+.profile-card__fields dd { margin: 0; overflow-wrap: anywhere; }
+.profile-card__text { text-align: left; line-height: 1.5; margin: 0 0 0.8rem; }
+.profile-card__hint { margin-top: 1.4rem; color: var(--fg-muted); font-size: 0.9rem; }

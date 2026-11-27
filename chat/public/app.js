@@ -6573,6 +6573,7 @@
   var claudeTokenRemoveEl = document.getElementById("claude-token-remove");
   var claudeTokenErrorEl = document.getElementById("claude-token-error");
   var DEFAULT_SESSION_ID = "default";
+  var NEW_SESSION = "__new__";
   function convKey(colleagueId, sessionId) {
     return `${colleagueId}::${sessionId || DEFAULT_SESSION_ID}`;
   }
@@ -6596,6 +6597,7 @@
     ];
   }
   var showSessionForm = /* @__PURE__ */ new Set();
+  var pendingFirstMessage = null;
   var permissionStates = /* @__PURE__ */ new Map();
   var unreadConversations = /* @__PURE__ */ new Set();
   var UNREAD_CHANNEL_PREFIX = "channel:";
@@ -6816,10 +6818,7 @@
     convSettingsNewSessionEl.innerHTML = "";
     const list2 = document.createElement("ul");
     list2.className = "session-list";
-    const entries = [
-      { id: DEFAULT_SESSION_ID, title: "Main conversation" },
-      ...colleagueSessions.get(colleague.id) || []
-    ];
+    const entries = colleagueSessions.get(colleague.id) || [];
     for (const session of entries) {
       const key = convKey(colleague.id, session.id);
       const isCurrent = session.id === activeSessionId;
@@ -7064,6 +7063,7 @@
   var worktreeInfo = /* @__PURE__ */ new Map();
   var worktreeInfoLoading = /* @__PURE__ */ new Set();
   async function loadWorktreeInfo(colleagueId, sessionId, { force = false } = {}) {
+    if (sessionId === NEW_SESSION) return;
     const key = convKey(colleagueId, sessionId);
     if (worktreeInfoLoading.has(key) || worktreeInfo.has(key) && !force) return;
     worktreeInfoLoading.add(key);
@@ -7458,14 +7458,15 @@
     sessionTabsEl.hidden = !colleague;
     sessionTabsEl.innerHTML = "";
     if (!colleague) return;
-    const entries = [{ id: DEFAULT_SESSION_ID, title: "Main" }, ...colleagueSessions.get(colleague.id) || []];
+    const entries = [...colleagueSessions.get(colleague.id) || []];
+    if (activeSessionId === NEW_SESSION) entries.push({ id: NEW_SESSION, title: "New conversation" });
     let activeTab = null;
     for (const session of entries) {
       const tab = document.createElement("button");
       tab.type = "button";
       tab.className = "session-tab";
       tab.setAttribute("role", "tab");
-      const selected = session.id === (activeSessionId || DEFAULT_SESSION_ID);
+      const selected = session.id === activeSessionId;
       tab.setAttribute("aria-selected", String(selected));
       const label = document.createElement("span");
       label.textContent = session.title || "Untitled session";
@@ -7475,7 +7476,7 @@
       appendDraftBadge(tab, key);
       if (selected) activeTab = tab;
       else tab.addEventListener("click", () => selectColleague(colleague, session.id));
-      if (session.id !== DEFAULT_SESSION_ID) {
+      if (session.id !== NEW_SESSION) {
         const end = document.createElement("span");
         end.className = "session-tab__end";
         end.setAttribute("role", "button");
@@ -7508,11 +7509,7 @@
     add.textContent = "+";
     add.title = `New session with ${colleague.name}`;
     add.setAttribute("aria-label", `New session with ${colleague.name}`);
-    add.addEventListener("click", () => {
-      const title = window.prompt(`New session with ${colleague.name}. What is it about? (optional)`, "");
-      if (title === null) return;
-      socket.send(JSON.stringify({ type: "create_session", colleagueId: colleague.id, title: title.trim() }));
-    });
+    add.addEventListener("click", () => selectColleague(colleague, NEW_SESSION));
     sessionTabsEl.appendChild(add);
     activeTab?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }
@@ -7621,7 +7618,7 @@
       menuButton.setAttribute("aria-label", "Conversation settings");
       menuButton.innerHTML = '<svg class="icon" viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg>';
       menuButton.addEventListener("click", openConvSettingsModal);
-      actions.appendChild(menuButton);
+      if (activeSessionId !== NEW_SESSION) actions.appendChild(menuButton);
       paneHeaderEl.appendChild(actions);
       hasContent = true;
     }
@@ -8450,7 +8447,7 @@
     if (notify2) socket.send(JSON.stringify({ type: "close_subagent", id: subagentId }));
     if (activeColleagueId === panel.syntheticId) {
       const owner = colleaguesById.get(ownerColleagueId);
-      if (owner) selectColleague(owner, panel.sessionId || lastSessionByColleague.get(owner.id) || DEFAULT_SESSION_ID);
+      if (owner) selectColleague(owner, panel.sessionId);
     }
     renderSidebar();
   }
@@ -8559,10 +8556,24 @@
       if (!colleagueSessions.has(update.colleagueId)) colleagueSessions.set(update.colleagueId, []);
       colleagueSessions.get(update.colleagueId).push(update.session);
       showSessionForm.delete(update.colleagueId);
+      const first = pendingFirstMessage && pendingFirstMessage.requestId === update.requestId ? pendingFirstMessage : null;
+      if (update.requestId && !first) {
+        if (activeColleagueId === update.colleagueId) renderSessionTabs();
+        renderSidebar();
+        return;
+      }
+      pendingFirstMessage = null;
       renderSidebar();
       closeConvSettingsModal();
       const colleague = colleaguesById.get(update.colleagueId);
-      if (colleague) selectColleague(colleague, update.session.id);
+      if (!colleague) return;
+      selectColleague(colleague, update.session.id).then(() => {
+        if (!first) return;
+        input.value = first.text;
+        pendingAttachment = first.attachment;
+        renderAttachmentPreview();
+        form.requestSubmit();
+      });
       return;
     }
     if (update.type === "session_closed") {
@@ -8570,7 +8581,7 @@
       colleagueSessions.set(update.colleagueId, list2.filter((session) => session.id !== update.sessionId));
       const colleague = colleaguesById.get(update.colleagueId);
       if (colleague && activeColleagueId === update.colleagueId && activeSessionId === update.sessionId) {
-        selectColleague(colleague, DEFAULT_SESSION_ID);
+        selectColleague(colleague);
       } else {
         renderSidebar();
         if (activeColleagueId === update.colleagueId) renderSessionTabs();
@@ -9040,7 +9051,7 @@
           trail: reconstructTrail(update.trail)
         });
         history.get(key).push(...stillWaiting);
-        if (sessionId === DEFAULT_SESSION_ID && key === convKey(colleagueId, sessionId)) {
+        if (key === convKey(colleagueId, sessionId)) {
           const rosterColleague = colleaguesById.get(colleagueId);
           if (rosterColleague) rosterColleague.lastMessage = { role: update.role, text: text2 };
         }
@@ -9744,11 +9755,41 @@
     fallback.textContent = (colleague?.name || "?").charAt(0).toUpperCase();
     return fallback;
   }
+  var profileCards = /* @__PURE__ */ new Map();
+  async function loadProfileCard(colleagueId) {
+    if (profileCards.has(colleagueId)) return;
+    try {
+      const res = await fetch(`api/profile?colleagueId=${encodeURIComponent(colleagueId)}`);
+      profileCards.set(colleagueId, (await res.json()).card || null);
+    } catch {
+      profileCards.set(colleagueId, null);
+    }
+    if (activeColleagueId === colleagueId && activeSessionId === NEW_SESSION) renderMessages();
+  }
+  function ProfileCard({ colleague, card }) {
+    const avatar = colleague.hasAvatar ? m2`<img class="profile-card__avatar" src=${`api/avatar?colleagueId=${encodeURIComponent(colleague.avatarId || colleague.id)}`} alt="" />` : m2`<div class="profile-card__avatar profile-card__avatar--initial">${(colleague.name || "?").charAt(0).toUpperCase()}</div>`;
+    return m2`<section class="profile-card" aria-label=${`About ${colleague.name}`}>
+    ${avatar}
+    <h2 class="profile-card__name">${card?.heading || colleague.name}</h2>
+    ${!card && colleague.role ? m2`<p class="profile-card__role">${colleague.role}</p>` : null}
+    ${card?.fields?.length ? m2`<dl class="profile-card__fields">
+          ${card.fields.map((f3) => m2`<${S}><dt>${f3.label}</dt><dd>${f3.value}</dd><//>`)}
+        </dl>` : null}
+    ${card?.text ? card.text.split("\n\n").map((para) => m2`<p class="profile-card__text">${para}</p>`) : null}
+    <p class="profile-card__hint">Write below to start a conversation with ${colleague.name}.</p>
+  </section>`;
+  }
   function EmptyConversation({ text: text2 }) {
     return m2`<p class="conversation-empty">${text2}</p>`;
   }
   function renderMessages({ forceScrollToBottom = false } = {}) {
     const stickToBottom = forceScrollToBottom || isNearBottom();
+    if (activeColleagueId && activeSessionId === NEW_SESSION) {
+      const colleague = colleaguesById.get(activeColleagueId);
+      R(colleague ? m2`<${ProfileCard} colleague=${colleague} card=${profileCards.get(colleague.id)} />` : null, messagesEl);
+      updateScrollToBottomButton();
+      return;
+    }
     const key = activeConvKey();
     const items = history.get(key) || [];
     const thinkingText = thinkingStreaming.get(key);
@@ -10003,13 +10044,22 @@
   function isSubagentThread(colleagueId) {
     return colleagueId.startsWith("sub:");
   }
-  async function selectColleague(colleague, sessionId = DEFAULT_SESSION_ID) {
+  function sessionToOpen(colleagueId, wanted) {
+    const open = (colleagueSessions.get(colleagueId) || []).map((s3) => s3.id);
+    if (wanted === NEW_SESSION) return NEW_SESSION;
+    if (wanted && open.includes(wanted)) return wanted;
+    const last = lastSessionByColleague.get(colleagueId);
+    if (last && open.includes(last)) return last;
+    return open.length ? open[open.length - 1] : NEW_SESSION;
+  }
+  async function selectColleague(colleague, sessionId) {
     saveDraft();
     appEl.classList.add("pane-active");
     activeColleagueId = colleague.id;
-    activeSessionId = isSubagentThread(colleague.id) ? null : sessionId;
-    if (activeSessionId !== null) lastSessionByColleague.set(colleague.id, activeSessionId);
-    if (activeSessionId !== null) rememberOpenConversation({ colleagueId: colleague.id, sessionId: activeSessionId });
+    activeSessionId = isSubagentThread(colleague.id) ? null : sessionToOpen(colleague.id, sessionId);
+    const fresh = activeSessionId === NEW_SESSION;
+    if (activeSessionId !== null && !fresh) lastSessionByColleague.set(colleague.id, activeSessionId);
+    if (activeSessionId !== null && !fresh) rememberOpenConversation({ colleagueId: colleague.id, sessionId: activeSessionId });
     activeChannelId = null;
     closeMentionAutocomplete();
     closeSendMenu();
@@ -10025,6 +10075,11 @@
     renderPaneHeader();
     refreshDiffIfOpen();
     renderHandoverNotice();
+    if (fresh) {
+      renderMessages({ forceScrollToBottom: true });
+      loadProfileCard(colleague.id);
+      return;
+    }
     if (canReply) loadCliInfo(colleague.id, activeSessionId);
     const key = activeConvKey();
     await loadColleagueHistory(colleague.id, activeSessionId, key);
@@ -10200,8 +10255,8 @@
     }
   }
   async function openColleagueAtHit(colleague, hit) {
-    await selectColleague(colleague);
-    const items = history.get(convKey(colleague.id, DEFAULT_SESSION_ID)) || [];
+    await selectColleague(colleague, DEFAULT_SESSION_ID);
+    const items = history.get(activeConvKey()) || [];
     const index = items.findIndex((item) => item.createdAt === hit.createdAt && item.text === hit.text);
     if (index !== -1) jumpToMessage(index);
   }
@@ -10248,7 +10303,7 @@
         const tileKeys = sessionKeysFor(colleague.id);
         appendUnreadBadge(tile, tileKeys);
         appendDraftBadge(tile, tileKeys);
-        tile.addEventListener("click", () => selectColleague(colleague, lastSessionByColleague.get(colleague.id) || DEFAULT_SESSION_ID));
+        tile.addEventListener("click", () => selectColleague(colleague));
         grid.appendChild(tile);
       }
       const button = document.createElement("button");
@@ -10257,7 +10312,7 @@
       button.className = "colleague" + (isActiveHere ? " colleague--active" : "");
       button.dataset.id = colleague.id;
       button.appendChild(avatarEl(colleague));
-      const shownSessionId = isActiveHere ? activeSessionId : DEFAULT_SESSION_ID;
+      const shownSessionId = isActiveHere && activeSessionId !== NEW_SESSION ? activeSessionId : lastSessionByColleague.get(colleague.id) || DEFAULT_SESSION_ID;
       const shownKey = convKey(colleague.id, shownSessionId);
       const text2 = document.createElement("span");
       text2.className = "colleague__text";
@@ -10266,7 +10321,7 @@
       const allKeys = sessionKeysFor(colleague.id);
       appendUnreadBadge(button, allKeys);
       appendDraftBadge(button, allKeys);
-      button.addEventListener("click", () => selectColleague(colleague, lastSessionByColleague.get(colleague.id) || DEFAULT_SESSION_ID));
+      button.addEventListener("click", () => selectColleague(colleague));
       if (!phone) sidebarEl.appendChild(button);
       for (const panel of subagentPanels.get(colleague.id)?.values() ?? []) {
         const synthetic = colleaguesById.get(panel.syntheticId);
@@ -10308,7 +10363,7 @@
   }
   function openConversationTarget(target) {
     if (target?.channelId && channelsById.has(target.channelId)) selectChannel(channelsById.get(target.channelId));
-    else if (target?.colleagueId && colleaguesById.has(target.colleagueId)) selectColleague(colleaguesById.get(target.colleagueId), target.sessionId || DEFAULT_SESSION_ID);
+    else if (target?.colleagueId && colleaguesById.has(target.colleagueId)) selectColleague(colleaguesById.get(target.colleagueId), target.sessionId);
   }
   navigator.serviceWorker?.addEventListener("message", (event) => {
     if (event.data?.type === "open_conversation") openConversationTarget(event.data.target);
@@ -10856,6 +10911,15 @@
       return;
     }
     if (!activeColleagueId) return;
+    if (activeSessionId === NEW_SESSION) {
+      if (pendingFirstMessage) return;
+      const requestId = newMessageId();
+      pendingFirstMessage = { requestId, text: input.value, attachment: pendingAttachment };
+      const title = (typed || "New conversation").replace(/\s+/g, " ").slice(0, 40);
+      socket.send(JSON.stringify({ type: "create_session", colleagueId: activeColleagueId, title, requestId }));
+      drafts.delete(activeConvKey());
+      return;
+    }
     const key = activeConvKey();
     if (cliInfo.get(key)?.handedOver) {
       if (!window.confirm("The terminal may be using this session. Take it back and send?")) return;
@@ -10870,7 +10934,7 @@
     const clientId = newMessageId();
     history.get(key).push({ role: "you", text: text2, attachments, createdAt: (/* @__PURE__ */ new Date()).toISOString(), pending: typing, clientId, kind });
     renderMessages({ forceScrollToBottom: true });
-    if (activeSessionId === DEFAULT_SESSION_ID) {
+    {
       const rosterColleague = colleaguesById.get(activeColleagueId);
       if (rosterColleague) {
         rosterColleague.lastMessage = { role: "you", text: text2 || "Sent an attachment" };

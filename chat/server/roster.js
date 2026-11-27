@@ -136,3 +136,58 @@ export function readRoster(targetDir) {
   }
   return colleagues;
 }
+
+// The colleague's card from the roster file (team/roster.md, or
+// mitarbeiter/steckbriefe.md in the German layout): the "## Name — ..."
+// section whose name matches. Labelled lines ("**Role:** ...") become
+// fields, the rest the text; image lines and placeholders are left out.
+const ROSTER_FILES = { team: 'roster.md', mitarbeiter: 'steckbriefe.md' };
+const SKIPPED_FIELDS = /^(image|bild)$/i;
+
+export function readRosterCard(targetDir, colleague) {
+  const layout = findLayout(targetDir);
+  const file = layout && ROSTER_FILES[layout.teamDir];
+  if (!file) return null;
+  let raw;
+  try {
+    raw = readFileSync(join(targetDir, layout.teamDir, file), 'utf8');
+  } catch {
+    return null;
+  }
+  const wanted = [colleague.id, colleague.name].filter(Boolean).map((n) => String(n).toLowerCase());
+  for (const section of raw.split(/^## /m).slice(1)) {
+    const [headingLine, ...rest] = section.split('\n');
+    const heading = headingLine.trim();
+    const name = heading.split(/\s+[—–-]\s+|\s+/)[0].toLowerCase();
+    if (!wanted.includes(name)) continue;
+    const fields = [];
+    const paragraphs = [];
+    for (const block of rest.join('\n').split(/\n\s*\n/)) {
+      const lines = block.split('\n').map((l) => l.trim()).filter((l) => l && l !== '---');
+      if (!lines.length) continue;
+      if (lines.every((l) => /^\*\(.*\)\*$/.test(l))) continue;
+      if (/^\*\*[^*]+:\*\*/.test(lines[0])) {
+        let current = null;
+        for (const line of lines) {
+          const m = /^\*\*([^*]+):\*\*\s*(.*)$/.exec(line);
+          if (m) {
+            current = SKIPPED_FIELDS.test(m[1].trim()) ? null : { label: m[1].trim(), value: m[2].trim() };
+            if (current) fields.push(current);
+          } else if (current) {
+            current.value = `${current.value} ${line}`.trim();
+          }
+        }
+        continue;
+      }
+      paragraphs.push(lines.join(' '));
+    }
+    // Plain text for the card: no Markdown emphasis or code marks.
+    const plain = (t) => t.replace(/`/g, '').replace(/\*\*([^*]+)\*\*/g, '$1');
+    return {
+      heading,
+      fields: fields.map((f) => ({ label: f.label, value: plain(f.value) })),
+      text: plain(paragraphs.join('\n\n')),
+    };
+  }
+  return null;
+}

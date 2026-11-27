@@ -146,6 +146,9 @@ const claudeTokenErrorEl = document.getElementById('claude-token-error');
 // server — same name, same meaning, duplicated here since the browser
 // can't import a server module).
 const DEFAULT_SESSION_ID = 'default';
+// Not a session: the view of a colleague with no conversation open (her card
+// and the composer). The first message starts a new session.
+const NEW_SESSION = '__new__';
 
 // Every per-conversation Map below (history, streaming, ...) is keyed
 // by this, not by colleagueId alone — several conversations with the
@@ -197,6 +200,7 @@ function sessionKeysFor(colleagueId) {
   ];
 }
 const showSessionForm = new Set(); // colleagueId currently showing its "+ New session" form
+let pendingFirstMessage = null; // { requestId, text, attachment } while a session for it is being created
 // Standing tool permissions, as the server holds them (see
 // server/permissions.js): key -> { allowAll, tools: Set }. Keys are
 // convKey-shaped for a 1:1 and channelKey-shaped for a channel member.
@@ -575,10 +579,7 @@ function renderConvSettingsNewSession() {
 
   const list = document.createElement('ul');
   list.className = 'session-list';
-  const entries = [
-    { id: DEFAULT_SESSION_ID, title: 'Main conversation' },
-    ...(colleagueSessions.get(colleague.id) || []),
-  ];
+  const entries = colleagueSessions.get(colleague.id) || [];
   for (const session of entries) {
     const key = convKey(colleague.id, session.id);
     const isCurrent = session.id === activeSessionId;
@@ -921,6 +922,7 @@ convSettingsBackdropEl.addEventListener('click', (event) => {
 const worktreeInfo = new Map();
 const worktreeInfoLoading = new Set();
 async function loadWorktreeInfo(colleagueId, sessionId, { force = false } = {}) {
+  if (sessionId === NEW_SESSION) return;
   const key = convKey(colleagueId, sessionId);
   if (worktreeInfoLoading.has(key) || (worktreeInfo.has(key) && !force)) return;
   worktreeInfoLoading.add(key);
@@ -1347,14 +1349,15 @@ function renderSessionTabs() {
   sessionTabsEl.hidden = !colleague;
   sessionTabsEl.innerHTML = '';
   if (!colleague) return;
-  const entries = [{ id: DEFAULT_SESSION_ID, title: 'Main' }, ...(colleagueSessions.get(colleague.id) || [])];
+  const entries = [...(colleagueSessions.get(colleague.id) || [])];
+  if (activeSessionId === NEW_SESSION) entries.push({ id: NEW_SESSION, title: 'New conversation' });
   let activeTab = null;
   for (const session of entries) {
     const tab = document.createElement('button');
     tab.type = 'button';
     tab.className = 'session-tab';
     tab.setAttribute('role', 'tab');
-    const selected = session.id === (activeSessionId || DEFAULT_SESSION_ID);
+    const selected = session.id === activeSessionId;
     tab.setAttribute('aria-selected', String(selected));
     const label = document.createElement('span');
     label.textContent = session.title || 'Untitled session';
@@ -1364,7 +1367,7 @@ function renderSessionTabs() {
     appendDraftBadge(tab, key);
     if (selected) activeTab = tab;
     else tab.addEventListener('click', () => selectColleague(colleague, session.id));
-    if (session.id !== DEFAULT_SESSION_ID) {
+    if (session.id !== NEW_SESSION) {
       // The tab is itself a button, so the "end" control is a span with a
       // button role next to the label rather than a nested <button>.
       const end = document.createElement('span');
@@ -1399,11 +1402,7 @@ function renderSessionTabs() {
   add.textContent = '+';
   add.title = `New session with ${colleague.name}`;
   add.setAttribute('aria-label', `New session with ${colleague.name}`);
-  add.addEventListener('click', () => {
-    const title = window.prompt(`New session with ${colleague.name}. What is it about? (optional)`, '');
-    if (title === null) return;
-    socket.send(JSON.stringify({ type: 'create_session', colleagueId: colleague.id, title: title.trim() }));
-  });
+  add.addEventListener('click', () => selectColleague(colleague, NEW_SESSION));
   sessionTabsEl.appendChild(add);
   activeTab?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
 }
@@ -1566,7 +1565,8 @@ function renderPaneHeader() {
     // shortcut back to a font glyph.
     menuButton.innerHTML = '<svg class="icon" viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg>';
     menuButton.addEventListener('click', openConvSettingsModal);
-    actions.appendChild(menuButton);
+    // On her card there is no conversation yet to have settings.
+    if (activeSessionId !== NEW_SESSION) actions.appendChild(menuButton);
 
     paneHeaderEl.appendChild(actions);
     hasContent = true;
@@ -2808,7 +2808,7 @@ function removeSubagentPanel(ownerColleagueId, subagentId, { notify = true } = {
   if (notify) socket.send(JSON.stringify({ type: 'close_subagent', id: subagentId }));
   if (activeColleagueId === panel.syntheticId) {
     const owner = colleaguesById.get(ownerColleagueId);
-    if (owner) selectColleague(owner, panel.sessionId || lastSessionByColleague.get(owner.id) || DEFAULT_SESSION_ID);
+    if (owner) selectColleague(owner, panel.sessionId);
   }
   renderSidebar();
 }
@@ -2963,12 +2963,28 @@ const handleSocketMessage = (event) => {
     if (!colleagueSessions.has(update.colleagueId)) colleagueSessions.set(update.colleagueId, []);
     colleagueSessions.get(update.colleagueId).push(update.session);
     showSessionForm.delete(update.colleagueId);
+    const first = pendingFirstMessage && pendingFirstMessage.requestId === update.requestId ? pendingFirstMessage : null;
+    // Another tab of this chat started it: only the tabs change here.
+    if (update.requestId && !first) {
+      if (activeColleagueId === update.colleagueId) renderSessionTabs();
+      renderSidebar();
+      return;
+    }
+    pendingFirstMessage = null;
     renderSidebar();
     closeConvSettingsModal(); // the form that created this session lives there now, not in the sidebar
     // Jump straight into it — starting a session and then having to go
     // find it again would defeat the point.
     const colleague = colleaguesById.get(update.colleagueId);
-    if (colleague) selectColleague(colleague, update.session.id);
+    if (!colleague) return;
+    selectColleague(colleague, update.session.id).then(() => {
+      if (!first) return;
+      // The message written on her card goes out as this session's first.
+      input.value = first.text;
+      pendingAttachment = first.attachment;
+      renderAttachmentPreview();
+      form.requestSubmit();
+    });
     return;
   }
 
@@ -2977,7 +2993,7 @@ const handleSocketMessage = (event) => {
     colleagueSessions.set(update.colleagueId, list.filter((session) => session.id !== update.sessionId));
     const colleague = colleaguesById.get(update.colleagueId);
     if (colleague && activeColleagueId === update.colleagueId && activeSessionId === update.sessionId) {
-      selectColleague(colleague, DEFAULT_SESSION_ID);
+      selectColleague(colleague);
     } else {
       renderSidebar();
       if (activeColleagueId === update.colleagueId) renderSessionTabs();
@@ -3593,7 +3609,7 @@ const handleSocketMessage = (event) => {
       // would now report (main thread only — see its own comment) —
       // updated locally instead of re-fetching the whole roster on
       // every finished turn.
-      if (sessionId === DEFAULT_SESSION_ID && key === convKey(colleagueId, sessionId)) {
+      if (key === convKey(colleagueId, sessionId)) {
         const rosterColleague = colleaguesById.get(colleagueId);
         if (rosterColleague) rosterColleague.lastMessage = { role: update.role, text };
       }
@@ -4546,6 +4562,37 @@ function avatarEl(colleague) {
   return fallback;
 }
 
+// Her card from the roster file, shown while no conversation is open.
+const profileCards = new Map(); // colleagueId -> card | null
+async function loadProfileCard(colleagueId) {
+  if (profileCards.has(colleagueId)) return;
+  try {
+    const res = await fetch(`api/profile?colleagueId=${encodeURIComponent(colleagueId)}`);
+    profileCards.set(colleagueId, (await res.json()).card || null);
+  } catch {
+    profileCards.set(colleagueId, null);
+  }
+  if (activeColleagueId === colleagueId && activeSessionId === NEW_SESSION) renderMessages();
+}
+
+function ProfileCard({ colleague, card }) {
+  const avatar = colleague.hasAvatar
+    ? html`<img class="profile-card__avatar" src=${`api/avatar?colleagueId=${encodeURIComponent(colleague.avatarId || colleague.id)}`} alt="" />`
+    : html`<div class="profile-card__avatar profile-card__avatar--initial">${(colleague.name || '?').charAt(0).toUpperCase()}</div>`;
+  return html`<section class="profile-card" aria-label=${`About ${colleague.name}`}>
+    ${avatar}
+    <h2 class="profile-card__name">${card?.heading || colleague.name}</h2>
+    ${!card && colleague.role ? html`<p class="profile-card__role">${colleague.role}</p>` : null}
+    ${card?.fields?.length
+      ? html`<dl class="profile-card__fields">
+          ${card.fields.map((f) => html`<${Fragment}><dt>${f.label}</dt><dd>${f.value}</dd><//>`)}
+        </dl>`
+      : null}
+    ${card?.text ? card.text.split('\n\n').map((para) => html`<p class="profile-card__text">${para}</p>`) : null}
+    <p class="profile-card__hint">Write below to start a conversation with ${colleague.name}.</p>
+  </section>`;
+}
+
 // Shown in #messages when there is genuinely nothing to show. Kept to
 // one line: it is a hint about the next step, not a welcome screen.
 function EmptyConversation({ text }) {
@@ -4558,6 +4605,12 @@ function renderMessages({ forceScrollToBottom = false } = {}) {
   // while "on screen" still means the previous, not the about-to-grow,
   // content (see isNearBottom's own comment).
   const stickToBottom = forceScrollToBottom || isNearBottom();
+  if (activeColleagueId && activeSessionId === NEW_SESSION) {
+    const colleague = colleaguesById.get(activeColleagueId);
+    render(colleague ? html`<${ProfileCard} colleague=${colleague} card=${profileCards.get(colleague.id)} />` : null, messagesEl);
+    updateScrollToBottomButton();
+    return;
+  }
   const key = activeConvKey();
   const items = history.get(key) || [];
   // No `colleague` lookup here anymore — a 1:1 thread doesn't show a
@@ -4898,13 +4951,25 @@ function isSubagentThread(colleagueId) {
 // or right after creating a new one) switches to that parallel
 // conversation instead — same colleague, same persona, independent
 // history and adapter (see server/index.js's own adapterKey()).
-async function selectColleague(colleague, sessionId = DEFAULT_SESSION_ID) {
+// Which conversation opening her shows: the one asked for if it is still a
+// tab, else the one last open, else her newest tab, else her card.
+function sessionToOpen(colleagueId, wanted) {
+  const open = (colleagueSessions.get(colleagueId) || []).map((s) => s.id);
+  if (wanted === NEW_SESSION) return NEW_SESSION;
+  if (wanted && open.includes(wanted)) return wanted;
+  const last = lastSessionByColleague.get(colleagueId);
+  if (last && open.includes(last)) return last;
+  return open.length ? open[open.length - 1] : NEW_SESSION;
+}
+
+async function selectColleague(colleague, sessionId) {
   saveDraft(); // for whatever was active before this switch, not the colleague below
   appEl.classList.add('pane-active'); // no-op above the mobile breakpoint (see styles.css)
   activeColleagueId = colleague.id;
-  activeSessionId = isSubagentThread(colleague.id) ? null : sessionId;
-  if (activeSessionId !== null) lastSessionByColleague.set(colleague.id, activeSessionId);
-  if (activeSessionId !== null) rememberOpenConversation({ colleagueId: colleague.id, sessionId: activeSessionId });
+  activeSessionId = isSubagentThread(colleague.id) ? null : sessionToOpen(colleague.id, sessionId);
+  const fresh = activeSessionId === NEW_SESSION;
+  if (activeSessionId !== null && !fresh) lastSessionByColleague.set(colleague.id, activeSessionId);
+  if (activeSessionId !== null && !fresh) rememberOpenConversation({ colleagueId: colleague.id, sessionId: activeSessionId });
   activeChannelId = null;
   closeMentionAutocomplete();
   closeSendMenu();
@@ -4920,6 +4985,11 @@ async function selectColleague(colleague, sessionId = DEFAULT_SESSION_ID) {
   renderPaneHeader();
   refreshDiffIfOpen();
   renderHandoverNotice();
+  if (fresh) {
+    renderMessages({ forceScrollToBottom: true });
+    loadProfileCard(colleague.id);
+    return;
+  }
   if (canReply) loadCliInfo(colleague.id, activeSessionId);
 
   const key = activeConvKey();
@@ -5193,8 +5263,8 @@ function renderSidebarSearchResults() {
 // same millisecond would collide) — good enough for "land near the
 // right message", not a hard requirement here.
 async function openColleagueAtHit(colleague, hit) {
-  await selectColleague(colleague);
-  const items = history.get(convKey(colleague.id, DEFAULT_SESSION_ID)) || [];
+  await selectColleague(colleague, DEFAULT_SESSION_ID);
+  const items = history.get(activeConvKey()) || [];
   const index = items.findIndex((item) => item.createdAt === hit.createdAt && item.text === hit.text);
   if (index !== -1) jumpToMessage(index);
 }
@@ -5246,7 +5316,7 @@ function renderSidebar() {
       const tileKeys = sessionKeysFor(colleague.id);
       appendUnreadBadge(tile, tileKeys);
       appendDraftBadge(tile, tileKeys);
-      tile.addEventListener('click', () => selectColleague(colleague, lastSessionByColleague.get(colleague.id) || DEFAULT_SESSION_ID));
+      tile.addEventListener('click', () => selectColleague(colleague));
       grid.appendChild(tile);
     }
     const button = document.createElement('button');
@@ -5262,7 +5332,9 @@ function renderSidebar() {
     button.appendChild(avatarEl(colleague));
     // The preview follows the session that's open, so the row agrees
     // with the pane next to it; otherwise her main conversation.
-    const shownSessionId = isActiveHere ? activeSessionId : DEFAULT_SESSION_ID;
+    const shownSessionId = isActiveHere && activeSessionId !== NEW_SESSION
+      ? activeSessionId
+      : lastSessionByColleague.get(colleague.id) || DEFAULT_SESSION_ID;
     const shownKey = convKey(colleague.id, shownSessionId);
     const text = document.createElement('span');
     text.className = 'colleague__text';
@@ -5276,7 +5348,7 @@ function renderSidebar() {
     // Back to the session you were last in with her, not always the
     // default one — otherwise clicking her row while you're in session
     // two would silently drop you out of it.
-    button.addEventListener('click', () => selectColleague(colleague, lastSessionByColleague.get(colleague.id) || DEFAULT_SESSION_ID));
+    button.addEventListener('click', () => selectColleague(colleague));
     if (!phone) sidebarEl.appendChild(button);
 
     // Stays after the subagent finishes — it's a way back to that
@@ -5351,7 +5423,7 @@ function renderSidebar() {
 // { colleagueId, sessionId }.
 function openConversationTarget(target) {
   if (target?.channelId && channelsById.has(target.channelId)) selectChannel(channelsById.get(target.channelId));
-  else if (target?.colleagueId && colleaguesById.has(target.colleagueId)) selectColleague(colleaguesById.get(target.colleagueId), target.sessionId || DEFAULT_SESSION_ID);
+  else if (target?.colleagueId && colleaguesById.has(target.colleagueId)) selectColleague(colleaguesById.get(target.colleagueId), target.sessionId);
 }
 navigator.serviceWorker?.addEventListener('message', (event) => {
   if (event.data?.type === 'open_conversation') openConversationTarget(event.data.target);
@@ -6136,6 +6208,17 @@ form.addEventListener('submit', (event) => {
   }
 
   if (!activeColleagueId) return;
+  if (activeSessionId === NEW_SESSION) {
+    // On her card: start a session named after the message, then send it
+    // there (see the 'session_created' update).
+    if (pendingFirstMessage) return;
+    const requestId = newMessageId();
+    pendingFirstMessage = { requestId, text: input.value, attachment: pendingAttachment };
+    const title = (typed || 'New conversation').replace(/\s+/g, ' ').slice(0, 40);
+    socket.send(JSON.stringify({ type: 'create_session', colleagueId: activeColleagueId, title, requestId }));
+    drafts.delete(activeConvKey());
+    return;
+  }
   const key = activeConvKey();
   if (cliInfo.get(key)?.handedOver) {
     // No quiet second writer: ask, and take the session back first.
@@ -6157,7 +6240,7 @@ form.addEventListener('submit', (event) => {
   // bottom, same as every other chat app, regardless of where you'd
   // scrolled to read something older first.
   renderMessages({ forceScrollToBottom: true });
-  if (activeSessionId === DEFAULT_SESSION_ID) {
+  {
     const rosterColleague = colleaguesById.get(activeColleagueId);
     if (rosterColleague) {
       rosterColleague.lastMessage = { role: 'you', text: text || 'Sent an attachment' };
