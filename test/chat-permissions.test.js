@@ -94,3 +94,24 @@ test('an automatically answered request is recorded with its source', async () =
   assert.deepEqual(result, { behavior: 'allow' });
   assert.equal(a._approvals.get('t1'), 'always allow');
 });
+
+test('with a file, standing permissions survive a restart and are kept private', async () => {
+  const { mkdtempSync, rmSync, statSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const dir = mkdtempSync(join(tmpdir(), 'hire-juno-perm-'));
+  try {
+    const file = join(dir, 'permissions.json');
+    const first = createPermissions({ file });
+    first.setAllowAll('kim::default', true);
+    first.setAlwaysAllow('ida::default', 'Bash', true);
+    assert.equal(statSync(file).mode & 0o777, 0o600);
+    const again = createPermissions({ file });
+    assert.equal(again.decide('kim::default', 'Edit'), VIA_ALLOW_ALL);
+    assert.equal(again.decide('ida::default', 'Bash'), VIA_ALWAYS_ALLOW);
+    again.setAllowAll('kim::default', false);
+    assert.equal(createPermissions({ file }).decide('kim::default', 'Edit'), null);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

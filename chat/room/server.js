@@ -19,7 +19,29 @@ import DatabaseConstructor from 'better-sqlite3';
 import { WebSocketServer } from 'ws';
 
 const MAX_TEXT = 20000;
+const MAX_ARTIFACT = 1_000_000;
+const ARTIFACT_KINDS = new Set(['transcript', 'document']);
 const HISTORY = 200;
+// Pictures in the room: the same types a chat accepts (server/store.js).
+const ATTACHMENT_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+const MAX_ATTACHMENTS = 4;
+const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+
+// Attachments sent with a post: [{ name, mimeType, data (base64) }], only
+// pictures, a few at most; null when one of them is not acceptable.
+export function cleanAttachments(list) {
+  if (list == null) return [];
+  if (!Array.isArray(list) || list.length > MAX_ATTACHMENTS) return null;
+  const out = [];
+  for (const a of list) {
+    if (!a || !ATTACHMENT_TYPES.has(a.mimeType) || typeof a.data !== 'string') return null;
+    const data = Buffer.from(a.data, 'base64');
+    if (!data.length || data.length > MAX_ATTACHMENT_BYTES) return null;
+    const name = typeof a.name === 'string' && a.name.trim() ? a.name.trim().slice(0, 200) : 'image';
+    out.push({ name, mimeType: a.mimeType, data });
+  }
+  return out;
+}
 
 export function hashToken(token) {
   return createHash('sha256').update(token, 'utf8').digest('hex');
@@ -58,9 +80,56 @@ export function openRoomStore(dbPath) {
     text TEXT NOT NULL,
     created_at TEXT NOT NULL
   )`);
+  // An artifact is a document kept in the room (a call transcript, for
+  // instance); the conversation only carries a message pointing to it.
+  db.exec(`CREATE TABLE IF NOT EXISTS room_artifacts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    member_id TEXT NOT NULL,
+    member_name TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  )`);
+  for (const column of ['artifact TEXT', 'attachments TEXT']) {
+    try {
+      db.exec(`ALTER TABLE room_messages ADD COLUMN ${column}`);
+    } catch (err) {
+      if (!/duplicate column/i.test(err.message)) throw err;
+    }
+  }
+  // Pictures posted in the room; a message lists theirs as [{id, name, mimeType}].
+  db.exec(`CREATE TABLE IF NOT EXISTS room_attachments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    data BLOB NOT NULL,
+    created_at TEXT NOT NULL
+  )`);
+  const insertAttachment = db.prepare('INSERT INTO room_attachments (name, mime_type, data, created_at) VALUES (?, ?, ?, ?)');
+  const attachmentById = db.prepare('SELECT * FROM room_attachments WHERE id = ?');
   const insert = db.prepare(
-    'INSERT INTO room_messages (member_id, member_name, agent_id, agent_name, text, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+    'INSERT INTO room_messages (member_id, member_name, agent_id, agent_name, text, created_at, artifact, attachments) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
   );
+  const insertArtifact = db.prepare(
+    'INSERT INTO room_artifacts (member_id, member_name, kind, title, content, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+  );
+  const artifactById = db.prepare('SELECT * FROM room_artifacts WHERE id = ?');
+  // Open questions of the team: what someone marked with ❓, until someone
+  // marks it as done.
+  db.exec(`CREATE TABLE IF NOT EXISTS room_questions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    member_id TEXT NOT NULL,
+    member_name TEXT NOT NULL,
+    source TEXT,
+    text TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    done_at TEXT,
+    done_by TEXT
+  )`);
+  const openQuestions = db.prepare('SELECT * FROM room_questions WHERE done_at IS NULL ORDER BY id');
+  const insertQuestion = db.prepare('INSERT INTO room_questions (member_id, member_name, source, text, created_at) VALUES (?, ?, ?, ?, ?)');
+  const finishQuestion = db.prepare('UPDATE room_questions SET done_at = ?, done_by = ? WHERE id = ? AND done_at IS NULL');
   const recent = db.prepare('SELECT * FROM room_messages ORDER BY id DESC LIMIT ?');
   const toMessage = (row) => ({
     id: row.id,
@@ -69,15 +138,51 @@ export function openRoomStore(dbPath) {
     agent: row.agent_id ? { id: row.agent_id, name: row.agent_name } : null,
     text: row.text,
     createdAt: row.created_at,
+    artifact: row.artifact ? JSON.parse(row.artifact) : null,
+    attachments: row.attachments ? JSON.parse(row.attachments) : [],
   });
   return {
-    append({ member, agent, text }) {
+    append({ member, agent, text, artifact = null, attachments = [] }) {
       const createdAt = new Date().toISOString();
-      const { lastInsertRowid } = insert.run(member.id, member.name, agent?.id ?? null, agent?.name ?? null, text, createdAt);
+      const ref = artifact ? JSON.stringify(artifact) : null;
+      const stored = attachments.map((a) => ({
+        id: Number(insertAttachment.run(a.name, a.mimeType, a.data, createdAt).lastInsertRowid),
+        name: a.name,
+        mimeType: a.mimeType,
+      }));
+      const list = stored.length ? JSON.stringify(stored) : null;
+      const { lastInsertRowid } = insert.run(member.id, member.name, agent?.id ?? null, agent?.name ?? null, text, createdAt, ref, list);
       return toMessage({
         id: Number(lastInsertRowid), member_id: member.id, member_name: member.name,
-        agent_id: agent?.id ?? null, agent_name: agent?.name ?? null, text, created_at: createdAt,
+        agent_id: agent?.id ?? null, agent_name: agent?.name ?? null, text, created_at: createdAt, artifact: ref, attachments: list,
       });
+    },
+    attachment(id) {
+      const row = attachmentById.get(id);
+      return row ? { id: row.id, name: row.name, mimeType: row.mime_type, data: row.data } : null;
+    },
+    addArtifact({ member, kind, title, content }) {
+      const createdAt = new Date().toISOString();
+      const { lastInsertRowid } = insertArtifact.run(member.id, member.name, kind, title, content, createdAt);
+      return { id: Number(lastInsertRowid), kind, title };
+    },
+    questions() {
+      return openQuestions.all().map((r) => ({ id: r.id, text: r.text, source: r.source, askedBy: r.member_name, createdAt: r.created_at }));
+    },
+    addQuestion({ member, text, source }) {
+      insertQuestion.run(member.id, member.name, source || null, text, new Date().toISOString());
+    },
+    finishQuestion(id, member) {
+      finishQuestion.run(new Date().toISOString(), member.name, id);
+    },
+    clear() {
+      db.exec('DELETE FROM room_messages; DELETE FROM room_artifacts; DELETE FROM room_attachments;');
+    },
+    artifact(id) {
+      const row = artifactById.get(id);
+      return row
+        ? { id: row.id, kind: row.kind, title: row.title, content: row.content, memberId: row.member_id, memberName: row.member_name, createdAt: row.created_at }
+        : null;
     },
     recent(limit = HISTORY) {
       return recent.all(limit).reverse().map(toMessage);
@@ -148,6 +253,7 @@ export async function runRoomServer({ socketPath, dbPath, membersFile }) {
       return;
     }
     wss.handleUpgrade(req, socket, head, (ws) => {
+      ws.member = member;
       clients.add(ws);
       ws.on('close', () => clients.delete(ws));
       send(ws, {
@@ -155,6 +261,7 @@ export async function runRoomServer({ socketPath, dbPath, membersFile }) {
         you: { id: member.id, name: member.name },
         members: members.map(({ id, name }) => ({ id, name })),
         messages: store.recent(),
+        questions: store.questions(),
       });
       ws.on('message', (raw) => {
         let payload;
@@ -163,9 +270,72 @@ export async function runRoomServer({ socketPath, dbPath, membersFile }) {
         } catch {
           return;
         }
+        // Call signalling: relayed to the addressed member's connections (or
+        // to every other connection for `to: '*'`), stamped with the sender,
+        // never stored. The payload is opaque to the room.
+        if (payload.type === 'signal') {
+          const data = payload.data;
+          if (!data || typeof data !== 'object' || JSON.stringify(data).length > 64000) return;
+          const to = typeof payload.to === 'string' ? payload.to : null;
+          if (!to) return;
+          for (const client of clients) {
+            if (client === ws) continue;
+            if (to !== '*' && client.member?.id !== to) continue;
+            send(client, { type: 'signal', from: member.id, data });
+          }
+          return;
+        }
+        if (payload.type === 'artifact') {
+          const kind = ARTIFACT_KINDS.has(payload.kind) ? payload.kind : null;
+          const title = typeof payload.title === 'string' ? payload.title.trim().slice(0, 200) : '';
+          const content = typeof payload.content === 'string' ? payload.content : '';
+          if (!kind || !title || !content || content.length > MAX_ARTIFACT) {
+            send(ws, { type: 'post_failed', ref: payload.ref, message: 'Invalid artifact.' });
+            return;
+          }
+          const artifact = store.addArtifact({ member, kind, title, content });
+          const message = store.append({ member, agent: null, text: title, artifact });
+          for (const client of clients) send(client, { type: 'message', message });
+          return;
+        }
+        // Clears the whole conversation and its artifacts, for everyone.
+        if (payload.type === 'clear') {
+          store.clear();
+          for (const client of clients) send(client, { type: 'cleared', by: member.id });
+          return;
+        }
+        if (payload.type === 'question_add' || payload.type === 'question_done') {
+          if (payload.type === 'question_add') {
+            const text = typeof payload.text === 'string' ? payload.text.trim().slice(0, 2000) : '';
+            const source = typeof payload.source === 'string' ? payload.source.slice(0, 80) : null;
+            if (!text) return;
+            store.addQuestion({ member, text, source });
+          } else if (Number.isInteger(payload.id)) {
+            store.finishQuestion(payload.id, member);
+          }
+          const questions = store.questions();
+          for (const client of clients) send(client, { type: 'questions', questions });
+          return;
+        }
+        if (payload.type === 'get_artifact') {
+          const artifact = Number.isInteger(payload.id) ? store.artifact(payload.id) : null;
+          send(ws, { type: 'artifact', ref: payload.ref, artifact });
+          return;
+        }
+        if (payload.type === 'get_attachment') {
+          const found = Number.isInteger(payload.id) ? store.attachment(payload.id) : null;
+          const attachment = found ? { ...found, data: found.data.toString('base64') } : null;
+          send(ws, { type: 'attachment', ref: payload.ref, attachment });
+          return;
+        }
         if (payload.type !== 'post') return;
         const text = typeof payload.text === 'string' ? payload.text.trim() : '';
-        if (!text || text.length > MAX_TEXT) {
+        const attachments = cleanAttachments(payload.attachments);
+        if (!attachments) {
+          send(ws, { type: 'post_failed', ref: payload.ref, message: 'Only a few pictures (PNG, JPEG, GIF, WebP) up to 10 MB each.' });
+          return;
+        }
+        if ((!text && !attachments.length) || text.length > MAX_TEXT) {
           send(ws, { type: 'post_failed', ref: payload.ref, message: 'Empty or too long.' });
           return;
         }
@@ -174,7 +344,7 @@ export async function runRoomServer({ socketPath, dbPath, membersFile }) {
           send(ws, { type: 'post_failed', ref: payload.ref, message: 'Invalid agent label.' });
           return;
         }
-        const message = store.append({ member, agent, text });
+        const message = store.append({ member, agent, text, attachments });
         for (const client of clients) send(client, { type: 'message', message, ref: client === ws ? payload.ref : undefined });
       });
     });

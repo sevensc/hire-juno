@@ -40,16 +40,16 @@ export function extractMentions(text, memberIds, excludeId) {
 }
 
 // A colleague addressing another one directly, by plain name, the way a
-// person actually talks instead of typing "@name" (e.g. "Rami — du
+// person actually talks instead of typing "@name" (e.g. "Kim — du
 // hattest ... angeboten"). Without this the addressed colleague would
 // never be dispatched, because such a line has no "@" in it at all. Recognized only at the very start of a paragraph
 // (text.matchAll with the 'm' flag's `^` — a fresh line, not a name
-// mentioned in passing mid-sentence: "das hat schon Rami geprüft" must
+// mentioned in passing mid-sentence: "das hat schon Kim geprüft" must
 // NOT trigger her, or a reply crediting a name anywhere in its text
 // would re-open the colleague-to-colleague loop server/index.js's
 // relayChannelMessage deliberately shut down for anything short of an
 // explicit address), immediately followed by the punctuation a person
-// naturally addresses someone with — "Rami — ", "Rami, ", "Rami: ".
+// naturally addresses someone with — "Kim — ", "Kim, ", "Kim: ".
 // Deterministic, same as `@name`, not the AI relevance classifier
 // (gatekeeper.js) — this only recognizes a structurally explicit
 // address spelled a different way, it doesn't guess at relevance.
@@ -57,7 +57,7 @@ const VOCATIVE_PATTERN = /^([\p{L}][\p{L} '-]*?)\s*[—,:]\s/gmu;
 
 // `names`: Map<lowercase display name, colleague id> — this module
 // otherwise only ever sees ids (folder names), never the display names
-// a person actually writes ("Rami" vs. the colleague id, which happens
+// a person actually writes ("Kim" vs. the colleague id, which happens
 // to match here but isn't guaranteed to elsewhere).
 export function extractVocativeAddresses(text, names, memberIds, excludeId) {
   const memberSet = new Set(memberIds.map((id) => id.toLowerCase()));

@@ -98,7 +98,7 @@ test('removeWorktree deletes the folder, even with changes, and keeps the branch
 
 test('chatBranchName always yields a plain ref name', () => {
   assert.equal(chatBranchName('Nora', 'a1b2c3d4-e5f6-7890'), 'chat/nora-a1b2c3d4-e5f');
-  assert.equal(chatBranchName('mila ü/..', '  '), 'chat/mila-x');
+  assert.equal(chatBranchName('kim ü/..', '  '), 'chat/kim-x');
 });
 
 test('worktreesDir and worktreeFolderName place a conversation next to the chat history', () => {

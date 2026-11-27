@@ -1,2 +1,7 @@
 .DS_Store
 node_modules/
+chat/public/vendor/transformers/
+chat/public/vendor/ort/
+# Built by `npm run build:chat` (also before publishing): the bundled
+# transcription worker is large vendor code, not kept in git.
+chat/public/transcribe-worker.js

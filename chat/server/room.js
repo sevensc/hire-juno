@@ -23,7 +23,9 @@ export function roomMentions(text, roster) {
 // `youId`: the room member this instance belongs to. `knownIds`: the
 // colleague ids of this workforce, so a colleague's reply gets her avatar.
 export function roomRow(message, youId, knownIds) {
-  const base = { text: message.text, created_at: message.createdAt, attachments: null };
+  // Pictures stay in the room; `url` is where this instance's tabs fetch them.
+  const attachments = (message.attachments || []).map((a) => ({ id: a.id, name: a.name, mimeType: a.mimeType, url: `api/room-attachment?id=${a.id}` }));
+  const base = { text: message.text, created_at: message.createdAt, attachments: attachments.length ? attachments : null, artifact: message.artifact || null };
   if (message.agent) {
     const onBehalf = message.memberId === youId ? '' : ` · for ${message.memberName}`;
     return {
@@ -34,6 +36,41 @@ export function roomRow(message, youId, knownIds) {
   }
   if (message.memberId === youId) return { ...base, sender_id: 'you', sender_name: null };
   return { ...base, sender_id: `human:${message.memberId}`, sender_name: message.memberName };
+}
+
+// A person's @handle in the team room: the name in lower case, letters,
+// digits, - and _ only. Matches personHandle in the browser code.
+export function personHandle(name) {
+  return String(name || '').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9_-]/g, '');
+}
+
+export function mentionsPerson(text, name) {
+  const handle = personHandle(name);
+  if (!handle) return false;
+  return [...String(text || '').matchAll(MENTION)].some((m) => m[1].toLowerCase() === handle);
+}
+
+// Which team room messages notify this person (their choice in the chat):
+// all | mentions (addressed to them: @name or a reply quoting them) |
+// people (from people, not colleagues) | mine (colleagues' answers to
+// what this person asked). `message` is the room message, `you` the room
+// member this chat belongs to.
+export const TEAM_NOTIFY_MODES = ['all', 'mentions', 'people', 'mine'];
+
+export function shouldNotify(mode, message, you) {
+  if (!message || message.memberId === you?.id && !message.agent) return false; // own messages
+  switch (mode) {
+    case 'mentions': {
+      const quoted = String(message.text || '').match(/^> \*\*(.+?):\*\*/);
+      return mentionsPerson(message.text, you?.name) || Boolean(quoted && quoted[1].toLowerCase() === String(you?.name || '').toLowerCase());
+    }
+    case 'people':
+      return !message.agent;
+    case 'mine':
+      return Boolean(message.agent) && message.memberId === you?.id;
+    default:
+      return true;
+  }
 }
 
 // The last few room messages as context lines for a colleague's prompt.

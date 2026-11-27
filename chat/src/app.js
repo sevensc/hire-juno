@@ -12,13 +12,18 @@
 // package still never requires a build step on the user's side.
 import { Fragment, render } from 'preact';
 import { html } from 'htm/preact';
+import { useState } from 'preact/hooks';
 
 import { renderMarkdown } from './markdown.js';
+import { youtubeEmbedUrl, youtubeThumbnail, youtubeVideos } from './youtube.js';
 import { nextMenuIndex, pickSendKind } from './send-kind.js';
 import { pickConversationToRestore, recallOpenConversation, rememberOpenConversation } from './open-conversation.js';
 import { buildIssueUrl } from './issue-link.js';
 import { limitNoticeText } from './limit-notice.js';
 import { applyTheme, readThemePreference, writeThemePreference } from './theme.js';
+import { createCallController } from './call.js';
+import { plainTextField } from './plain-field.js';
+import { createTranscriber, transcriptArtifact } from './transcribe.js';
 
 const paneEl = document.getElementById('pane');
 const paneHeaderEl = document.getElementById('pane-header');
@@ -64,6 +69,9 @@ const convSettingsTitleEl = document.getElementById('conv-settings-modal__title'
 const convSettingsCloseEl = document.getElementById('conv-settings-close');
 const convSettingsPermissionsEl = document.getElementById('conv-settings-permissions');
 const convSettingsNewSessionSectionEl = document.getElementById('conv-settings-new-session-section');
+const sessionTabsEl = document.getElementById('session-tabs');
+const teamNotifySectionEl = document.getElementById('conv-settings-team-notify-section');
+const teamNotifyFieldsetEl = document.getElementById('conv-settings-team-notify');
 const convSettingsNewSessionEl = document.getElementById('conv-settings-new-session');
 const convSettingsModelSectionEl = document.getElementById('conv-settings-model-section');
 const convSettingsModelEl = document.getElementById('conv-settings-model');
@@ -78,7 +86,7 @@ const convResetContextEl = document.getElementById('conv-reset-context');
 const convClearChatEl = document.getElementById('conv-clear-chat');
 const convClearChatLabelEl = document.getElementById('conv-clear-chat-label');
 const form = document.getElementById('composer');
-const input = document.getElementById('composer-input');
+const input = plainTextField(document.getElementById('composer-input'));
 const fileInput = document.getElementById('composer-file');
 const attachmentPreviewEl = document.getElementById('attachment-preview');
 // Explicitly the submit button, not "the first button in the form":
@@ -742,7 +750,9 @@ convClearChatEl.addEventListener('click', (event) => {
   event.stopPropagation();
   if (!clearChatArmed) {
     clearChatArmed = true;
-    convClearChatLabelEl.textContent = 'Really clear? Click again';
+    convClearChatLabelEl.textContent = activeChannelId && channelsById.get(activeChannelId)?.room
+      ? 'Clears #team for everyone. Click again'
+      : 'Really clear? Click again';
     convClearChatEl.classList.add('danger-button--armed');
     return;
   }
@@ -843,7 +853,36 @@ document.addEventListener('keydown', (event) => {
   }
 });
 
+// Team room: which messages notify this person. Saved on the server, so
+// it applies to push notifications as well as to an open tab.
+const TEAM_NOTIFY_CHOICES = [
+  { mode: 'all', label: 'All messages' },
+  { mode: 'mentions', label: 'Only messages to me (@me or a reply to me)' },
+  { mode: 'people', label: 'Only messages from people' },
+  { mode: 'mine', label: 'Only answers to what I asked a colleague' },
+];
+
+function renderTeamNotify() {
+  const room = activeChannelId && channelsById.get(activeChannelId)?.room;
+  teamNotifySectionEl.hidden = !room;
+  if (!room) return;
+  teamNotifyFieldsetEl.querySelectorAll('label').forEach((l) => l.remove());
+  for (const choice of TEAM_NOTIFY_CHOICES) {
+    const label = document.createElement('label');
+    label.className = 'team-notify-choice';
+    const radio = document.createElement('input');
+    radio.type = 'radio';
+    radio.name = 'team-notify';
+    radio.value = choice.mode;
+    radio.checked = (room.notify || 'all') === choice.mode;
+    radio.addEventListener('change', () => socket.send(JSON.stringify({ type: 'set_team_notify', mode: choice.mode })));
+    label.append(radio, document.createTextNode(` ${choice.label}`));
+    teamNotifyFieldsetEl.appendChild(label);
+  }
+}
+
 function openConvSettingsModal() {
+  renderTeamNotify();
   if (activeChannelId) {
     convSettingsTitleEl.textContent = `#${channelsById.get(activeChannelId)?.name || activeChannelId} settings`;
   } else {
@@ -1139,28 +1178,128 @@ async function renderConvSettingsTerminal({ reload = true } = {}) {
   convSettingsTerminalEl.append(hint, commandEl, status, error);
 }
 
-// Shares a video call in the team room: takes a meeting link (any https
-// address, e.g. a Google Meet link) and posts it, so everyone can join.
-function callButtonEl(channelId) {
+// Shares a meeting link in the team room (any https address, e.g. a
+// Google Meet link), for calls outside the chat.
+function linkButtonEl(channelId) {
   const button = document.createElement('button');
   button.type = 'button';
   button.className = 'pane-header__call';
-  button.title = 'Share a video call link';
-  button.setAttribute('aria-label', 'Share a video call link');
-  button.innerHTML = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="M16 10l6-3v10l-6-3z"/></svg>';
+  button.title = 'Share a meeting link';
+  button.setAttribute('aria-label', 'Share a meeting link');
+  button.innerHTML = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg>';
   button.addEventListener('click', () => {
-    const link = (window.prompt('Link to the video call (e.g. Google Meet):') || '').trim();
+    const link = (window.prompt('Link to the meeting (e.g. Google Meet):') || '').trim();
     if (!link) return;
     if (!/^https:\/\/[^\s]+$/.test(link)) {
       window.alert('Please paste a full https:// link.');
       return;
     }
-    socket.send(JSON.stringify({ type: 'channel_message', channelId, text: `Video call: ${link}`, attachments: [] }));
+    socket.send(JSON.stringify({ type: 'channel_message', channelId, text: `Meeting: ${link}`, attachments: [] }));
   });
   return button;
 }
 
+// "Only people" in the team room: hides colleagues' replies and the
+// messages addressed to a colleague. Remembered per device.
+let roomHumansOnly = (() => {
+  try {
+    return localStorage.getItem('teamRoomHumansOnly') === '1';
+  } catch {
+    return false;
+  }
+})();
+
+function humansOnlyButtonEl() {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = `pane-header__call${roomHumansOnly ? ' pane-header__call--live' : ''}`;
+  const label = roomHumansOnly ? 'Show colleagues again' : 'Only people (hide colleagues)';
+  button.title = label;
+  button.setAttribute('aria-label', label);
+  button.setAttribute('aria-pressed', String(roomHumansOnly));
+  button.innerHTML = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.6 3.4-5.5 6.5-5.5s5.7 1.9 6.5 5.5"/><circle cx="17" cy="9" r="2.5"/><path d="M16 14.6c2.6.2 4.6 1.9 5.3 5.4"/></svg>';
+  button.addEventListener('click', () => {
+    roomHumansOnly = !roomHumansOnly;
+    try {
+      localStorage.setItem('teamRoomHumansOnly', roomHumansOnly ? '1' : '0');
+    } catch {
+      // not stored; works for this visit
+    }
+    renderPaneHeader();
+    renderChannelMessages();
+  });
+  return button;
+}
+
+// Starts or joins the video call of the team room (see call.js).
+function videoButtonEl(channelId) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  const { joined, runningWithout } = call.state();
+  button.className = `pane-header__call${runningWithout ? ' pane-header__call--live' : ''}`;
+  const label = runningWithout ? 'Join the video call' : joined ? 'In the video call' : 'Start a video call';
+  button.title = label;
+  button.setAttribute('aria-label', label);
+  button.innerHTML = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="M16 10l6-3v10l-6-3z"/></svg>';
+  button.addEventListener('click', async () => {
+    if (call.state().joined) return;
+    const starting = !call.state().runningWithout;
+    try {
+      await call.join();
+    } catch (err) {
+      window.alert(`Could not start the camera or microphone: ${err.message}`);
+      return;
+    }
+    if (starting) {
+      socket.send(JSON.stringify({ type: 'channel_message', channelId, text: 'Started a video call. Tap the camera in #team to join.', attachments: [] }));
+    }
+  });
+  return button;
+}
+
+// Tabs for the open colleague's conversations: the main one, every extra
+// session, and "+" for a new one. Each tab carries its unread/draft mark.
+function renderSessionTabs() {
+  const colleague = activeColleagueId && !isSubagentThread(activeColleagueId) ? colleaguesById.get(activeColleagueId) : null;
+  sessionTabsEl.hidden = !colleague;
+  sessionTabsEl.innerHTML = '';
+  if (!colleague) return;
+  const entries = [{ id: DEFAULT_SESSION_ID, title: 'Main' }, ...(colleagueSessions.get(colleague.id) || [])];
+  let activeTab = null;
+  for (const session of entries) {
+    const tab = document.createElement('button');
+    tab.type = 'button';
+    tab.className = 'session-tab';
+    tab.setAttribute('role', 'tab');
+    const selected = session.id === (activeSessionId || DEFAULT_SESSION_ID);
+    tab.setAttribute('aria-selected', String(selected));
+    const label = document.createElement('span');
+    label.textContent = session.title || 'Untitled session';
+    tab.appendChild(label);
+    const key = convKey(colleague.id, session.id);
+    appendUnreadBadge(tab, key);
+    appendDraftBadge(tab, key);
+    if (selected) activeTab = tab;
+    else tab.addEventListener('click', () => selectColleague(colleague, session.id));
+    sessionTabsEl.appendChild(tab);
+  }
+  const add = document.createElement('button');
+  add.type = 'button';
+  add.className = 'session-tab session-tab--new';
+  add.textContent = '+';
+  add.title = `New session with ${colleague.name}`;
+  add.setAttribute('aria-label', `New session with ${colleague.name}`);
+  add.addEventListener('click', () => {
+    const title = window.prompt(`New session with ${colleague.name}. What is it about? (optional)`, '');
+    if (title === null) return;
+    socket.send(JSON.stringify({ type: 'create_session', colleagueId: colleague.id, title: title.trim() }));
+  });
+  sessionTabsEl.appendChild(add);
+  activeTab?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+}
+
 function renderPaneHeader() {
+  renderSessionTabs();
   paneHeaderEl.innerHTML = '';
   let hasContent = false;
 
@@ -1185,16 +1324,8 @@ function renderPaneHeader() {
     // in. Only for an extra session — the main conversation is the
     // default and needs no label. A button, because the next thing you
     // want after reading it is usually the list it came from.
-    if (activeSessionId && activeSessionId !== DEFAULT_SESSION_ID) {
-      const session = (colleagueSessions.get(activeColleagueId) || []).find((s) => s.id === activeSessionId);
-      const chip = document.createElement('button');
-      chip.type = 'button';
-      chip.className = 'pane-header__session';
-      chip.textContent = session?.title || 'Untitled session';
-      chip.title = 'Sessions with this colleague';
-      chip.addEventListener('click', openConvSettingsModal);
-      entries.appendChild(chip);
-    }
+    // Which session is open shows in the tabs below the header now (see
+    // renderSessionTabs).
     // The branch of this conversation's own worktree, and only that: a
     // conversation without one has no branch of its own, and the folder the
     // chat was started in says nothing about where she is working (she can
@@ -1300,7 +1431,11 @@ function renderPaneHeader() {
       searchToggle.setAttribute('aria-expanded', 'true');
       openConvSearchPanel(searchToggle);
     });
-    if (activeChannelId && channelsById.get(activeChannelId)?.room) actions.appendChild(callButtonEl(activeChannelId));
+    if (activeChannelId && channelsById.get(activeChannelId)?.room) {
+      actions.appendChild(humansOnlyButtonEl());
+      actions.appendChild(videoButtonEl(activeChannelId));
+      actions.appendChild(linkButtonEl(activeChannelId));
+    }
     actions.appendChild(searchToggle);
 
     // Opens the conversation settings dialog, which holds the Permissions
@@ -1480,7 +1615,7 @@ const pendingPermission = new Map(); // colleagueId -> {requestId, toolName, tit
 // cleared and the process really begins, end once probation begins or
 // she's told to stop. Scoped to Juno only for this repo;
 // a colleague elsewhere in a different install (e.g. a
-// dedicated HR colleague like Ada in another workforce) would need
+// dedicated HR colleague like Una in another workforce) would need
 // the same instruction added to her own profile if wanted there too.
 const HIRING_MODE_START = /^:::mode hiring-process:start\s*$/m;
 const HIRING_MODE_END = /^:::mode hiring-process:end\s*$/m;
@@ -1688,7 +1823,69 @@ function renderPermissionsList() {
   }
 }
 
+// The server's push key when it can send push notifications (a chat
+// served with --socket), else null. Set from api/status in loadRoster.
+let pushKey = null;
+
+function pushKeyBytes(key) {
+  const raw = atob(key.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (key.length % 4)) % 4));
+  return Uint8Array.from(raw, (c) => c.charCodeAt(0));
+}
+
+// Push notifications on this device: asks for permission (on a tap, as
+// Safari requires), registers sw.js and hands the subscription to the
+// server. On an iPhone this only works from the Home Screen app.
+async function enablePush() {
+  const permission = await Notification.requestPermission();
+  if (permission !== 'granted') return renderSettingsNotifyRow();
+  const registration = await navigator.serviceWorker.register('sw.js');
+  await navigator.serviceWorker.ready;
+  const subscription = (await registration.pushManager.getSubscription())
+    || (await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: pushKeyBytes(pushKey) }));
+  socket.send(JSON.stringify({ type: 'push_subscribe', subscription: subscription.toJSON() }));
+  renderSettingsNotifyRow();
+}
+
+async function renderPushRow() {
+  const supported = 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+  if (!supported) {
+    const iPhone = /iPhone|iPad/.test(navigator.userAgent);
+    settingsNotifyRowEl.textContent = iPhone
+      ? 'To get notifications on this iPhone, add this page to the Home Screen in Safari (Share, then Add to Home Screen) and open it from there.'
+      : 'Push notifications are not supported in this browser.';
+    return;
+  }
+  const registration = await navigator.serviceWorker.getRegistration();
+  const subscribed = Boolean(registration && (await registration.pushManager.getSubscription()));
+  settingsNotifyRowEl.innerHTML = '';
+  if (Notification.permission === 'denied') {
+    settingsNotifyRowEl.textContent = 'Notifications are blocked for this site. You can allow them again in the browser or system settings.';
+    return;
+  }
+  settingsNotifyRowEl.append(document.createTextNode(
+    subscribed && Notification.permission === 'granted'
+      ? 'Push notifications are on for this device.'
+      : 'Get a notification on this device when someone writes while the chat is closed.'
+  ));
+  if (!(subscribed && Notification.permission === 'granted')) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = 'Enable';
+    button.style.marginLeft = '0.5rem';
+    button.addEventListener('click', () => {
+      enablePush().catch((err) => {
+        settingsNotifyRowEl.textContent = `Could not turn on notifications: ${err.message}`;
+      });
+    });
+    settingsNotifyRowEl.appendChild(button);
+  }
+}
+
 function renderSettingsNotifyRow() {
+  if (pushKey) {
+    renderPushRow();
+    return;
+  }
   settingsNotifyRowEl.innerHTML = '';
   if (!('Notification' in window)) {
     settingsNotifyRowEl.textContent = 'Not supported in this browser.';
@@ -2574,6 +2771,19 @@ const handleSocketMessage = (event) => {
     // reconnect of a tab that was listening all along changes nothing.
     // `history` is deliberately left alone: loadColleagueHistory skips a
     // conversation that already has an entry.
+    // It is the whole truth about running turns: a turn that ended while
+    // this tab was away (a phone in the background) is not in it, and its
+    // leftover "typing…" and thinking must go, or they stay on screen.
+    const running = new Set((update.turns || []).map((t) => convKey(t.colleagueId, t.sessionId)));
+    for (const map of [thinkingStreaming, streaming, pendingTrail]) {
+      for (const key of [...map.keys()]) if (!running.has(key)) map.delete(key);
+    }
+    // Channel turns are not part of it; their leftovers go as well, a turn
+    // still running shows again with its next piece.
+    channelTyping.clear();
+    channelStreaming.clear();
+    channelThinkingStreaming.clear();
+    channelPendingTrail.clear();
     for (const turn of update.turns || []) {
       const key = convKey(turn.colleagueId, turn.sessionId);
       if (turn.thinking) thinkingStreaming.set(key, turn.thinking);
@@ -2731,13 +2941,17 @@ const handleSocketMessage = (event) => {
     // and re-render whatever's currently on screen.
     const key = update.channelId ? channelConvKey(update.channelId) : convKey(update.colleagueId, update.sessionId);
     history.set(key, []);
+    // A channel's messages on screen come from channelMessages, not history.
+    if (update.channelId) channelMessages.set(update.channelId, []);
     loadedHistory.add(key); // an emptied transcript is the real one, nothing to fetch
     if (!update.channelId) {
       const rosterColleague = colleaguesById.get(update.colleagueId);
       if (rosterColleague) rosterColleague.lastMessage = null;
     }
     renderSidebar();
-    if (key === activeConvKey()) {
+    // activeConvKey() only knows 1:1 conversations; a cleared channel that
+    // is open has to be compared by its own id.
+    if (update.channelId ? update.channelId === activeChannelId : key === activeConvKey()) {
       if (update.channelId) renderChannelMessages();
       else renderMessages();
     }
@@ -2751,11 +2965,38 @@ const handleSocketMessage = (event) => {
     return;
   }
 
+  if (update.type === 'pong') {
+    lastPongAt = Date.now();
+    return;
+  }
+
+  if (update.type === 'call_signal') {
+    call.onSignal(update.from, update.data);
+    return;
+  }
+
+  if (update.type === 'team_notify') {
+    for (const channel of channelsById.values()) if (channel.room) channel.room.notify = update.mode;
+    renderTeamNotify();
+    return;
+  }
+
+  if (update.type === 'open_questions') {
+    openQuestions = update.questions || [];
+    renderSidebar();
+    if (!artifactViewerEl.hidden && artifactViewerEl.dataset.view === 'questions') openQuestionsView();
+    return;
+  }
+
   if (update.type === 'room_state') {
     for (const channel of channelsById.values()) {
-      if (channel.room) channel.room = { connected: update.connected, members: update.members || channel.room.members };
+      if (channel.room) channel.room = { connected: update.connected, members: update.members || channel.room.members, you: update.you || channel.room.you };
     }
-    if (activeChannelId && channelsById.get(activeChannelId)?.room) renderPaneHeader();
+    if (activeChannelId && channelsById.get(activeChannelId)?.room) {
+      renderPaneHeader();
+      // The chat (re)connected to the room: what was said meanwhile is there now.
+      if (update.synced) refreshActiveConversation().catch(() => {});
+    }
     return;
   }
 
@@ -2850,9 +3091,10 @@ const handleSocketMessage = (event) => {
     // receives them; renderChannelMessages wants a ready-to-use
     // dataUrl, same shape pendingAttachment already carries for the 1:1
     // preview.
+    // Team room pictures come as an address (`url`) instead of the bytes.
     const attachments = (update.attachments || []).map((a) => ({
       ...a,
-      dataUrl: `data:${a.mimeType};base64,${a.data}`,
+      dataUrl: a.url || `data:${a.mimeType};base64,${a.data}`,
     }));
     // The channel_message is the authoritative "she's done" signal —
     // the trail collected for her turn (see the 'tool_use'/
@@ -2874,6 +3116,7 @@ const handleSocketMessage = (event) => {
     channelMessages.get(update.channelId).push({
       senderId: update.senderId,
       senderName: update.senderName || null,
+      artifact: update.artifact || null,
       text,
       attachments,
       createdAt: new Date().toISOString(),
@@ -2891,7 +3134,8 @@ const handleSocketMessage = (event) => {
     channelTyping.delete(update.senderId);
     settleChannelIfIdle(update.channelId);
     const isColleagueMessage = update.senderId !== 'you' && update.senderId !== 'system';
-    if (isColleagueMessage && !(document.hasFocus() && update.channelId === activeChannelId)) {
+    // The team room says per message whether it notifies (this person's setting).
+    if (isColleagueMessage && update.notify !== false && !(document.hasFocus() && update.channelId === activeChannelId)) {
       const channel = channelsById.get(update.channelId);
       const sender = colleaguesById.get(update.senderId);
       notify(`#${channel?.name || 'channel'} — ${update.senderName || sender?.name || update.senderId}`, text, () => {
@@ -3019,7 +3263,7 @@ const handleSocketMessage = (event) => {
         ownerColleagueId,
         syntheticId: `sub:${update.id}`,
         // When the subagent_type the model picked happens to name a
-        // real colleague (Ada addressing "remy" as a subagent, say),
+        // real colleague (Una addressing "remy" as a subagent, say),
         // her own identity carries over — same avatar, same name,
         // whether she's answering directly or running as someone
         // else's subagent.
@@ -3235,11 +3479,29 @@ let reconnectTimer = null;
 
 function connectSocket() {
   const s = new WebSocket(wsUrl());
+  // A connection attempt that hangs (a phone between networks) would
+  // otherwise never close and so never be retried.
+  const connectTimeout = setTimeout(() => {
+    if (s.readyState === WebSocket.CONNECTING) s.close();
+  }, 8000);
   s.addEventListener('message', handleSocketMessage);
   s.addEventListener('open', () => {
+    clearTimeout(connectTimeout);
     reconnectDelayMs = 500;
+    // Whatever arrived while the connection was down never reached this
+    // tab: after a reconnect the open conversation and the list are loaded
+    // again, so nothing needs a manual reload.
+    if (socketOpenedBefore) {
+      refreshActiveConversation().catch(() => {});
+      loadRoster({ preserveSelection: true }).catch(() => {});
+    }
+    socketOpenedBefore = true;
+    // The server sends push notifications only while no tab is in view.
+    s.send(JSON.stringify({ type: 'visibility', visible: document.visibilityState === 'visible' }));
   });
   s.addEventListener('close', () => {
+    // A connection replaced on purpose (see retireSocket) has its successor already.
+    if (s.retired) return;
     // Only one retry ever pending at a time — a second 'close' while
     // one is already scheduled (shouldn't happen, but a reconnect
     // attempt that itself immediately fails would otherwise stack
@@ -3254,7 +3516,497 @@ function connectSocket() {
   return s;
 }
 
+let socketOpenedBefore = false;
+
+// Takes a connection out of service before its successor starts: it may
+// still be alive and deliver, and every streamed piece would then arrive
+// twice (doubled text in a reply or its thinking).
+function retireSocket(old) {
+  old.retired = true;
+  old.removeEventListener('message', handleSocketMessage);
+  try { old.close(); } catch { /* already closing */ }
+}
 let socket = connectSocket();
+
+// A phone can bring the app back with a connection that still looks open
+// but is dead. Coming back into view, the tab asks the server for a sign
+// of life and reconnects if none arrives.
+let lastPongAt = 0;
+function probeSocket() {
+  if (socket.readyState !== WebSocket.OPEN) return;
+  const sentAt = Date.now();
+  socket.send(JSON.stringify({ type: 'ping' }));
+  setTimeout(() => {
+    if (lastPongAt >= sentAt || socket.readyState === WebSocket.CONNECTING) return;
+    retireSocket(socket);
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+    reconnectDelayMs = 500;
+    socket = connectSocket();
+  }, 4000);
+}
+
+// While the app is on screen it says so every 10 seconds. The server sends
+// push notifications only when no tab has done that recently: a phone
+// freezes a closed app's code, but its connection may stay up for a while.
+// The same tick checks the connection itself: one that looks open but
+// no longer carries anything (a dropped network, a server restart behind
+// a proxy) is replaced instead of leaving the chat silently stale.
+setInterval(() => {
+  if (document.visibilityState === 'visible' && socket.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify({ type: 'visibility', visible: true }));
+    probeSocket();
+  }
+}, 10000);
+
+// Keyboard open on a touch screen: typing in the composer (or any text
+// field), or the visible area clearly shorter than it has been.
+let tallestVisible = 0;
+const touchScreen = window.matchMedia('(pointer: coarse)').matches;
+function updateKeyboardOpen() {
+  const editing = touchScreen && document.activeElement?.matches?.('#composer-input, input[type="text"], textarea');
+  const shrunk = window.visualViewport ? tallestVisible - window.visualViewport.height > 150 : false;
+  document.documentElement.classList.toggle('keyboard-open', Boolean(editing || shrunk));
+}
+document.addEventListener('focusin', updateKeyboardOpen);
+document.addEventListener('focusout', () => setTimeout(updateKeyboardOpen, 50));
+
+// On an iPhone the on-screen keyboard does not shrink the layout viewport:
+// the page is pushed up instead, composer and header out of place. The app
+// takes the visible height instead and stays at the top.
+if (window.visualViewport) {
+  const fitToVisible = () => {
+    document.documentElement.style.setProperty('--app-height', `${Math.round(window.visualViewport.height)}px`);
+    // Keyboard open: the layout is a good deal taller than what is visible.
+    // Then the room kept free for the home indicator is not needed, and the
+    // conversation header gets compact, so more of the messages stays in view.
+    // The tallest the visible area has been is the screen without keyboard;
+    // in a Home Screen app the window itself shrinks with the keyboard, so
+    // comparing with window.innerHeight would never see it.
+    tallestVisible = Math.max(tallestVisible, window.visualViewport.height);
+    updateKeyboardOpen();
+    if (window.scrollY) window.scrollTo(0, 0);
+  };
+  window.visualViewport.addEventListener('resize', fitToVisible);
+  window.visualViewport.addEventListener('scroll', fitToVisible);
+  fitToVisible();
+}
+
+// The video call of the team room and its full-screen view.
+const callOverlayEl = document.createElement('div');
+callOverlayEl.id = 'call-overlay';
+callOverlayEl.hidden = true;
+document.body.appendChild(callOverlayEl);
+const callVideos = new Map(); // participant key -> <video>
+let callSpotlight = null; // participant key shown big, picked by a click
+let callMinimized = false; // the call as a small window in the corner
+let callPipWindow = null; // the call in its own always-on-top window (Document Picture-in-Picture)
+
+function roomMemberName(memberId) {
+  for (const channel of channelsById.values()) {
+    const member = channel.room?.members?.find((m) => m.id === memberId);
+    if (member) return member.name;
+  }
+  return memberId;
+}
+
+function callTile(keyName, stream, label, { mirrored = false, muted = false, screen = false } = {}) {
+  let tile = callVideos.get(keyName);
+  if (!tile) {
+    tile = document.createElement('figure');
+    tile.className = 'call-tile';
+    const video = document.createElement('video');
+    video.autoplay = true;
+    video.playsInline = true;
+    video.setAttribute('playsinline', '');
+    const caption = document.createElement('figcaption');
+    tile.append(video, caption);
+    callVideos.set(keyName, tile);
+  }
+  const video = tile.querySelector('video');
+  video.muted = muted;
+  // Safari moves an incoming video into a small floating window by itself
+  // when the app or tab goes to the background.
+  if (!muted) {
+    video.autoPictureInPicture = true;
+    video.setAttribute('autopictureinpicture', '');
+  }
+  video.classList.toggle('call-tile__video--mirrored', mirrored);
+  // A shared screen is shown whole, not cropped to fill the tile.
+  video.classList.toggle('call-tile__video--screen', screen);
+  if (stream && video.srcObject !== stream) video.srcObject = stream;
+  tile.querySelector('figcaption').textContent = label;
+  return tile;
+}
+
+// Tile key of a participant's shared screen: its own tile next to the
+// camera; an older app without a second video channel sends the screen
+// instead of the camera, then it is the camera tile.
+const screenTileKey = (peer) => (peer.screenStream ? `${peer.key}:screen` : peer.key);
+
+// The video for the small floating window: someone sharing a screen, else
+// the first other participant.
+function pictureInPictureVideo() {
+  const { peers } = call.state();
+  const sharing = peers.find((p) => p.sharing);
+  const k = sharing ? screenTileKey(sharing) : peers[0]?.key;
+  return k ? callVideos.get(k)?.querySelector('video') : null;
+}
+
+async function togglePictureInPicture() {
+  const video = pictureInPictureVideo();
+  if (!video) return;
+  try {
+    if (document.pictureInPictureElement) await document.exitPictureInPicture();
+    else if (video.requestPictureInPicture) await video.requestPictureInPicture();
+    else if (video.webkitSetPresentationMode) {
+      video.webkitSetPresentationMode(video.webkitPresentationMode === 'picture-in-picture' ? 'inline' : 'picture-in-picture');
+    }
+  } catch {
+    // not allowed right now (e.g. no video yet); nothing to undo
+  }
+}
+
+// The small window with everyone in it: Chromium browsers can put any
+// part of a page in an always-on-top window (Document Picture-in-Picture);
+// elsewhere only one video can float, the main one.
+async function openCallWindow() {
+  if (callPipWindow) return;
+  if (!window.documentPictureInPicture) {
+    togglePictureInPicture();
+    return;
+  }
+  try {
+    const win = await window.documentPictureInPicture.requestWindow({ width: 420, height: 320 });
+    for (const node of document.querySelectorAll('link[rel="stylesheet"], style')) {
+      const copy = node.cloneNode(true);
+      if (copy.tagName === 'LINK') copy.href = node.href; // absolute: the window has no base address
+      win.document.head.appendChild(copy);
+    }
+    const theme = document.documentElement.getAttribute('data-theme');
+    if (theme) win.document.documentElement.setAttribute('data-theme', theme);
+    win.document.title = 'Call';
+    win.document.body.className = 'call-pip';
+    callPipWindow = win;
+    // Closing the window brings the videos back into the page first.
+    win.addEventListener('pagehide', () => {
+      callPipWindow = null;
+      renderCall(call.state());
+    });
+    renderCall(call.state());
+  } catch {
+    togglePictureInPicture();
+  }
+}
+
+// A video taken out of the page is paused by the browser and stays frozen
+// after it comes back; every visible one is told to play again.
+function resumeCallVideos(tiles) {
+  for (const tile of tiles.values()) {
+    const video = tile.querySelector('video');
+    if (video?.srcObject && video.paused) video.play().catch(() => {});
+  }
+}
+
+// The compact view (corner and small window): one picture big, everyone
+// else small on top of it, so nobody drops out of sight.
+function compactCallStage(tiles, mainKey, onMainClick) {
+  const stage = document.createElement('div');
+  stage.className = 'call-mini__stage';
+  const main = document.createElement('div');
+  main.className = 'call-mini__main';
+  const mainTile = tiles.get(mainKey);
+  main.appendChild(mainTile);
+  mainTile.onclick = onMainClick;
+  stage.appendChild(main);
+  const strip = document.createElement('div');
+  strip.className = 'call-mini__strip';
+  for (const [key, tile] of tiles) {
+    if (key === mainKey) continue;
+    tile.onclick = (event) => {
+      event.stopPropagation();
+      callSpotlight = key;
+      renderCall(call.state());
+    };
+    strip.appendChild(tile);
+  }
+  if (strip.childElementCount) stage.appendChild(strip);
+  return stage;
+}
+
+// Chrome can open the small window by itself when a tab with a running
+// call goes to the background, if the page offers this action.
+try {
+  navigator.mediaSession?.setActionHandler?.('enterpictureinpicture', () => {
+    if (call.state().joined) openCallWindow();
+  });
+} catch {
+  // the browser does not know this action
+}
+
+function renderCall(state) {
+  if (activeChannelId && channelsById.get(activeChannelId)?.room) renderPaneHeader();
+  callOverlayEl.hidden = !state.joined;
+  if (!state.joined) {
+    callPipWindow?.close();
+    callPipWindow = null;
+    callOverlayEl.innerHTML = '';
+    callVideos.clear();
+    return;
+  }
+  const wanted = new Set([
+    'local',
+    ...(state.screen ? ['local:screen'] : []),
+    ...state.peers.flatMap((p) => (p.screenStream ? [p.key, `${p.key}:screen`] : [p.key])),
+  ]);
+  for (const k of [...callVideos.keys()]) if (!wanted.has(k)) callVideos.delete(k);
+  if (callSpotlight && !wanted.has(callSpotlight)) callSpotlight = null;
+
+  // Every participant's tile; a click on one makes it the big one (again:
+  // back to the even grid).
+  const tiles = new Map();
+  for (const peer of state.peers) {
+    const name = roomMemberName(peer.member);
+    const screenInCamera = peer.sharing && !peer.screenStream;
+    const tile = callTile(peer.key, peer.stream, screenInCamera ? `${name} (screen)` : name, { screen: screenInCamera });
+    tile.classList.toggle('call-tile--paused', peer.paused);
+    tile.dataset.initial = name.slice(0, 1).toUpperCase();
+    tile.dataset.pausedText = `${name} is away, video paused`;
+    tiles.set(peer.key, tile);
+    if (peer.screenStream) {
+      // The screen's video element plays muted: the sound comes with the camera.
+      tiles.set(`${peer.key}:screen`, callTile(`${peer.key}:screen`, peer.screenStream, `${name} (screen)`, { muted: true, screen: true }));
+    }
+  }
+  tiles.set('local', callTile('local', state.local, 'You', { mirrored: true, muted: true }));
+  if (state.screen) tiles.set('local:screen', callTile('local:screen', state.screen, 'Your screen', { muted: true, screen: true }));
+  for (const [key, tile] of tiles) {
+    tile.onclick = () => {
+      callSpotlight = callSpotlight === key ? null : key;
+      renderCall(call.state());
+    };
+  }
+  // Big: the one picked, else a shared screen, else nobody (even grid).
+  const sharing = state.peers.find((p) => p.sharing);
+  const big = callSpotlight || (sharing ? screenTileKey(sharing) : null);
+
+  const control = (label, active, onClick, extra = '') => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = `call-control${active ? '' : ' call-control--off'}${extra}`;
+    b.textContent = label;
+    b.addEventListener('click', onClick);
+    return b;
+  };
+  const leave = async () => {
+    if (transcriber.state().running) await finishTranscript();
+    callMinimized = false;
+    callPipWindow?.close();
+    call.leave();
+  };
+
+  const ts = transcriber.state();
+  if (ts.running) {
+    transcriber.sync([
+      { key: 'local', stream: state.local, name: roomMemberName(state.me) },
+      ...state.peers.map((p) => ({ key: p.key, stream: p.stream, name: roomMemberName(p.member) })),
+    ]);
+  }
+
+  const mainKey = big || state.peers[0]?.key || 'local';
+
+  // In its own window: everyone there, the page stays free for the chat.
+  if (callPipWindow) {
+    const back = () => callPipWindow?.close();
+    const bar = document.createElement('div');
+    bar.className = 'call-mini__bar';
+    bar.append(
+      control('Back', true, back),
+      control(state.micOn ? 'Mute' : 'Unmute', state.micOn, () => call.toggleMic()),
+      control(state.camOn ? 'Cam off' : 'Cam on', state.camOn, () => call.toggleCam()),
+      control('Leave', true, leave, ' call-control--leave'),
+    );
+    callPipWindow.document.body.replaceChildren(compactCallStage(tiles, mainKey, () => {}), bar);
+    callOverlayEl.hidden = true;
+    callOverlayEl.replaceChildren();
+    resumeCallVideos(tiles);
+    return;
+  }
+
+  // Minimized: one small window in the corner, the chat stays usable.
+  callOverlayEl.classList.toggle('call-overlay--mini', callMinimized);
+  if (callMinimized) {
+    const expand = () => { callMinimized = false; renderCall(call.state()); };
+    const bar = document.createElement('div');
+    bar.className = 'call-mini__bar';
+    bar.append(
+      control('Expand', true, expand),
+      control(state.micOn ? 'Mute' : 'Unmute', state.micOn, () => call.toggleMic()),
+      control('Leave', true, leave, ' call-control--leave'),
+    );
+    callOverlayEl.replaceChildren(compactCallStage(tiles, mainKey, expand), bar);
+    resumeCallVideos(tiles);
+    return;
+  }
+
+  const stage = document.createElement('div');
+  if (big && tiles.has(big)) {
+    stage.className = 'call-stage call-stage--spotlight';
+    const main = document.createElement('div');
+    main.className = 'call-stage__main';
+    main.appendChild(tiles.get(big));
+    const strip = document.createElement('div');
+    strip.className = 'call-stage__strip';
+    for (const [key, tile] of tiles) if (key !== big) strip.appendChild(tile);
+    stage.append(main, strip);
+  } else {
+    stage.className = `call-grid call-grid--${Math.min(tiles.size, 4)}`;
+    for (const tile of tiles.values()) stage.appendChild(tile);
+  }
+
+  const controls = document.createElement('div');
+  controls.className = 'call-controls';
+  const pipVideo = pictureInPictureVideo();
+  const pipAvailable = Boolean(window.documentPictureInPicture)
+    || Boolean(pipVideo && (document.pictureInPictureEnabled || pipVideo.webkitSupportsPresentationMode?.('picture-in-picture')));
+  controls.append(
+    control('Minimize', true, () => { callMinimized = true; renderCall(call.state()); }),
+    ...(pipAvailable ? [control('Small window', true, () => openCallWindow())] : []),
+    control(state.micOn ? 'Mute' : 'Unmute', state.micOn, () => call.toggleMic()),
+    control(state.camOn ? 'Camera off' : 'Camera on', state.camOn, () => call.toggleCam()),
+    ...(state.canShareScreen
+      ? [control(state.screen ? 'Stop sharing' : 'Share screen', !state.screen, () => {
+          (state.screen ? call.stopScreen() : call.shareScreen()).catch(() => {});
+        })]
+      : []),
+    control('Leave', true, leave, ' call-control--leave'),
+  );
+  // Transcription runs on a computer only: too heavy for a phone.
+  const canTranscribe = !/iPhone|iPad|Android/.test(navigator.userAgent);
+  // One transcript per call is enough: while another tab writes one (also
+  // this person's other device), this one does not start a second.
+  if (canTranscribe && (ts.running || !state.transcribedBy.length)) {
+    controls.append(control(
+      ts.running ? 'Stop transcript' : ts.progress != null ? `Loading model ${ts.progress}%` : 'Transcribe',
+      !ts.running,
+      () => toggleTranscript(),
+    ));
+  }
+  const status = document.createElement('p');
+  status.className = 'call-status';
+  const others = state.transcribedBy.map(roomMemberName);
+  status.textContent = [
+    state.peers.length ? '' : 'Waiting for the others to join…',
+    big ? 'Tap the big picture to go back to all.' : state.peers.length ? 'Tap a picture to make it big.' : '',
+    ts.running ? `Transcription running on this device (${ts.model}, ${ts.device}, ${ts.lines} lines${ts.queued ? `, ${ts.queued} waiting` : ''}).` : '',
+    others.length ? `Transcription running (${others.join(', ')}).` : '',
+  ].filter(Boolean).join(' ');
+  callOverlayEl.replaceChildren(stage, status, controls);
+  resumeCallVideos(tiles);
+}
+
+// Reader for an artifact of the team room (e.g. a call transcript).
+const artifactViewerEl = document.createElement('div');
+artifactViewerEl.id = 'artifact-viewer';
+artifactViewerEl.hidden = true;
+document.body.appendChild(artifactViewerEl);
+
+async function openArtifact(id) {
+  artifactViewerEl.hidden = false;
+  artifactViewerEl.innerHTML = '<div class="artifact-viewer__panel"><p>Loading…</p></div>';
+  let artifact = null;
+  try {
+    const res = await fetch(`api/room-artifact?id=${encodeURIComponent(id)}`);
+    artifact = res.ok ? await res.json() : null;
+  } catch {
+    artifact = null;
+  }
+  const panel = document.createElement('div');
+  panel.className = 'artifact-viewer__panel';
+  panel.setAttribute('role', 'dialog');
+  panel.setAttribute('aria-modal', 'true');
+  const header = document.createElement('div');
+  header.className = 'artifact-viewer__header';
+  const title = document.createElement('h2');
+  title.textContent = artifact?.title || 'Not available';
+  const copy = document.createElement('button');
+  copy.type = 'button';
+  copy.textContent = 'Copy';
+  copy.addEventListener('click', (event) => copyWithFeedback(artifact?.content || '', event.currentTarget));
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.textContent = 'Close';
+  close.addEventListener('click', closeArtifact);
+  header.append(title, ...(artifact ? [copy] : []), close);
+  const body = document.createElement('div');
+  body.className = 'artifact-viewer__body';
+  body.innerHTML = artifact ? renderMarkdown(artifact.content) : '<p>This document could not be loaded.</p>';
+  panel.append(header, body);
+  artifactViewerEl.replaceChildren(panel);
+  close.focus();
+}
+
+function closeArtifact() {
+  artifactViewerEl.hidden = true;
+  artifactViewerEl.innerHTML = '';
+  delete artifactViewerEl.dataset.view;
+}
+artifactViewerEl.addEventListener('click', (event) => {
+  if (event.target === artifactViewerEl) closeArtifact();
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && !artifactViewerEl.hidden) closeArtifact();
+});
+
+const transcriber = createTranscriber({ onChange: () => renderCall(call.state()) });
+let transcriptChannelId = null;
+
+async function toggleTranscript() {
+  if (transcriber.state().running) {
+    await finishTranscript();
+    return;
+  }
+  if (transcriber.state().progress != null) return;
+  transcriptChannelId = activeChannelId;
+  try {
+    await transcriber.start();
+  } catch (err) {
+    window.alert(`Could not start the transcription: ${err.message}`);
+    renderCall(call.state());
+    return;
+  }
+  call.announceTranscribing(true);
+  renderCall(call.state());
+}
+
+// Posts the transcript to the team room and tells the call it ended.
+async function finishTranscript() {
+  call.announceTranscribing(false);
+  const result = await transcriber.stop();
+  if (!result) return;
+  const { title, content } = transcriptArtifact(result);
+  socket.send(JSON.stringify({ type: 'room_artifact', kind: 'transcript', title, content }));
+}
+
+const call = createCallController({
+  sendSignal: (to, data) => {
+    if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'call_signal', to, data }));
+  },
+  fetchIce: () => fetch('api/ice').then((r) => r.json()),
+  onChange: renderCall,
+});
+window.addEventListener('pagehide', () => call.leave());
+
+document.addEventListener('visibilitychange', () => {
+  // Only a phone stops the camera in the background; on a computer the
+  // picture goes on (as in other call apps), so nothing to tell the others.
+  if (/iPhone|iPad|Android/.test(navigator.userAgent)) call.setAway(document.visibilityState !== 'visible');
+  if (socket.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify({ type: 'visibility', visible: document.visibilityState === 'visible' }));
+  }
+});
 
 // The other half of "no reload, that's WebSocket's job": `close` alone
 // only fires once the browser/OS notices the connection is actually
@@ -3281,6 +4033,12 @@ function reconnectIfDead() {
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') return;
   reconnectIfDead();
+  probeSocket();
+  // Back from the lock screen or another app: what happened meanwhile may
+  // not have reached this tab, so the running turns and the open
+  // conversation are asked for again.
+  if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'get_live_state' }));
+  refreshActiveConversation().catch(() => {});
 });
 
 // `key`: for a 1:1 turn this is the full convKey its one caller already
@@ -3500,13 +4258,36 @@ async function copyWithFeedback(text, button) {
   button.dataset.timer = String(setTimeout(() => { button.textContent = label; }, 1500));
 }
 
-function MessageRow({ role, avatarColleague, nameTag, item, toolText, onToggle, onToggleTrailEntry, onWithdraw }) {
+// A YouTube link plays right in the chat: first only its picture (nothing
+// from YouTube itself loads), a tap starts the player in place, inline on
+// phones. Browsers do not let a video start with sound on its own, so the
+// tap is what starts it.
+function YouTubeCard({ video }) {
+  const [playing, setPlaying] = useState(false);
+  if (playing) {
+    return html`<div class="youtube-card youtube-card--playing">
+      <iframe
+        src=${youtubeEmbedUrl(video)}
+        title="YouTube video"
+        allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
+        allowfullscreen
+        referrerpolicy="strict-origin-when-cross-origin"
+      ></iframe>
+    </div>`;
+  }
+  return html`<button type="button" class="youtube-card" aria-label="Play the YouTube video here" onClick=${(e) => { e.stopPropagation(); setPlaying(true); }}>
+    <img src=${youtubeThumbnail(video.id)} alt="" loading="lazy" referrerpolicy="no-referrer" />
+    <span class="youtube-card__play" aria-hidden="true"></span>
+  </button>`;
+}
+
+function MessageRow({ role, avatarColleague, nameTag, item, toolText, onToggle, onToggleTrailEntry, onWithdraw, variant = null, onReply = null, onReact = null, accent = null }) {
   const isToolUse = item.toolInput !== undefined;
   const time = formatMessageTime(item.createdAt);
   return html`
     <${Fragment}>
       ${item.trail?.length ? html`<${TrailBox} trail=${item.trail} onToggleEntry=${onToggleTrailEntry} />` : null}
-      <div class="message message--${role}${item.pending ? ' message--pending' : ''}">
+      <div class="message message--${role}${variant ? ` message--${variant}` : ''}${item.pending ? ' message--pending' : ''}" style=${accent ? `--person: ${accent}` : null}>
         ${avatarColleague ? html`<${Avatar} colleague=${avatarColleague} />` : null}
         ${isToolUse
           ? html`
@@ -3516,12 +4297,29 @@ function MessageRow({ role, avatarColleague, nameTag, item, toolText, onToggle, 
           : html`
               <span>
                 ${nameTag ? html`<strong class="message__sender">${nameTag}</strong><br />` : null}
-                ${item.text ? html`<span dangerouslySetInnerHTML=${{ __html: renderMarkdown(item.text) }} />` : null}
+                ${item.artifact
+                  ? html`<button type="button" class="artifact-card" onClick=${() => openArtifact(item.artifact.id)}>
+                      <span class="artifact-card__kind">${item.artifact.kind === 'transcript' ? 'Transcript' : 'Document'}</span>
+                      <span class="artifact-card__title">${item.artifact.title}</span>
+                      <span class="artifact-card__open">Open</span>
+                    </button>`
+                  : item.text ? html`<span dangerouslySetInnerHTML=${{ __html: renderMarkdown(item.text) }} />` : null}
+                ${item.text && !item.artifact
+                  ? youtubeVideos(item.text).map((video) => html`<${YouTubeCard} key=${video.id} video=${video} />`)
+                  : null}
                 ${(item.attachments || []).map(
                   (attachment, i) => html`<img key=${i} class="attachment-thumb" src=${attachment.dataUrl} alt=${attachment.name} role="button" tabindex="0" />`
                 )}
                 <span class="message__footer">
-                  ${item.text
+                  ${onReply && item.text && !item.pending
+                    ? html`<button type="button" class="copy-button" aria-label="Reply to this message" onClick=${onReply}>Reply</button>`
+                    : null}
+                  ${onReact && item.text && !item.pending
+                    ? reactionsFor(item).map(
+                        (r) => html`<button type="button" class="reaction-button" title=${r.label} aria-label=${r.label} onClick=${() => onReact(r.key)}>${r.emoji}</button>`
+                      )
+                    : null}
+                  ${item.text && !item.artifact
                     ? html`<button type="button" class="copy-button" aria-label="Copy message as Markdown" onClick=${(event) => copyWithFeedback(item.text, event.currentTarget)}>Copy</button>`
                     : null}
                   ${item.pending
@@ -3645,6 +4443,8 @@ function renderMessages({ forceScrollToBottom = false } = {}) {
       renderMessages();
       socket.send(JSON.stringify({ type: 'cancel_message', id: item.clientId, colleagueId: activeColleagueId, sessionId: activeSessionId }));
     }}
+    onReply=${item.role === 'colleague' ? () => startReply(activeColleagueId, colleaguesById.get(activeColleagueId)?.name || '', item.text) : null}
+    onReact=${item.role === 'colleague' ? (key) => sendReaction(key, activeColleagueId, colleaguesById.get(activeColleagueId)?.name || '', item.text) : null}
   />`;
 
   render(
@@ -3751,7 +4551,23 @@ function renderChannelMessages({ forceScrollToBottom = false } = {}) {
   // Same reasoning as renderMessages' own stickToBottom — measured
   // before render() below, not after.
   const stickToBottom = forceScrollToBottom || isNearBottom();
-  const items = channelMessages.get(activeChannelId) || [];
+  const isRoom = Boolean(channelsById.get(activeChannelId)?.room);
+  // In the team room a colleague's reply is told apart by colour, and
+  // "only people" hides it together with the messages addressed to one.
+  const isAgentItem = (item) => item.senderId !== 'you' && item.senderId !== 'system' && !item.senderId.startsWith('human:');
+  // Addressed to a colleague: an @mention of her, or a reply or reaction
+  // quoting one of her messages ("> **Kim:** …", see quoteOf).
+  const colleagueNames = new Set(colleaguesList.map((c) => c.name.toLowerCase()));
+  const toAgent = (item) => {
+    if (isAgentItem(item)) return false;
+    const text = String(item.text || '');
+    if ([...text.matchAll(/@([a-z][a-z0-9_-]*)/gi)].some((m) => colleaguesById.has(m[1].toLowerCase()))) return true;
+    const quoted = text.match(/^> \*\*(.+?):\*\*/);
+    return Boolean(quoted && colleagueNames.has(quoted[1].toLowerCase()));
+  };
+  const items = (channelMessages.get(activeChannelId) || []).filter(
+    (item) => !(isRoom && roomHumansOnly && (isAgentItem(item) || toAgent(item)))
+  );
 
   // Who's currently mid-turn in this channel, so there is always an
   // indication of who's writing. One entry per colleague actively
@@ -3760,6 +4576,7 @@ function renderChannelMessages({ forceScrollToBottom = false } = {}) {
   const typingEntries = [];
   for (const [colleagueId, channelId] of channelTyping) {
     if (channelId !== activeChannelId) continue;
+    if (isRoom && roomHumansOnly) continue;
     const colleague = colleaguesById.get(colleagueId);
     const thinkingPartial = channelThinkingStreaming.get(colleagueId);
     const partial = channelStreaming.get(colleagueId);
@@ -3794,6 +4611,8 @@ function renderChannelMessages({ forceScrollToBottom = false } = {}) {
       key=${i}
       role=${role}
       avatarColleague=${sender}
+      variant=${!isRoom || isYou || isSystem ? null : isAgentItem(item) ? 'agent' : mentionsMe(item.text) ? 'mention' : 'person'}
+      accent=${isRoom && item.senderId.startsWith('human:') ? personColor(item.senderId) : null}
       nameTag=${item.senderName || sender?.name || null}
       item=${item}
       toolText=${item.text}
@@ -3805,6 +4624,10 @@ function renderChannelMessages({ forceScrollToBottom = false } = {}) {
         item.trail[entryIndex].expanded = !item.trail[entryIndex].expanded;
         renderChannelMessages();
       }}
+      onReply=${!isSystem && !item.artifact ? () => startReply(isYou ? null : item.senderId, isYou ? 'You' : item.senderName || sender?.name || '', item.text) : null}
+      onReact=${isRoom && isAgentItem(item) && colleaguesById.has(item.senderId)
+        ? (key) => sendReaction(key, item.senderId, sender?.name || '', item.text)
+        : null}
     />`;
   };
 
@@ -3871,6 +4694,7 @@ async function selectChannel(channel) {
   input.disabled = false;
   sendButton.disabled = false;
   attachButtonEl.style.display = '';
+  if (channel.room) call.probe();
   input.placeholder = channel.room
     ? `Message #${channel.name}… (@name brings a colleague in)`
     : `Message #${channel.name}… (@name/@all to address someone directly, or just ask)`;
@@ -3902,6 +4726,7 @@ async function loadChannelHistory(channelId, { force = false } = {}) {
       // Set for people and for colleagues answering for someone else in the
       // team room (see server/room.js); a plain channel has none.
       senderName: row.sender_name || null,
+      artifact: row.artifact || null,
       text: row.text,
       createdAt: row.created_at,
       attachments: storedAttachments(row.attachments),
@@ -3955,7 +4780,7 @@ async function selectColleague(colleague, sessionId = DEFAULT_SESSION_ID) {
 // bytes are fetched by the <img> itself (api/attachment), so `dataUrl`
 // holds that address — every renderer only ever reads `dataUrl`.
 function storedAttachments(list) {
-  return (list || []).map((a) => ({ ...a, dataUrl: `api/attachment?id=${a.id}` }));
+  return (list || []).map((a) => ({ ...a, dataUrl: a.url || `api/attachment?id=${a.id}` }));
 }
 
 // Marks the bubble sent under `w.id` as waiting (see message_waiting).
@@ -4242,7 +5067,36 @@ function renderSidebar() {
     sidebarEl.appendChild(empty);
     return;
   }
+  // On a phone the list of colleagues is an overview of small cards (photo,
+  // name, role) instead of rows; what hangs off a colleague (sub-agent
+  // panels) and the channels follow below it as before.
+  const phone = isPhoneLayout();
+  const grid = phone ? document.createElement('div') : null;
+  if (grid) {
+    grid.className = 'colleague-grid';
+    sidebarEl.appendChild(grid);
+  }
+  const afterGrid = phone ? document.createElement('div') : sidebarEl;
   for (const colleague of colleaguesList) {
+    if (phone) {
+      const tile = document.createElement('button');
+      tile.type = 'button';
+      tile.className = 'colleague-tile';
+      tile.dataset.id = colleague.id;
+      tile.appendChild(avatarEl(colleague));
+      const name = document.createElement('span');
+      name.className = 'colleague-tile__name';
+      name.textContent = colleague.name;
+      const role = document.createElement('span');
+      role.className = 'colleague-tile__role';
+      role.textContent = colleague.role || '';
+      tile.append(name, role);
+      const tileKeys = sessionKeysFor(colleague.id);
+      appendUnreadBadge(tile, tileKeys);
+      appendDraftBadge(tile, tileKeys);
+      tile.addEventListener('click', () => selectColleague(colleague, lastSessionByColleague.get(colleague.id) || DEFAULT_SESSION_ID));
+      grid.appendChild(tile);
+    }
     const button = document.createElement('button');
     button.type = 'button';
     // Active for any of her sessions, not only the default one — the
@@ -4271,7 +5125,7 @@ function renderSidebar() {
     // default one — otherwise clicking her row while you're in session
     // two would silently drop you out of it.
     button.addEventListener('click', () => selectColleague(colleague, lastSessionByColleague.get(colleague.id) || DEFAULT_SESSION_ID));
-    sidebarEl.appendChild(button);
+    if (!phone) sidebarEl.appendChild(button);
 
     // Stays after the subagent finishes — it's a way back to that
     // exchange, not just a live indicator that should vanish once
@@ -4319,9 +5173,9 @@ function renderSidebar() {
           removeSubagentPanel(colleague.id, panel.id);
         });
         row.appendChild(removeButton);
-        sidebarEl.appendChild(row);
+        afterGrid.appendChild(row);
       } else {
-        sidebarEl.appendChild(nested);
+        afterGrid.appendChild(nested);
       }
     }
 
@@ -4335,8 +5189,26 @@ function renderSidebar() {
     // unread/draft state of all of them, and the pane header names the
     // one that's open.
   }
+  if (phone) sidebarEl.appendChild(afterGrid);
 
   renderChannelsSection();
+  renderSessionTabs();
+}
+
+// Opens the conversation a notification is about: { channelId } or
+// { colleagueId, sessionId }.
+function openConversationTarget(target) {
+  if (target?.channelId && channelsById.has(target.channelId)) selectChannel(channelsById.get(target.channelId));
+  else if (target?.colleagueId && colleaguesById.has(target.colleagueId)) selectColleague(colleaguesById.get(target.colleagueId), target.sessionId || DEFAULT_SESSION_ID);
+}
+navigator.serviceWorker?.addEventListener('message', (event) => {
+  if (event.data?.type === 'open_conversation') openConversationTarget(event.data.target);
+});
+
+// The phone layout: one screen at a time, below the desktop breakpoint
+// (styles.css: min-width 721px).
+function isPhoneLayout() {
+  return !window.matchMedia('(min-width: 721px)').matches;
 }
 
 // The little inline form behind "+ New session with <name>" — same
@@ -4421,6 +5293,99 @@ function renderChannelsSection() {
   sidebarEl.appendChild(toggle);
 
   if (showChannelForm) sidebarEl.appendChild(channelFormEl());
+
+  // The team's open questions (team room only): one entry with a count.
+  if (openQuestions) {
+    const header = document.createElement('div');
+    header.className = 'sidebar-section-header';
+    header.textContent = 'Open questions';
+    sidebarEl.appendChild(header);
+    const entry = document.createElement('button');
+    entry.type = 'button';
+    entry.className = 'open-questions-entry';
+    entry.innerHTML = '<span class="open-questions-entry__icon" aria-hidden="true">❓</span>';
+    const label = document.createElement('span');
+    label.textContent = openQuestions.length ? 'Waiting for an answer' : 'None open';
+    entry.appendChild(label);
+    if (openQuestions.length) {
+      const badge = document.createElement('span');
+      badge.className = 'open-questions-entry__count';
+      badge.textContent = String(openQuestions.length);
+      entry.appendChild(badge);
+    }
+    entry.addEventListener('click', openQuestionsView);
+    sidebarEl.appendChild(entry);
+  }
+}
+
+// Open questions of the team (null where there is no team room).
+let openQuestions = null;
+
+function openQuestionsView() {
+  artifactViewerEl.hidden = false;
+  const panel = document.createElement('div');
+  panel.className = 'artifact-viewer__panel';
+  panel.setAttribute('role', 'dialog');
+  panel.setAttribute('aria-modal', 'true');
+  const header = document.createElement('div');
+  header.className = 'artifact-viewer__header';
+  const title = document.createElement('h2');
+  title.textContent = 'Open questions';
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.textContent = 'Close';
+  close.addEventListener('click', closeArtifact);
+  header.append(title, close);
+  const body = document.createElement('div');
+  body.className = 'artifact-viewer__body';
+  const addForm = document.createElement('form');
+  addForm.className = 'open-questions-add';
+  const addInput = document.createElement('input');
+  addInput.type = 'text';
+  addInput.placeholder = 'Add an open question…';
+  addInput.setAttribute('aria-label', 'New open question');
+  const addButton = document.createElement('button');
+  addButton.type = 'submit';
+  addButton.textContent = 'Add';
+  addForm.append(addInput, addButton);
+  addForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const text = addInput.value.trim();
+    if (!text) return;
+    socket.send(JSON.stringify({ type: 'question_add', text }));
+    addInput.value = '';
+  });
+  const list = document.createElement('ul');
+  list.className = 'open-questions-list';
+  if (!openQuestions?.length) {
+    const empty = document.createElement('li');
+    empty.className = 'open-questions-list__empty';
+    empty.textContent = 'No open questions. ❓ on a colleague\'s message puts one here.';
+    list.appendChild(empty);
+  }
+  for (const q of openQuestions || []) {
+    const li = document.createElement('li');
+    const text = document.createElement('div');
+    text.className = 'open-questions-list__text';
+    text.textContent = q.text;
+    const meta = document.createElement('div');
+    meta.className = 'open-questions-list__meta';
+    const date = new Date(q.createdAt).toLocaleDateString([], { day: '2-digit', month: '2-digit' });
+    meta.textContent = [q.source ? `from ${q.source}` : null, `noted by ${q.askedBy}`, date].filter(Boolean).join(' · ');
+    const done = document.createElement('button');
+    done.type = 'button';
+    done.className = 'open-questions-list__done';
+    done.textContent = 'Done';
+    done.addEventListener('click', () => socket.send(JSON.stringify({ type: 'question_done', id: q.id })));
+    const main = document.createElement('div');
+    main.append(text, meta);
+    li.append(main, done);
+    list.appendChild(li);
+  }
+  body.append(addForm, list);
+  panel.append(header, body);
+  artifactViewerEl.replaceChildren(panel);
+  artifactViewerEl.dataset.view = 'questions';
 }
 
 function channelFormEl() {
@@ -4487,8 +5452,16 @@ function channelFormEl() {
 // which belongs to first load, not to every refresh.
 async function loadRoster({ preserveSelection = false } = {}) {
   const statusRes = await fetch('api/status');
-  const { persisted, teamName, version, claudeToken } = await statusRes.json();
+  const { persisted, teamName, version, claudeToken, pushKey: serverPushKey } = await statusRes.json();
+  fetch('api/open-questions')
+    .then((r) => r.json())
+    .then((list) => {
+      openQuestions = list;
+      renderSidebar();
+    })
+    .catch(() => {});
   renderClaudeToken(claudeToken);
+  pushKey = serverPushKey || null;
   issueLinkEl.href = buildIssueUrl({ version, userAgent: navigator.userAgent });
   noPersistenceBannerEl.hidden = persisted;
   // The header carries the team's own name and a logo that
@@ -4589,6 +5562,23 @@ async function loadRoster({ preserveSelection = false } = {}) {
     sessionIdsByColleague: Object.fromEntries([...colleagueSessions].map(([id, sessions]) => [id, sessions.map((x) => x.id)])),
     defaultSessionId: DEFAULT_SESSION_ID,
   });
+  // Opened from a notification: straight into that conversation.
+  const fromNotification = (() => {
+    try {
+      const raw = new URLSearchParams(location.search).get('open');
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  })();
+  if (fromNotification) {
+    window.history.replaceState(null, '', location.pathname);
+    openConversationTarget(fromNotification);
+    return;
+  }
+  // A phone opens on the overview of colleagues; a computer goes straight
+  // back into the conversation.
+  if (isPhoneLayout()) return;
   if (restore?.channelId) selectChannel(channelsById.get(restore.channelId));
   else if (restore) selectColleague(colleaguesById.get(restore.colleagueId), restore.sessionId);
   else if (colleaguesList.length > 0) selectColleague(colleaguesList[0]);
@@ -4695,7 +5685,47 @@ function mentionCandidates(query) {
   const everyone = channel
     ? ['all', 'everyone'].filter((kw) => kw.startsWith(q)).map((kw) => ({ id: kw, name: 'Everyone in this channel', inChannel: true }))
     : [];
-  return [...named, ...everyone];
+  // The people in the team room, by their handle (see personHandle).
+  const people = channel?.room
+    ? (channel.room.members || [])
+        .map((m) => ({ id: personHandle(m.name), name: m.name, person: true }))
+        .filter((p) => p.id.startsWith(q) || p.name.toLowerCase().startsWith(q))
+        .filter((p) => !colleaguesById.has(p.id))
+    : [];
+  return [...people, ...named, ...everyone];
+}
+
+// Whether a team room message @mentions this person.
+function mentionsMe(text) {
+  const room = [...channelsById.values()].find((c) => c.room)?.room;
+  const me = room?.you?.name || roomSelfName;
+  if (!me) return false;
+  const handle = personHandle(me);
+  return [...String(text || '').matchAll(/@([a-z][a-z0-9_-]*)/gi)].some((m) => m[1].toLowerCase() === handle);
+}
+let roomSelfName = null;
+
+// Each person in the team room keeps one colour, derived from their id, so
+// it is the same on every device. Blue (own messages) and yellow
+// (mentions, open questions) are left out on purpose.
+const PERSON_COLORS = ['#1f9d74', '#d9730d', '#8b5cf6', '#0e9fb3', '#be185d', '#7c8a12'];
+// By position in the room's member list sorted by id, so up to six people
+// never share a colour; anyone not (yet) in that list by a hash of the id.
+function personColor(senderId) {
+  const id = String(senderId).replace(/^human:/, '');
+  const room = [...channelsById.values()].find((c) => c.room)?.room;
+  const ids = (room?.members || []).map((m) => m.id).sort();
+  const index = ids.indexOf(id);
+  if (index !== -1) return PERSON_COLORS[index % PERSON_COLORS.length];
+  let h = 0;
+  for (const ch of id) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return PERSON_COLORS[h % PERSON_COLORS.length];
+}
+
+// A person's @handle in the team room: the name in lower case, letters,
+// digits, - and _ only (what the mention pattern reads as one word).
+function personHandle(name) {
+  return String(name || '').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9_-]/g, '');
 }
 
 // The "@partial" token surrounding the caret, if the caret is inside
@@ -4721,7 +5751,9 @@ function renderMentionAutocomplete() {
     const li = document.createElement('li');
     li.setAttribute('aria-selected', String(index === mentionState.selectedIndex));
     const known = colleaguesById.get(candidate.id);
-    if (known) {
+    if (candidate.person) {
+      li.appendChild(avatarEl({ id: `human:${candidate.id}`, name: candidate.name, hasAvatar: false }));
+    } else if (known) {
       li.appendChild(avatarEl(known));
     } else {
       const icon = document.createElement('div');
@@ -4834,12 +5866,99 @@ function newMessageId() {
   return `m-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+// Replying to one message: the reply carries a short quote of it, so the
+// colleague (and everyone in a channel) sees what it answers. In the team
+// room a reply to a colleague's message brings her in without an @.
+let replyTarget = null; // { senderId, name, excerpt }
+const replyBarEl = document.createElement('div');
+replyBarEl.id = 'reply-bar';
+replyBarEl.hidden = true;
+form.parentNode.insertBefore(replyBarEl, form);
+
+function excerptOf(text) {
+  return String(text || '')
+    .split('\n')
+    .filter((line) => !line.startsWith('>'))
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 160);
+}
+
+function quoteOf(target) {
+  return `> **${target.name}:** ${target.excerpt}${target.excerpt.length >= 160 ? '…' : ''}\n\n`;
+}
+
+function startReply(senderId, name, text) {
+  replyTarget = { senderId, name, excerpt: excerptOf(text) };
+  replyBarEl.hidden = false;
+  replyBarEl.innerHTML = '';
+  const label = document.createElement('span');
+  label.className = 'reply-bar__text';
+  label.textContent = `Reply to ${name}: ${replyTarget.excerpt}`;
+  const cancel = document.createElement('button');
+  cancel.type = 'button';
+  cancel.setAttribute('aria-label', 'Cancel reply');
+  cancel.appendChild(xIconEl());
+  cancel.addEventListener('click', clearReply);
+  replyBarEl.append(label, cancel);
+  input.focus();
+}
+
+function clearReply() {
+  replyTarget = null;
+  replyBarEl.hidden = true;
+  replyBarEl.innerHTML = '';
+}
+
+// The quick reactions offered on a colleague's message. 👍 only where the
+// message ends with a question: it means "yes, do it" to a yes-or-no one.
+const REACTION_SET = [
+  { key: 'yes', emoji: '👍', label: 'Yes, go ahead' },
+  { key: 'no', emoji: '✖️', label: 'No, or another proposal' },
+  { key: 'knowledge', emoji: '📖', label: 'Use or record this in the team knowledge' },
+  { key: 'question', emoji: '❓', label: 'Note this as an open question' },
+];
+function reactionsFor(item) {
+  const lastLine = String(item.text || '').trim().split('\n').filter(Boolean).pop() || '';
+  const asks = /\?[)*_\s]*$/.test(lastLine);
+  return REACTION_SET.filter((r) => r.key !== 'yes' || asks);
+}
+
+// Sends a reaction at once, as a reply made of the emoji (its meaning goes
+// to the colleague with it, see server/reactions.js).
+function sendReaction(key, colleagueId, name, text) {
+  const reaction = REACTION_SET.find((r) => r.key === key);
+  if (!reaction) return;
+  const body = quoteOf({ name, excerpt: excerptOf(text) }) + reaction.emoji;
+  // ❓ also puts the question on the team's list of open questions.
+  if (key === 'question' && openQuestions) {
+    const full = String(text || '').split('\n').filter((l) => !l.startsWith('>')).join(' ').replace(/\s+/g, ' ').trim().slice(0, 600);
+    socket.send(JSON.stringify({ type: 'question_add', text: full, source: name }));
+  }
+  if (activeChannelId) {
+    socket.send(JSON.stringify({ type: 'channel_message', channelId: activeChannelId, text: body, attachments: [], replyTo: colleagueId, reaction: key }));
+    return;
+  }
+  const convK = activeConvKey();
+  if (!history.has(convK)) history.set(convK, []);
+  const typing = isTyping(convK);
+  const kind = pickSendKind({ typing, requested: undefined });
+  const clientId = newMessageId();
+  history.get(convK).push({ role: 'you', text: body, attachments: [], createdAt: new Date().toISOString(), pending: typing, clientId, kind });
+  renderMessages({ forceScrollToBottom: true });
+  socket.send(JSON.stringify({ colleagueId: activeColleagueId, sessionId: activeSessionId, id: clientId, kind, text: body, attachments: [], reaction: key }));
+}
+
 form.addEventListener('submit', (event) => {
   event.preventDefault();
   closeMentionAutocomplete();
   if (!sendMenuEl.hidden) { closeSendMenu(); input.focus(); }
-  const text = input.value.trim();
-  if (!text && !pendingAttachment) return;
+  const typed = input.value.trim();
+  if (!typed && !pendingAttachment) return;
+  const replyTo = replyTarget?.senderId || null;
+  const text = replyTarget && typed ? quoteOf(replyTarget) + typed : typed;
+  clearReply();
 
   if (activeChannelId) {
     // No optimistic local render here — the server echoes every
@@ -4852,6 +5971,7 @@ form.addEventListener('submit', (event) => {
       type: 'channel_message',
       channelId: activeChannelId,
       text,
+      replyTo,
       attachments: channelAttachments.map((a) => ({ name: a.name, mimeType: a.mimeType, data: a.data })),
     }));
     drafts.delete(channelConvKey(activeChannelId)); // sent, not a draft anymore

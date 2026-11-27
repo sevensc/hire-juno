@@ -12,13 +12,17 @@ export function readRoomToken(file) {
   return token;
 }
 
+// `onCleared()`: the room's conversation was cleared by someone.
 // `onWelcome({ you, members, messages })`, `onMessage(message)`,
-// `onState(connected)`. Returns { post(text, agent?), close() }.
-export function connectRoom({ socketPath, tokenFile, onWelcome, onMessage, onState }) {
+// `onSignal(from, data)` (call signalling), `onState(connected)`.
+// Returns { post(text, agent?), signal(to, data), close() }.
+export function connectRoom({ socketPath, tokenFile, onWelcome, onMessage, onSignal, onState, onCleared, onQuestions }) {
   let ws = null;
   let closed = false;
   let delay = 1000;
   let timer = null;
+  let nextRef = 1;
+  const waiting = new Map(); // ref -> resolve, for get_artifact and get_attachment
 
   const open = () => {
     if (closed) return;
@@ -43,7 +47,25 @@ export function connectRoom({ socketPath, tokenFile, onWelcome, onMessage, onSta
         return;
       }
       if (payload.type === 'welcome') onWelcome?.(payload);
-      else if (payload.type === 'message') onMessage?.(payload.message);
+      else if (payload.type === 'message') {
+        onMessage?.(payload.message);
+        // The room's echo of an own post (postAndWait): after onMessage, so
+        // the tabs have the message before whatever the caller does next.
+        if (payload.ref != null && waiting.has(payload.ref)) {
+          waiting.get(payload.ref)(true);
+          waiting.delete(payload.ref);
+        }
+      }
+      else if (payload.type === 'signal') onSignal?.(payload.from, payload.data);
+      else if (payload.type === 'cleared') onCleared?.();
+      else if (payload.type === 'questions') onQuestions?.(payload.questions);
+      else if (payload.type === 'artifact' && waiting.has(payload.ref)) {
+        waiting.get(payload.ref)(payload.artifact);
+        waiting.delete(payload.ref);
+      } else if (payload.type === 'attachment' && waiting.has(payload.ref)) {
+        waiting.get(payload.ref)(payload.attachment);
+        waiting.delete(payload.ref);
+      }
     });
     ws.on('error', () => {});
     ws.on('close', () => {
@@ -56,9 +78,68 @@ export function connectRoom({ socketPath, tokenFile, onWelcome, onMessage, onSta
   open();
 
   return {
-    post(text, agent) {
+    // `attachments`: pictures as [{ name, mimeType, data (base64) }].
+    post(text, agent, attachments = []) {
       if (!ws || ws.readyState !== WebSocket.OPEN) return false;
-      ws.send(JSON.stringify({ type: 'post', text, ...(agent ? { agent } : {}) }));
+      ws.send(JSON.stringify({ type: 'post', text, ...(agent ? { agent } : {}), ...(attachments.length ? { attachments } : {}) }));
+      return true;
+    },
+    // Like post, but resolves once the room has the message and it went out
+    // to this instance's tabs (true), or false when the room is away. After
+    // a few seconds without an echo it resolves true all the same.
+    postAndWait(text, agent, attachments = []) {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return Promise.resolve(false);
+      const ref = nextRef++;
+      return new Promise((resolve) => {
+        waiting.set(ref, resolve);
+        ws.send(JSON.stringify({ type: 'post', ref, text, ...(agent ? { agent } : {}), ...(attachments.length ? { attachments } : {}) }));
+        setTimeout(() => {
+          if (waiting.delete(ref)) resolve(true);
+        }, 5000);
+      });
+    },
+    send(payload) {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+      ws.send(JSON.stringify(payload));
+      return true;
+    },
+    clear() {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+      ws.send(JSON.stringify({ type: 'clear' }));
+      return true;
+    },
+    postArtifact(kind, title, content) {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+      ws.send(JSON.stringify({ type: 'artifact', kind, title, content }));
+      return true;
+    },
+    // Resolves to the artifact, or null when unknown or the room is away.
+    getArtifact(id) {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return Promise.resolve(null);
+      const ref = nextRef++;
+      return new Promise((resolve) => {
+        waiting.set(ref, resolve);
+        ws.send(JSON.stringify({ type: 'get_artifact', id, ref }));
+        setTimeout(() => {
+          if (waiting.delete(ref)) resolve(null);
+        }, 10000);
+      });
+    },
+    // Resolves to { name, mimeType, data (base64) }, or null.
+    getAttachment(id) {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return Promise.resolve(null);
+      const ref = nextRef++;
+      return new Promise((resolve) => {
+        waiting.set(ref, resolve);
+        ws.send(JSON.stringify({ type: 'get_attachment', id, ref }));
+        setTimeout(() => {
+          if (waiting.delete(ref)) resolve(null);
+        }, 15000);
+      });
+    },
+    signal(to, data) {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+      ws.send(JSON.stringify({ type: 'signal', to, data }));
       return true;
     },
     close() {

@@ -29,7 +29,7 @@
   },
   "scripts": {
     "test": "node --test",
-    "build:chat": "esbuild chat/src/app.js --bundle --outfile=chat/public/app.js --format=iife",
+    "build:chat": "esbuild chat/src/app.js --bundle --outfile=chat/public/app.js --format=iife && esbuild chat/src/transcribe-worker.js --bundle --format=esm --platform=browser --outfile=chat/public/transcribe-worker.js",
     "prepublishOnly": "npm run build:chat"
   },
   "files": [
@@ -63,6 +63,7 @@
     "zod": "^4.0.0"
   },
   "devDependencies": {
+    "@huggingface/transformers": "^4.3.2",
     "esbuild": "^0.28.2",
     "htm": "^3.1.1",
     "markdown-it": "^15.0.3",
