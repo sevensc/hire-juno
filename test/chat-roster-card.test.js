@@ -36,7 +36,7 @@ Someone else.
 **Image:** \`team/una/una.png\`
 **Role:** finds sources,
 checks them
-**Status:** `probation`
+**Status:** \`probation\`
 
 *(no picture yet)*
 
