@@ -47,7 +47,7 @@ test('room helpers: explicit @names only, rows per sender kind, context lines', 
   assert.deepEqual(roomMentions('@all please look', roster), []);
   const known = new Set(['kim']);
   const human = { memberId: 'ben', memberName: 'Ben', agent: null, text: 'hi', createdAt: 't' };
-  assert.deepEqual(roomRow(human, 'ana', known), { text: 'hi', created_at: 't', attachments: null, artifact: null, sender_id: 'human:ben', sender_name: 'Ben' });
+  assert.deepEqual(roomRow(human, 'ana', known), { room_id: null, text: 'hi', created_at: 't', attachments: null, artifact: null, reply_to: null, reactions: [], sender_id: 'human:ben', sender_name: 'Ben' });
   assert.equal(roomRow({ ...human, memberId: 'ana' }, 'ana', known).sender_id, 'you');
   const agent = { ...human, agent: { id: 'kim', name: 'Kim' } };
   assert.equal(roomRow(agent, 'ana', known).sender_id, 'kim');
@@ -157,7 +157,7 @@ test('a chat instance shows the room as #team and posts for its own person', asy
       if (u.type === 'channel_message' && u.channelId === 'team-room') resolve(u);
     }));
     tab.send(JSON.stringify({ type: 'channel_message', channelId: 'team-room', text: 'Von Ana', attachments: [] }));
-    assert.deepEqual(await echo, { channelId: 'team-room', type: 'channel_message', senderId: 'you', senderName: null, text: 'Von Ana', artifact: null, notify: false });
+    assert.deepEqual(await echo, { channelId: 'team-room', type: 'channel_message', senderId: 'you', senderName: null, text: 'Von Ana', artifact: null, roomId: 2, replyTo: null, reactions: [], notify: false });
     const fromAna = await ben.next((m) => m.type === 'message');
     assert.equal(fromAna.message.memberId, 'ana');
     tab.close();
@@ -177,8 +177,33 @@ test('a chat instance shows the room as #team and posts for its own person', asy
     tab1.close();
     tab2.close();
 
+    // A reply from a tab points to the room message; a reaction comes back to every tab.
+    const tab3 = new WebSocket(`ws+unix://${chatSocket}:/ws`);
+    await new Promise((resolve, reject) => { tab3.once('open', resolve); tab3.once('error', reject); });
+    const tabUpdates = [];
+    const tabNext = (pred) => new Promise((resolve) => {
+      const found = tabUpdates.find(pred);
+      if (found) return resolve(found);
+      tab3.on('message', (raw) => {
+        const u = JSON.parse(raw);
+        if (pred(u)) resolve(u);
+      });
+    });
+    const replyEcho = tabNext((u) => u.type === 'channel_message' && u.text === 'Gern');
+    tab3.send(JSON.stringify({ type: 'channel_message', channelId: 'team-room', text: 'Gern', replyTo: 1, attachments: [] }));
+    const reply = await replyEcho;
+    assert.deepEqual(reply.replyTo, { id: 1, name: 'Ben', excerpt: 'Von Ben', mine: false, agent: false });
+    const atBenReply = await ben.next((m) => m.type === 'message' && m.message.text === 'Gern');
+    assert.equal(atBenReply.message.replyTo.memberId, 'ben');
+    const reacted = tabNext((u) => u.type === 'room_reactions');
+    tab3.send(JSON.stringify({ type: 'room_react', roomId: 1, emoji: '❤️' }));
+    assert.deepEqual(await reacted, { type: 'room_reactions', channelId: 'team-room', roomId: 1, reactions: [{ emoji: '❤️', members: [{ id: 'ana', name: 'Ana' }] }] });
+    tab3.close();
+
     const history = await get(chatSocket, '/api/channel-history?channelId=team-room');
-    assert.deepEqual(history.map((r) => [r.sender_id, r.text]), [['human:ben', 'Von Ben'], ['you', 'Von Ana']]);
+    assert.deepEqual(history.map((r) => [r.sender_id, r.text]), [['human:ben', 'Von Ben'], ['you', 'Von Ana'], ['you', 'Gern']]);
+    assert.deepEqual(history[0].reactions, [{ emoji: '❤️', members: [{ id: 'ana', name: 'Ana' }] }]);
+    assert.equal(history[2].reply_to.id, 1);
     ben.ws.close();
   } finally {
     child.kill('SIGTERM');
@@ -277,6 +302,62 @@ test('postAndWait resolves only after the room\'s echo reached onMessage', async
     assert.deepEqual(seen, ['Frage an @kim']);
   } finally {
     conn.close();
+    server.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('room replies keep what they answer; reactions are one per person, the same again takes it back', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'room-react-'));
+  const { members, membersFile, socketPath, dbPath } = setupRoom(root);
+  const server = await runRoomServer({ socketPath, dbPath, membersFile });
+  const ana = client(socketPath, members[0].token);
+  const ben = client(socketPath, members[1].token);
+  try {
+    await Promise.all([ana.opened, ben.opened]);
+    await ana.next((m) => m.type === 'welcome');
+    await ben.next((m) => m.type === 'welcome');
+    ana.ws.send(JSON.stringify({ type: 'post', text: '> **Kim:** old quote\n\nShall we ship it today?' }));
+    const first = (await ben.next((m) => m.type === 'message')).message;
+    ben.ws.send(JSON.stringify({ type: 'post', text: 'Yes', replyTo: first.id }));
+    const reply = (await ana.next((m) => m.type === 'message' && m.message.text === 'Yes')).message;
+    assert.deepEqual(reply.replyTo, { id: first.id, memberId: 'ana', memberName: 'Ana', agent: null, excerpt: 'Shall we ship it today?' });
+    // An unknown id is no reply, the message still goes out.
+    ben.ws.send(JSON.stringify({ type: 'post', text: 'Lost', replyTo: 999 }));
+    assert.equal((await ana.next((m) => m.type === 'message' && m.message.text === 'Lost')).message.replyTo, null);
+    // The person who was answered is told in "mentions" mode.
+    assert.equal(shouldNotify('mentions', reply, { id: 'ana', name: 'Ana' }), true);
+    assert.equal(shouldNotify('mentions', reply, { id: 'cem', name: 'Cem' }), false);
+
+    const reactions = () => ana.next((m) => m.type === 'reactions');
+    ana.ws.send(JSON.stringify({ type: 'react', messageId: first.id, emoji: '👍' }));
+    assert.deepEqual((await reactions()).reactions, [{ emoji: '👍', members: [{ id: 'ana', name: 'Ana' }] }]);
+    ben.ws.send(JSON.stringify({ type: 'react', messageId: first.id, emoji: '👍' }));
+    assert.deepEqual((await reactions()).reactions, [{ emoji: '👍', members: [{ id: 'ana', name: 'Ana' }, { id: 'ben', name: 'Ben' }] }]);
+    // Another emoji replaces the person's own; the same one again takes it back.
+    ben.ws.send(JSON.stringify({ type: 'react', messageId: first.id, emoji: '😂' }));
+    assert.deepEqual((await reactions()).reactions, [{ emoji: '👍', members: [{ id: 'ana', name: 'Ana' }] }, { emoji: '😂', members: [{ id: 'ben', name: 'Ben' }] }]);
+    ana.ws.send(JSON.stringify({ type: 'react', messageId: first.id, emoji: '👍' }));
+    assert.deepEqual((await reactions()).reactions, [{ emoji: '😂', members: [{ id: 'ben', name: 'Ben' }] }]);
+    // No text, no unknown message: nothing happens.
+    ana.ws.send(JSON.stringify({ type: 'react', messageId: first.id, emoji: 'ok' }));
+    ana.ws.send(JSON.stringify({ type: 'react', messageId: 999, emoji: '👍' }));
+    ana.ws.send(JSON.stringify({ type: 'react', messageId: reply.id, emoji: '🙏' }));
+    const last = await reactions();
+    assert.equal(last.messageId, reply.id);
+
+    // A new connection gets replies and reactions with the history.
+    const cem = client(socketPath, members[0].token);
+    await cem.opened;
+    const welcome = await cem.next((m) => m.type === 'welcome');
+    const byId = new Map(welcome.messages.map((m) => [m.id, m]));
+    assert.deepEqual(byId.get(first.id).reactions, [{ emoji: '😂', members: [{ id: 'ben', name: 'Ben' }] }]);
+    assert.equal(byId.get(reply.id).replyTo.id, first.id);
+    assert.match(roomContextLines([byId.get(reply.id)]), /^\[Team room\] Ben \(replying to Ana: "Shall we ship it today\?"\): Yes$/);
+    cem.ws.close();
+  } finally {
+    ana.ws.close();
+    ben.ws.close();
     server.close();
     rmSync(root, { recursive: true, force: true });
   }

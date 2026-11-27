@@ -25,7 +25,15 @@ export function roomMentions(text, roster) {
 export function roomRow(message, youId, knownIds) {
   // Pictures stay in the room; `url` is where this instance's tabs fetch them.
   const attachments = (message.attachments || []).map((a) => ({ id: a.id, name: a.name, mimeType: a.mimeType, url: `api/room-attachment?id=${a.id}` }));
-  const base = { text: message.text, created_at: message.createdAt, attachments: attachments.length ? attachments : null, artifact: message.artifact || null };
+  const base = {
+    room_id: message.id ?? null,
+    text: message.text,
+    created_at: message.createdAt,
+    attachments: attachments.length ? attachments : null,
+    artifact: message.artifact || null,
+    reply_to: replyView(message.replyTo, youId),
+    reactions: message.reactions || [],
+  };
   if (message.agent) {
     const onBehalf = message.memberId === youId ? '' : ` · for ${message.memberName}`;
     return {
@@ -36,6 +44,28 @@ export function roomRow(message, youId, knownIds) {
   }
   if (message.memberId === youId) return { ...base, sender_id: 'you', sender_name: null };
   return { ...base, sender_id: `human:${message.memberId}`, sender_name: message.memberName };
+}
+
+// What a reply shows of the message it answers: the text without quoted
+// lines, on one line, cut short.
+export function excerptOf(text) {
+  return String(text || '')
+    .split('\n')
+    .filter((line) => !line.startsWith('>'))
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 160);
+}
+
+// The message a reply answers, as a tab shows it: { id, name, excerpt,
+// mine, agent } (mine: this person's own message; agent: a colleague's),
+// or null.
+export function replyView(replyTo, youId) {
+  if (!replyTo || !Number.isInteger(replyTo.id)) return null;
+  const mine = !replyTo.agent && replyTo.memberId === youId;
+  const name = replyTo.agent ? replyTo.agent.name : mine ? 'You' : replyTo.memberName;
+  return { id: replyTo.id, name, excerpt: replyTo.excerpt || '', mine, agent: Boolean(replyTo.agent) };
 }
 
 // A person's @handle in the team room: the name in lower case, letters,
@@ -62,7 +92,8 @@ export function shouldNotify(mode, message, you) {
   switch (mode) {
     case 'mentions': {
       const quoted = String(message.text || '').match(/^> \*\*(.+?):\*\*/);
-      return mentionsPerson(message.text, you?.name) || Boolean(quoted && quoted[1].toLowerCase() === String(you?.name || '').toLowerCase());
+      const repliesToYou = Boolean(message.replyTo && !message.replyTo.agent && message.replyTo.memberId === you?.id);
+      return mentionsPerson(message.text, you?.name) || repliesToYou || Boolean(quoted && quoted[1].toLowerCase() === String(you?.name || '').toLowerCase());
     }
     case 'people':
       return !message.agent;
@@ -73,9 +104,15 @@ export function shouldNotify(mode, message, you) {
   }
 }
 
+// " (replying to Kim: "…")" for a reply in a colleague's prompt, else ''.
+export function replyNote(replyTo) {
+  if (!replyTo) return '';
+  return ` (replying to ${replyTo.agent ? replyTo.agent.name : replyTo.memberName}: "${replyTo.excerpt || ''}")`;
+}
+
 // The last few room messages as context lines for a colleague's prompt.
 export function roomContextLines(messages) {
   return messages
-    .map((m) => `[Team room] ${m.agent ? `${m.agent.name} (for ${m.memberName})` : m.memberName}: ${m.text}`)
+    .map((m) => `[Team room] ${m.agent ? `${m.agent.name} (for ${m.memberName})` : m.memberName}${replyNote(m.replyTo)}: ${m.text}`)
     .join('\n');
 }

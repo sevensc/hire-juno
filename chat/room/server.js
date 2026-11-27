@@ -18,6 +18,8 @@ import { connect as netConnect } from 'node:net';
 import DatabaseConstructor from 'better-sqlite3';
 import { WebSocketServer } from 'ws';
 
+import { excerptOf } from '../server/room.js';
+
 const MAX_TEXT = 20000;
 const MAX_ARTIFACT = 1_000_000;
 const ARTIFACT_KINDS = new Set(['transcript', 'document']);
@@ -26,6 +28,16 @@ const HISTORY = 200;
 const ATTACHMENT_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
 const MAX_ATTACHMENTS = 4;
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+
+// A reaction is one emoji: a short run of pictographs (with their joiners,
+// skin tones and variation selectors), no letters, digits or spaces.
+export function cleanEmoji(value) {
+  if (typeof value !== 'string' || !value || value.length > 16) return null;
+  if (!/^[\p{Extended_Pictographic}\p{Emoji_Component}\u200d\ufe0f\u20e3]+$/u.test(value)) return null;
+  if (!/\p{Extended_Pictographic}/u.test(value)) return null;
+  return value;
+}
+
 
 // Attachments sent with a post: [{ name, mimeType, data (base64) }], only
 // pictures, a few at most; null when one of them is not acceptable.
@@ -91,7 +103,7 @@ export function openRoomStore(dbPath) {
     content TEXT NOT NULL,
     created_at TEXT NOT NULL
   )`);
-  for (const column of ['artifact TEXT', 'attachments TEXT']) {
+  for (const column of ['artifact TEXT', 'attachments TEXT', 'reply_to TEXT']) {
     try {
       db.exec(`ALTER TABLE room_messages ADD COLUMN ${column}`);
     } catch (err) {
@@ -109,7 +121,7 @@ export function openRoomStore(dbPath) {
   const insertAttachment = db.prepare('INSERT INTO room_attachments (name, mime_type, data, created_at) VALUES (?, ?, ?, ?)');
   const attachmentById = db.prepare('SELECT * FROM room_attachments WHERE id = ?');
   const insert = db.prepare(
-    'INSERT INTO room_messages (member_id, member_name, agent_id, agent_name, text, created_at, artifact, attachments) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+    'INSERT INTO room_messages (member_id, member_name, agent_id, agent_name, text, created_at, artifact, attachments, reply_to) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
   );
   const insertArtifact = db.prepare(
     'INSERT INTO room_artifacts (member_id, member_name, kind, title, content, created_at) VALUES (?, ?, ?, ?, ?, ?)'
@@ -130,6 +142,34 @@ export function openRoomStore(dbPath) {
   const openQuestions = db.prepare('SELECT * FROM room_questions WHERE done_at IS NULL ORDER BY id');
   const insertQuestion = db.prepare('INSERT INTO room_questions (member_id, member_name, source, text, created_at) VALUES (?, ?, ?, ?, ?)');
   const finishQuestion = db.prepare('UPDATE room_questions SET done_at = ?, done_by = ? WHERE id = ? AND done_at IS NULL');
+  // Reactions: one emoji per member and message; reacting again with the
+  // same one takes it back.
+  db.exec(`CREATE TABLE IF NOT EXISTS room_reactions (
+    message_id INTEGER NOT NULL,
+    member_id TEXT NOT NULL,
+    member_name TEXT NOT NULL,
+    emoji TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (message_id, member_id)
+  )`);
+  const reactionRows = db.prepare('SELECT * FROM room_reactions WHERE message_id = ? ORDER BY created_at, rowid');
+  const reactionOf = db.prepare('SELECT emoji FROM room_reactions WHERE message_id = ? AND member_id = ?');
+  const putReaction = db.prepare(
+    'INSERT INTO room_reactions (message_id, member_id, member_name, emoji, created_at) VALUES (?, ?, ?, ?, ?) ' +
+      'ON CONFLICT (message_id, member_id) DO UPDATE SET emoji = excluded.emoji, member_name = excluded.member_name, created_at = excluded.created_at'
+  );
+  const dropReaction = db.prepare('DELETE FROM room_reactions WHERE message_id = ? AND member_id = ?');
+  const messageById = db.prepare('SELECT * FROM room_messages WHERE id = ?');
+  // [{ emoji, members: [{ id, name }] }], in the order each emoji first came.
+  const reactionsFor = (messageId) => {
+    const groups = [];
+    for (const r of reactionRows.all(messageId)) {
+      let group = groups.find((g) => g.emoji === r.emoji);
+      if (!group) groups.push((group = { emoji: r.emoji, members: [] }));
+      group.members.push({ id: r.member_id, name: r.member_name });
+    }
+    return groups;
+  };
   const recent = db.prepare('SELECT * FROM room_messages ORDER BY id DESC LIMIT ?');
   const toMessage = (row) => ({
     id: row.id,
@@ -140,10 +180,28 @@ export function openRoomStore(dbPath) {
     createdAt: row.created_at,
     artifact: row.artifact ? JSON.parse(row.artifact) : null,
     attachments: row.attachments ? JSON.parse(row.attachments) : [],
+    replyTo: row.reply_to ? JSON.parse(row.reply_to) : null,
+    reactions: reactionsFor(row.id),
   });
+  // What a reply keeps of the message it answers, taken from the room's own
+  // copy: { id, memberId, memberName, agent, excerpt }, or null if unknown.
+  const replySnapshot = (id) => {
+    const row = Number.isInteger(id) ? messageById.get(id) : null;
+    if (!row) return null;
+    const attachments = row.attachments ? JSON.parse(row.attachments) : [];
+    return {
+      id: row.id,
+      memberId: row.member_id,
+      memberName: row.member_name,
+      agent: row.agent_id ? { id: row.agent_id, name: row.agent_name } : null,
+      excerpt: excerptOf(row.text) || (attachments.length ? 'Picture' : ''),
+    };
+  };
   return {
-    append({ member, agent, text, artifact = null, attachments = [] }) {
+    append({ member, agent, text, artifact = null, attachments = [], replyTo = null }) {
       const createdAt = new Date().toISOString();
+      const reply = replySnapshot(replyTo);
+      const replyRef = reply ? JSON.stringify(reply) : null;
       const ref = artifact ? JSON.stringify(artifact) : null;
       const stored = attachments.map((a) => ({
         id: Number(insertAttachment.run(a.name, a.mimeType, a.data, createdAt).lastInsertRowid),
@@ -151,11 +209,22 @@ export function openRoomStore(dbPath) {
         mimeType: a.mimeType,
       }));
       const list = stored.length ? JSON.stringify(stored) : null;
-      const { lastInsertRowid } = insert.run(member.id, member.name, agent?.id ?? null, agent?.name ?? null, text, createdAt, ref, list);
+      const { lastInsertRowid } = insert.run(member.id, member.name, agent?.id ?? null, agent?.name ?? null, text, createdAt, ref, list, replyRef);
       return toMessage({
         id: Number(lastInsertRowid), member_id: member.id, member_name: member.name,
         agent_id: agent?.id ?? null, agent_name: agent?.name ?? null, text, created_at: createdAt, artifact: ref, attachments: list,
+        reply_to: replyRef,
       });
+    },
+    // Sets, changes or (same emoji again) takes back this member's reaction.
+    // Returns the message's reactions afterwards, or null if there is no
+    // such message.
+    react(messageId, member, emoji) {
+      if (!messageById.get(messageId)) return null;
+      const current = reactionOf.get(messageId, member.id);
+      if (current && current.emoji === emoji) dropReaction.run(messageId, member.id);
+      else putReaction.run(messageId, member.id, member.name, emoji, new Date().toISOString());
+      return reactionsFor(messageId);
     },
     attachment(id) {
       const row = attachmentById.get(id);
@@ -176,7 +245,7 @@ export function openRoomStore(dbPath) {
       finishQuestion.run(new Date().toISOString(), member.name, id);
     },
     clear() {
-      db.exec('DELETE FROM room_messages; DELETE FROM room_artifacts; DELETE FROM room_attachments;');
+      db.exec('DELETE FROM room_messages; DELETE FROM room_artifacts; DELETE FROM room_attachments; DELETE FROM room_reactions;');
     },
     artifact(id) {
       const row = artifactById.get(id);
@@ -317,6 +386,14 @@ export async function runRoomServer({ socketPath, dbPath, membersFile }) {
           for (const client of clients) send(client, { type: 'questions', questions });
           return;
         }
+        if (payload.type === 'react') {
+          const emoji = cleanEmoji(payload.emoji);
+          if (!emoji || !Number.isInteger(payload.messageId)) return;
+          const reactions = store.react(payload.messageId, member, emoji);
+          if (!reactions) return;
+          for (const client of clients) send(client, { type: 'reactions', messageId: payload.messageId, reactions });
+          return;
+        }
         if (payload.type === 'get_artifact') {
           const artifact = Number.isInteger(payload.id) ? store.artifact(payload.id) : null;
           send(ws, { type: 'artifact', ref: payload.ref, artifact });
@@ -344,7 +421,9 @@ export async function runRoomServer({ socketPath, dbPath, membersFile }) {
           send(ws, { type: 'post_failed', ref: payload.ref, message: 'Invalid agent label.' });
           return;
         }
-        const message = store.append({ member, agent, text, attachments });
+        // `replyTo`: the id of the room message this one answers.
+        const replyTo = Number.isInteger(payload.replyTo) ? payload.replyTo : null;
+        const message = store.append({ member, agent, text, attachments, replyTo });
         for (const client of clients) send(client, { type: 'message', message, ref: client === ws ? payload.ref : undefined });
       });
     });

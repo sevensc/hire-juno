@@ -14,9 +14,10 @@ export function readRoomToken(file) {
 
 // `onCleared()`: the room's conversation was cleared by someone.
 // `onWelcome({ you, members, messages })`, `onMessage(message)`,
-// `onSignal(from, data)` (call signalling), `onState(connected)`.
+// `onSignal(from, data)` (call signalling), `onState(connected)`,
+// `onReactions(messageId, reactions)`.
 // Returns { post(text, agent?), signal(to, data), close() }.
-export function connectRoom({ socketPath, tokenFile, onWelcome, onMessage, onSignal, onState, onCleared, onQuestions }) {
+export function connectRoom({ socketPath, tokenFile, onWelcome, onMessage, onSignal, onState, onCleared, onQuestions, onReactions }) {
   let ws = null;
   let closed = false;
   let delay = 1000;
@@ -59,6 +60,7 @@ export function connectRoom({ socketPath, tokenFile, onWelcome, onMessage, onSig
       else if (payload.type === 'signal') onSignal?.(payload.from, payload.data);
       else if (payload.type === 'cleared') onCleared?.();
       else if (payload.type === 'questions') onQuestions?.(payload.questions);
+      else if (payload.type === 'reactions') onReactions?.(payload.messageId, payload.reactions);
       else if (payload.type === 'artifact' && waiting.has(payload.ref)) {
         waiting.get(payload.ref)(payload.artifact);
         waiting.delete(payload.ref);
@@ -87,12 +89,13 @@ export function connectRoom({ socketPath, tokenFile, onWelcome, onMessage, onSig
     // Like post, but resolves once the room has the message and it went out
     // to this instance's tabs (true), or false when the room is away. After
     // a few seconds without an echo it resolves true all the same.
-    postAndWait(text, agent, attachments = []) {
+    // `replyTo`: the id of the room message this one answers.
+    postAndWait(text, agent, attachments = [], replyTo = null) {
       if (!ws || ws.readyState !== WebSocket.OPEN) return Promise.resolve(false);
       const ref = nextRef++;
       return new Promise((resolve) => {
         waiting.set(ref, resolve);
-        ws.send(JSON.stringify({ type: 'post', ref, text, ...(agent ? { agent } : {}), ...(attachments.length ? { attachments } : {}) }));
+        ws.send(JSON.stringify({ type: 'post', ref, text, ...(agent ? { agent } : {}), ...(attachments.length ? { attachments } : {}), ...(Number.isInteger(replyTo) ? { replyTo } : {}) }));
         setTimeout(() => {
           if (waiting.delete(ref)) resolve(true);
         }, 5000);
@@ -136,6 +139,12 @@ export function connectRoom({ socketPath, tokenFile, onWelcome, onMessage, onSig
           if (waiting.delete(ref)) resolve(null);
         }, 15000);
       });
+    },
+    // Sets, changes or takes back this person's reaction to a room message.
+    react(messageId, emoji) {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+      ws.send(JSON.stringify({ type: 'react', messageId, emoji }));
+      return true;
     },
     signal(to, data) {
       if (!ws || ws.readyState !== WebSocket.OPEN) return false;

@@ -8752,6 +8752,14 @@
       if (!artifactViewerEl.hidden && artifactViewerEl.dataset.view === "questions") openQuestionsView();
       return;
     }
+    if (update.type === "room_reactions") {
+      const item = (channelMessages.get(update.channelId) || []).find((m4) => m4.roomId === update.roomId);
+      if (item) {
+        item.reactions = update.reactions || [];
+        if (activeChannelId === update.channelId) renderChannelMessages();
+      }
+      return;
+    }
     if (update.type === "room_state") {
       for (const channel of channelsById.values()) {
         if (channel.room) channel.room = { connected: update.connected, members: update.members || channel.room.members, you: update.you || channel.room.you };
@@ -8838,6 +8846,10 @@
         senderId: update.senderId,
         senderName: update.senderName || null,
         artifact: update.artifact || null,
+        // Team room only: its id there, what it answers, its reactions.
+        roomId: update.roomId ?? null,
+        replyTo: update.replyTo || null,
+        reactions: update.reactions || [],
         text: text2,
         attachments,
         createdAt: (/* @__PURE__ */ new Date()).toISOString(),
@@ -9719,13 +9731,15 @@
     <span class="youtube-card__play" aria-hidden="true"></span>
   </button>`;
   }
-  function MessageRow({ role, avatarColleague, nameTag, item, toolText, onToggle, onToggleTrailEntry, onWithdraw, variant = null, onReply = null, onReact = null, accent = null }) {
+  function MessageRow({ role, avatarColleague, nameTag, item, toolText, onToggle, onToggleTrailEntry, onWithdraw, variant = null, onReply = null, onReact = null, accent = null, onEmoji = null, roomYouId = null }) {
     const isToolUse = item.toolInput !== void 0;
     const time = formatMessageTime(item.createdAt);
+    const reactions = item.reactions || [];
+    const picking = onEmoji && reactionPickerFor === item.roomId;
     return m2`
     <${S}>
       ${item.trail?.length ? m2`<${TrailBox} trail=${item.trail} onToggleEntry=${onToggleTrailEntry} />` : null}
-      <div class="message message--${role}${variant ? ` message--${variant}` : ""}${item.pending ? " message--pending" : ""}" style=${accent ? `--person: ${accent}` : null}>
+      <div class="message message--${role}${variant ? ` message--${variant}` : ""}${item.pending ? " message--pending" : ""}${onEmoji ? " message--room" : ""}" style=${accent ? `--person: ${accent}` : null} data-room-id=${onEmoji ? item.roomId : null}>
         ${avatarColleague ? m2`<${Avatar} colleague=${avatarColleague} />` : null}
         ${isToolUse ? m2`
               <span class="tool-use-line" onClick=${onToggle}>${toolText}</span>
@@ -9733,6 +9747,10 @@
             ` : m2`
               <span>
                 ${nameTag ? m2`<strong class="message__sender">${nameTag}</strong><br />` : null}
+                ${item.replyTo ? m2`<button type="button" class="reply-quote" aria-label=${`Show the message from ${item.replyTo.name} this answers`} onClick=${() => jumpToRoomMessage(item.replyTo.id)}>
+                      <span class="reply-quote__name">${item.replyTo.name}</span>
+                      <span class="reply-quote__text">${item.replyTo.excerpt || "\u2026"}</span>
+                    </button>` : null}
                 ${item.artifact ? m2`<button type="button" class="artifact-card" onClick=${() => openArtifact(item.artifact.id)}>
                       <span class="artifact-card__kind">${item.artifact.kind === "transcript" ? "Transcript" : "Document"}</span>
                       <span class="artifact-card__title">${item.artifact.title}</span>
@@ -9742,8 +9760,35 @@
                 ${(item.attachments || []).map(
       (attachment, i3) => m2`<img key=${i3} class="attachment-thumb" src=${attachment.dataUrl} alt=${attachment.name} role="button" tabindex="0" />`
     )}
+                ${reactions.length ? m2`<span class="reaction-chips">
+                      ${reactions.map((r3) => {
+      const mine = r3.members.some((m4) => m4.id === roomYouId);
+      const names = r3.members.map((m4) => m4.id === roomYouId ? "You" : m4.name).join(", ");
+      return m2`<button
+                          type="button"
+                          class="reaction-chip${mine ? " is-mine" : ""}"
+                          title=${names}
+                          aria-label=${`${r3.emoji} from ${names}${mine ? ", tap to take yours back" : ""}`}
+                          aria-pressed=${mine ? "true" : "false"}
+                          onClick=${() => onEmoji?.(r3.emoji)}
+                        >${r3.emoji}${r3.members.length > 1 ? m2`<span class="reaction-chip__count">${r3.members.length}</span>` : null}</button>`;
+    })}
+                    </span>` : null}
+                ${picking ? m2`<span class=${`reaction-picker${reactionPickerBelow ? " reaction-picker--below" : ""}`} role="group" aria-label="React with">
+                      ${ROOM_EMOJI.map(
+      (emoji) => m2`<button type="button" class="reaction-picker__emoji" aria-label=${`React with ${emoji}`} onClick=${(e3) => {
+        e3.stopPropagation();
+        closeReactionPicker();
+        onEmoji(emoji);
+      }}>${emoji}</button>`
+    )}
+                    </span>` : null}
                 <span class="message__footer">
-                  ${onReply && item.text && !item.pending ? m2`<button type="button" class="copy-button" aria-label="Reply to this message" onClick=${onReply}>Reply</button>` : null}
+                  ${onReply && (item.text || item.attachments?.length) && !item.pending ? m2`<button type="button" class="copy-button" aria-label="Reply to this message" onClick=${onReply}>Reply</button>` : null}
+                  ${onEmoji ? m2`<button type="button" class="copy-button" aria-label="React to this message" aria-expanded=${picking ? "true" : "false"} onClick=${(e3) => {
+      e3.stopPropagation();
+      toggleReactionPicker(item.roomId);
+    }}>React</button>` : null}
                   ${onReact && item.text && !item.pending ? reactionsFor(item).map(
       (r3) => m2`<button type="button" class="reaction-button" title=${r3.label} aria-label=${r3.label} onClick=${() => onReact(r3.key)}>${r3.emoji}</button>`
     ) : null}
@@ -9946,6 +9991,7 @@
       if (isAgentItem(item)) return false;
       const text2 = String(item.text || "");
       if ([...text2.matchAll(/@([a-z][a-z0-9_-]*)/gi)].some((m4) => colleaguesById.has(m4[1].toLowerCase()))) return true;
+      if (item.replyTo?.agent) return true;
       const quoted = text2.match(/^> \*\*(.+?):\*\*/);
       return Boolean(quoted && colleagueNames.has(quoted[1].toLowerCase()));
     };
@@ -9980,7 +10026,7 @@
       key=${i3}
       role=${role}
       avatarColleague=${sender}
-      variant=${!isRoom || isYou || isSystem ? null : isAgentItem(item) ? "agent" : mentionsMe(item.text) ? "mention" : "person"}
+      variant=${!isRoom || isYou || isSystem ? null : isAgentItem(item) ? "agent" : mentionsMe(item.text) || item.replyTo?.mine ? "mention" : "person"}
       accent=${isRoom && item.senderId.startsWith("human:") ? personColor(item.senderId) : null}
       nameTag=${item.senderName || sender?.name || null}
       item=${item}
@@ -9993,8 +10039,10 @@
         item.trail[entryIndex].expanded = !item.trail[entryIndex].expanded;
         renderChannelMessages();
       }}
-      onReply=${!isSystem && !item.artifact ? () => startReply(isYou ? null : item.senderId, isYou ? "You" : item.senderName || sender?.name || "", item.text) : null}
-      onReact=${isRoom && isAgentItem(item) && colleaguesById.has(item.senderId) ? (key) => sendReaction(key, item.senderId, sender?.name || "", item.text) : null}
+      onReply=${!isSystem && !item.artifact ? () => replyToChannelItem(item) : null}
+      onReact=${isRoom && isAgentItem(item) && colleaguesById.has(item.senderId) ? (key) => sendReaction(key, item.senderId, sender?.name || "", item.text, item.roomId) : null}
+      roomYouId=${isRoom ? channelsById.get(activeChannelId)?.room?.you?.id || null : null}
+      onEmoji=${isRoom && item.roomId != null && !item.pending ? (emoji) => toggleRoomReaction(item.roomId, emoji) : null}
     />`;
     };
     R(
@@ -10075,6 +10123,9 @@
         // team room (see server/room.js); a plain channel has none.
         senderName: row.sender_name || null,
         artifact: row.artifact || null,
+        roomId: row.room_id ?? null,
+        replyTo: row.reply_to || null,
+        reactions: row.reactions || [],
         text: row.text,
         createdAt: row.created_at,
         attachments: storedAttachments(row.attachments)
@@ -10869,8 +10920,8 @@
 
 `;
   }
-  function startReply(senderId, name, text2) {
-    replyTarget = { senderId, name, excerpt: excerptOf(text2) };
+  function startReply(senderId, name, text2, roomId = null) {
+    replyTarget = { senderId, name, excerpt: excerptOf(text2) || "Picture", roomId };
     replyBarEl.hidden = false;
     replyBarEl.innerHTML = "";
     const label = document.createElement("span");
@@ -10884,6 +10935,110 @@
     replyBarEl.append(label, cancel);
     input.focus();
   }
+  function replyToChannelItem(item) {
+    const isYou = item.senderId === "you";
+    const sender = colleaguesById.get(item.senderId);
+    const name = isYou ? "You" : item.senderName || sender?.name || "";
+    const isRoom = Boolean(channelsById.get(activeChannelId)?.room);
+    startReply(isYou ? null : item.senderId, name, item.text, isRoom ? item.roomId : null);
+  }
+  var ROOM_EMOJI = ["\u{1F44D}", "\u2764\uFE0F", "\u{1F602}", "\u{1F62E}", "\u{1F622}", "\u{1F64F}"];
+  var reactionPickerFor = null;
+  var reactionPickerHeldAt = 0;
+  var reactionPickerBelow = false;
+  function toggleRoomReaction(roomId, emoji) {
+    socket.send(JSON.stringify({ type: "room_react", roomId, emoji }));
+  }
+  function toggleReactionPicker(roomId, { held = false } = {}) {
+    reactionPickerFor = reactionPickerFor === roomId ? null : roomId;
+    reactionPickerHeldAt = held ? Date.now() : 0;
+    const bubble = messagesEl.querySelector(`.message[data-room-id="${Number(roomId)}"] > span`);
+    reactionPickerBelow = Boolean(bubble) && bubble.getBoundingClientRect().top - messagesEl.getBoundingClientRect().top < 64;
+    renderChannelMessages();
+    const picker = messagesEl.querySelector(".reaction-picker");
+    if (picker) {
+      const rect = picker.getBoundingClientRect();
+      const margin = 8;
+      const shift = rect.right > window.innerWidth - margin ? window.innerWidth - margin - rect.right : rect.left < margin ? margin - rect.left : 0;
+      if (shift) picker.style.transform = `translateX(${Math.round(shift)}px)`;
+    }
+  }
+  function closeReactionPicker() {
+    if (reactionPickerFor === null) return;
+    reactionPickerFor = null;
+    if (activeChannelId) renderChannelMessages();
+  }
+  document.addEventListener("click", (event) => {
+    if (Date.now() - reactionPickerHeldAt < 800) return;
+    if (reactionPickerFor !== null && !event.target.closest?.(".reaction-picker")) closeReactionPicker();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeReactionPicker();
+  });
+  function jumpToRoomMessage(roomId) {
+    const el = messagesEl.querySelector(`.message[data-room-id="${Number(roomId)}"]`);
+    if (!el) return;
+    el.scrollIntoView({ block: "center", behavior: "smooth" });
+    el.classList.remove("message--highlight");
+    void el.offsetWidth;
+    el.classList.add("message--highlight");
+    setTimeout(() => el.classList.remove("message--highlight"), 1600);
+  }
+  (function installRoomGestures() {
+    const SWIPE_REPLY_PX = 56;
+    const HOLD_MS = 450;
+    let start = null;
+    let holdTimer = null;
+    const itemFor = (el) => (channelMessages.get(activeChannelId) || []).find((m4) => m4.roomId === Number(el.dataset.roomId));
+    const reset = () => {
+      clearTimeout(holdTimer);
+      if (start?.el) {
+        start.el.style.transform = "";
+        start.el.classList.remove("message--swiping");
+      }
+      start = null;
+    };
+    messagesEl.addEventListener("touchstart", (e3) => {
+      if (e3.touches.length !== 1 || !activeChannelId) return;
+      if (e3.target.closest("iframe, input, textarea, .reaction-picker")) return;
+      const onControl = Boolean(e3.target.closest("button, a, img"));
+      const el = e3.target.closest(".message--room");
+      if (!el) return;
+      const item = itemFor(el);
+      if (!item) return;
+      start = { x: e3.touches[0].clientX, y: e3.touches[0].clientY, dx: 0, el, item, swiping: false };
+      holdTimer = onControl ? null : setTimeout(() => {
+        if (!start || start.swiping) return;
+        navigator.vibrate?.(10);
+        toggleReactionPicker(item.roomId, { held: true });
+      }, HOLD_MS);
+    }, { passive: true });
+    messagesEl.addEventListener("touchmove", (e3) => {
+      if (!start) return;
+      const dx = e3.touches[0].clientX - start.x;
+      const dy = e3.touches[0].clientY - start.y;
+      if (Math.abs(dx) > 8 || Math.abs(dy) > 8) clearTimeout(holdTimer);
+      if (!start.swiping && (dx < 12 || Math.abs(dy) > dx)) {
+        if (Math.abs(dy) > 12 || dx < -12) reset();
+        return;
+      }
+      start.swiping = true;
+      start.dx = dx;
+      start.el.classList.add("message--swiping");
+      start.el.style.transform = `translateX(${Math.min(Math.max(dx, 0), SWIPE_REPLY_PX + 24)}px)`;
+    }, { passive: true });
+    const end = () => {
+      if (!start) return;
+      const { swiping, item, dx } = start;
+      reset();
+      if (swiping && dx >= SWIPE_REPLY_PX) replyToChannelItem(item);
+    };
+    messagesEl.addEventListener("touchend", end);
+    messagesEl.addEventListener("touchcancel", reset);
+    messagesEl.addEventListener("contextmenu", (e3) => {
+      if (e3.target.closest(".message--room") && window.matchMedia("(hover: none)").matches) e3.preventDefault();
+    });
+  })();
   function clearReply() {
     replyTarget = null;
     replyBarEl.hidden = true;
@@ -10900,16 +11055,17 @@
     const asks = /\?[)*_\s]*$/.test(lastLine);
     return REACTION_SET.filter((r3) => r3.key !== "yes" || asks);
   }
-  function sendReaction(key, colleagueId, name, text2) {
+  function sendReaction(key, colleagueId, name, text2, roomId = null) {
     const reaction = REACTION_SET.find((r3) => r3.key === key);
     if (!reaction) return;
-    const body = quoteOf({ name, excerpt: excerptOf(text2) }) + reaction.emoji;
+    const inRoom = activeChannelId && roomId != null;
+    const body = inRoom ? reaction.emoji : quoteOf({ name, excerpt: excerptOf(text2) }) + reaction.emoji;
     if (key === "question" && openQuestions) {
       const full = String(text2 || "").split("\n").filter((l3) => !l3.startsWith(">")).join(" ").replace(/\s+/g, " ").trim().slice(0, 600);
       socket.send(JSON.stringify({ type: "question_add", text: full, source: name }));
     }
     if (activeChannelId) {
-      socket.send(JSON.stringify({ type: "channel_message", channelId: activeChannelId, text: body, attachments: [], replyTo: colleagueId, reaction: key }));
+      socket.send(JSON.stringify({ type: "channel_message", channelId: activeChannelId, text: body, attachments: [], replyTo: inRoom ? roomId : colleagueId, reaction: key }));
       return;
     }
     const convK = activeConvKey();
@@ -10930,8 +11086,9 @@
     }
     const typed = input.value.trim();
     if (!typed && !pendingAttachment) return;
-    const replyTo = replyTarget?.senderId || null;
-    const text2 = replyTarget && typed ? quoteOf(replyTarget) + typed : typed;
+    const roomReply = replyTarget?.roomId != null && Boolean(channelsById.get(activeChannelId)?.room);
+    const replyTo = roomReply ? replyTarget.roomId : replyTarget?.senderId || null;
+    const text2 = replyTarget && typed && !roomReply ? quoteOf(replyTarget) + typed : typed;
     clearReply();
     if (activeChannelId) {
       const channelAttachments = pendingAttachment ? [pendingAttachment] : [];
