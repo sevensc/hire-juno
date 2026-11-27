@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 
 import {
+  TAKEN_OVER_NOTE,
   adoptCliSession,
   cliProjectDir,
   cliSessionInfo,
@@ -14,6 +15,7 @@ import {
   listCliSessions,
   shellQuote,
   transferToTerminal,
+  withNotes,
 } from '../chat/server/cliSession.js';
 
 const ID = '5b3f2c1a-8d4e-4f6b-9a7c-2e1d0f9b8a6c';
@@ -170,4 +172,10 @@ test('taking over is refused while she is answering', () => {
   assert.equal(result.ok, false);
   assert.deepEqual(saved, []);
   assert.ok(adapters.has('juno::default'));
+});
+
+test('notes go after the message, each in brackets; none leaves it unchanged', () => {
+  assert.equal(withNotes('hi', ['', null]), 'hi');
+  assert.equal(withNotes('hi', ['a']), 'hi\n\n[a]');
+  assert.equal(withNotes('hi', ['a', '', TAKEN_OVER_NOTE]), `hi\n\n[a]\n[${TAKEN_OVER_NOTE}]`);
 });

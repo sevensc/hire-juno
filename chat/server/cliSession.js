@@ -178,3 +178,15 @@ export function adoptCliSession({ store, handovers, adapters, key, colleagueId, 
   handovers.remove(key);
   return { ok: true };
 }
+
+// Sent along with the first message after a terminal session was taken over:
+// the session's last turns happened in the terminal, so without it she would
+// go on answering as if she were still there.
+export const TAKEN_OVER_NOTE =
+  'This conversation was just taken over from a terminal session into the chat. The terminal session is closed; you are answering in the chat now.';
+
+// The message as she gets it: the text, then each non-empty note in brackets.
+export function withNotes(text, notes) {
+  const present = notes.filter(Boolean);
+  return present.length ? `${text}\n\n${present.map((note) => `[${note}]`).join('\n')}` : text;
+}
