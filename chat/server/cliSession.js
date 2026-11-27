@@ -1,4 +1,4 @@
-import { closeSync, openSync, readdirSync, readSync, statSync } from 'node:fs';
+import { closeSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -189,4 +189,55 @@ export const TAKEN_OVER_NOTE =
 export function withNotes(text, notes) {
   const present = notes.filter(Boolean);
   return present.length ? `${text}\n\n${present.map((note) => `[${note}]`).join('\n')}` : text;
+}
+
+// The conversation of a terminal session as chat messages: what you typed and
+// what she answered, without tool calls, tool results, thinking, slash
+// commands, reminders or side chains. Her text blocks between two of your
+// messages form one reply. Only the last `limit` messages.
+const MAX_TRANSCRIPT_BYTES = 64 * 1024 * 1024;
+
+function typedText(entry) {
+  if (entry.isCompactSummary) return '';
+  const text = userText(entry);
+  return /^\[Request interrupted/.test(text) ? '' : text;
+}
+
+function answerText(entry) {
+  if (entry?.type !== 'assistant') return '';
+  const content = entry.message?.content;
+  if (!Array.isArray(content)) return '';
+  return content.filter((p) => p?.type === 'text' && p.text?.trim()).map((p) => p.text.trim()).join('\n\n');
+}
+
+export function readCliTranscript({ cwd, sdkSessionId, configDir = cliConfigDir(), limit = 50 } = {}) {
+  if (!isSessionUuid(sdkSessionId) || typeof cwd !== 'string' || !cwd) return [];
+  const file = join(cliProjectDir(cwd, configDir), `${sdkSessionId}.jsonl`);
+  let text;
+  try {
+    if (statSync(file).size > MAX_TRANSCRIPT_BYTES) return [];
+    text = readFileSync(file, 'utf8');
+  } catch {
+    return [];
+  }
+  const messages = [];
+  let reply = null;
+  for (const entry of parseLines(text)) {
+    if (entry.isSidechain) continue;
+    const typed = typedText(entry);
+    if (typed) {
+      reply = null;
+      messages.push({ role: 'you', text: typed, createdAt: entry.timestamp || null });
+      continue;
+    }
+    const answer = answerText(entry);
+    if (!answer) continue;
+    if (reply) {
+      reply.text = `${reply.text}\n\n${answer}`;
+    } else {
+      reply = { role: 'colleague', text: answer, createdAt: entry.timestamp || null };
+      messages.push(reply);
+    }
+  }
+  return messages.slice(-limit);
 }

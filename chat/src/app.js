@@ -1185,7 +1185,7 @@ async function renderConvSettingsTerminal({ reload = true } = {}) {
 // one of them from the next message on.
 let takeOverForm = null; // { colleagueId, sessionId, status, error } while shown
 const takeOverDone = new Set(); // conversation keys taken over while the dialog is open
-const TAKEN_OVER = 'Taken over. Your next message here continues the terminal session; its earlier messages are not shown in this chat.';
+const TAKEN_OVER = 'Taken over. Its last messages are shown in this chat now, and your next message here continues the terminal session.';
 function takeOverEl(colleagueId, sessionId) {
   const box = document.createElement('div');
   box.className = 'cli-takeover';
@@ -3041,8 +3041,12 @@ const handleSocketMessage = (event) => {
       }
     }
     if (update.ok) {
-      takeOverDone.add(convKey(update.colleagueId, update.sessionId));
+      const key = convKey(update.colleagueId, update.sessionId);
+      takeOverDone.add(key);
       loadCliInfo(update.colleagueId, update.sessionId);
+      loadColleagueHistory(update.colleagueId, update.sessionId, key, { force: true }).then(() => {
+        if (activeConvKey() === key) renderMessages({ forceScrollToBottom: true });
+      });
     }
     return;
   }

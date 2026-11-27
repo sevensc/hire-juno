@@ -13,6 +13,7 @@ import {
   createHandovers,
   isSessionUuid,
   listCliSessions,
+  readCliTranscript,
   shellQuote,
   transferToTerminal,
   withNotes,
@@ -178,4 +179,35 @@ test('notes go after the message, each in brackets; none leaves it unchanged', (
   assert.equal(withNotes('hi', ['', null]), 'hi');
   assert.equal(withNotes('hi', ['a']), 'hi\n\n[a]');
   assert.equal(withNotes('hi', ['a', '', TAKEN_OVER_NOTE]), `hi\n\n[a]\n[${TAKEN_OVER_NOTE}]`);
+});
+
+test('the transcript keeps typed messages and her text, one reply per turn', () => {
+  withProjects(({ configDir, cwd, dir }) => {
+    const at = (n) => `2026-01-01T00:00:0${n}.000Z`;
+    const typed = (content, n, extra = {}) => ({ type: 'user', entrypoint: 'cli', timestamp: at(n), message: { role: 'user', content }, ...extra });
+    const said = (blocks, n, extra = {}) => ({ type: 'assistant', timestamp: at(n), message: { role: 'assistant', content: blocks }, ...extra });
+    writeSession(dir, ID, [
+      typed('<command-name>/clear</command-name>', 0),
+      typed('caveat', 0, { isMeta: true }),
+      typed('First question', 1),
+      said([{ type: 'thinking', thinking: 'hmm' }, { type: 'text', text: 'Looking.' }], 2),
+      said([{ type: 'tool_use', name: 'Bash', input: {} }], 3),
+      typed([{ type: 'tool_result', content: 'output' }], 3),
+      said([{ type: 'text', text: 'Found it.' }], 4),
+      said([{ type: 'text', text: 'side' }], 4, { isSidechain: true }),
+      typed([{ type: 'text', text: 'Second' }, { type: 'image' }], 5),
+      typed('[Request interrupted by user]', 6),
+      said([{ type: 'text', text: 'Done.' }], 7),
+    ], 1000);
+    const all = readCliTranscript({ cwd, configDir, sdkSessionId: ID });
+    assert.deepEqual(all, [
+      { role: 'you', text: 'First question', createdAt: at(1) },
+      { role: 'colleague', text: 'Looking.\n\nFound it.', createdAt: at(2) },
+      { role: 'you', text: 'Second', createdAt: at(5) },
+      { role: 'colleague', text: 'Done.', createdAt: at(7) },
+    ]);
+    assert.deepEqual(readCliTranscript({ cwd, configDir, sdkSessionId: ID, limit: 1 }).map((m) => m.text), ['Done.']);
+    assert.deepEqual(readCliTranscript({ cwd, configDir, sdkSessionId: OTHER }), []);
+    assert.deepEqual(readCliTranscript({ cwd, configDir, sdkSessionId: '../x' }), []);
+  });
 });

@@ -304,3 +304,21 @@ test('sdk sessions of ended sessions are free again', () => {
     rmSync(baseDir, { recursive: true, force: true });
   }
 });
+
+test('imported messages keep their own times and come after the stored ones', () => {
+  const baseDir = mkdtempSync(join(tmpdir(), 'hire-juno-chat-store-'));
+  try {
+    const store = openStore({ workforceId: 'acme', baseDir });
+    store.appendMessage('juno', 'default', 'you', 'before');
+    store.importMessages('juno', 'default', [
+      { role: 'you', text: 'old question', createdAt: '2026-01-01T00:00:01.000Z' },
+      { role: 'colleague', text: 'old answer', createdAt: null },
+    ]);
+    const rows = store.getHistory('juno', 'default');
+    assert.deepEqual(rows.map((m) => [m.role, m.text]), [['you', 'before'], ['you', 'old question'], ['colleague', 'old answer']]);
+    assert.equal(rows[1].createdAt ?? rows[1].created_at, '2026-01-01T00:00:01.000Z');
+    store.close();
+  } finally {
+    rmSync(baseDir, { recursive: true, force: true });
+  }
+});

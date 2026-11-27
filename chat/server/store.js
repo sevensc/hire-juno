@@ -226,6 +226,10 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
   const insertStmt = db.prepare(
     'INSERT INTO messages (colleague_id, session_id, role, text, trail) VALUES (?, ?, ?, ?, ?)'
   );
+  const insertDatedStmt = db.prepare(
+    `INSERT INTO messages (colleague_id, session_id, role, text, created_at)
+     VALUES (?, ?, ?, ?, COALESCE(?, strftime('%Y-%m-%dT%H:%M:%fZ','now')))`
+  );
   const historyStmt = db.prepare(
     'SELECT id, role, text, trail, created_at FROM messages WHERE colleague_id = ? AND session_id = ? ORDER BY id ASC'
   );
@@ -405,6 +409,14 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
     // column existed.
     // `attachments` (optional): [{name, mimeType, data}] as sent by the
     // client (data is base64) — only images, see saveAttachments.
+    // Messages brought in from elsewhere (a terminal session), with their
+    // own times; in the order given, behind everything stored so far.
+    importMessages(colleagueId, sessionId, messages) {
+      const sid = sessionKey(colleagueId, sessionId);
+      db.transaction(() => {
+        for (const m of messages) insertDatedStmt.run(colleagueId, sid, m.role, m.text, m.createdAt || null);
+      })();
+    },
     appendMessage(colleagueId, sessionId, role, text, trail, attachments) {
       const { lastInsertRowid } = insertStmt.run(
         colleagueId,

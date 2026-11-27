@@ -7312,7 +7312,7 @@
   }
   var takeOverForm = null;
   var takeOverDone = /* @__PURE__ */ new Set();
-  var TAKEN_OVER = "Taken over. Your next message here continues the terminal session; its earlier messages are not shown in this chat.";
+  var TAKEN_OVER = "Taken over. Its last messages are shown in this chat now, and your next message here continues the terminal session.";
   function takeOverEl(colleagueId, sessionId) {
     const box = document.createElement("div");
     box.className = "cli-takeover";
@@ -8629,8 +8629,12 @@
         }
       }
       if (update.ok) {
-        takeOverDone.add(convKey(update.colleagueId, update.sessionId));
+        const key2 = convKey(update.colleagueId, update.sessionId);
+        takeOverDone.add(key2);
         loadCliInfo(update.colleagueId, update.sessionId);
+        loadColleagueHistory(update.colleagueId, update.sessionId, key2, { force: true }).then(() => {
+          if (activeConvKey() === key2) renderMessages({ forceScrollToBottom: true });
+        });
       }
       return;
     }
