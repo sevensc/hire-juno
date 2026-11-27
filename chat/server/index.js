@@ -45,7 +45,7 @@ import { writeLimitLog } from './limitLog.js';
 import { WaitingMessages } from './waiting.js';
 import { decideRelevance } from './gatekeeper.js';
 import { extractMentions, extractVocativeAddresses } from './mentions.js';
-import { findLayout, readRoster, resolveAvatarPath } from './roster.js';
+import { findLayout, readRoster, readRosterCard, resolveAvatarPath } from './roster.js';
 import { ATTACHMENT_MIME_TYPES, DEFAULT_SESSION_ID, openStore } from './store.js';
 import { resolveWorkforce } from './workforceId.js';
 import { activateWorktree, canOfferWorktree, worktreeIsStartRepo } from './useWorktree.js';
@@ -643,6 +643,15 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
       return sessionsByColleague.get(colleagueId);
     }
 
+    // The tabs: her pre-sessions conversation (while it has messages and was
+    // not ended) first, then the sessions.
+    const listedSessions = (colleagueId) => [
+      ...(store.defaultListed(colleagueId)
+        ? [{ id: DEFAULT_SESSION_ID, colleagueId, title: 'Earlier conversation', createdAt: null }]
+        : []),
+      ...sessionsFor(colleagueId),
+    ];
+
     // "Allow all tools" and "Always allow <tool>", per 1:1 session and per
     // channel member. In memory only (see permissions.js).
     const permissions = createPermissions({
@@ -843,8 +852,17 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
         if (req.method === 'GET' && route === 'api/sessions') {
           const colleagueId = url.searchParams.get('colleagueId') || '';
           res.writeHead(200, { 'Content-Type': 'application/json' }).end(
-            JSON.stringify(sessionsFor(colleagueId))
+            JSON.stringify(listedSessions(colleagueId))
           );
+          return;
+        }
+
+        if (req.method === 'GET' && route === 'api/profile') {
+          // Her card for the view shown when no conversation is open.
+          const colleagueId = url.searchParams.get('colleagueId') || '';
+          const colleague = readRoster(targetDir).find((c) => c.id === colleagueId);
+          const card = colleague ? readRosterCard(targetDir, colleague) : null;
+          res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ card }));
           return;
         }
 
@@ -1704,22 +1722,25 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
             const id = randomUUID();
             const colleagueId = payload.colleagueId;
             if (!colleagueId || !readRoster(targetDir).some((c) => c.id === colleagueId)) return;
-            const title = (payload.title || '').trim() || 'New session';
+            const title = (payload.title || '').trim().slice(0, 80) || 'New session';
             store.createSession(id, colleagueId, title);
             const session = { id, colleagueId, title, createdAt: new Date().toISOString() };
             sessionsByColleague.set(colleagueId, [...sessionsFor(colleagueId), session]);
-            broadcast({ type: 'session_created', colleagueId, session });
+            // requestId: lets the tab that asked send its first message into it.
+            const requestId = typeof payload.requestId === 'string' ? payload.requestId.slice(0, 64) : undefined;
+            broadcast({ type: 'session_created', colleagueId, session, requestId });
             return;
           }
 
           if (payload.type === 'close_session') {
-            // Ends an extra session (the main conversation has none to end):
-            // her process stops, the tab goes away, the messages stay stored.
+            // Ends a conversation: her process stops, the tab goes away, the
+            // messages stay stored. Her pre-sessions conversation only leaves
+            // the tabs; a channel turn still runs on it.
             const colleagueId = payload.colleagueId;
             const sessionId = payload.sessionId;
             const fail = (message) => broadcast({ type: 'session_close_failed', colleagueId, sessionId, message });
-            if (!colleagueId || !sessionId || sessionId === DEFAULT_SESSION_ID) return;
-            if (!sessionsFor(colleagueId).some((session) => session.id === sessionId)) return;
+            if (!colleagueId || !sessionId) return;
+            if (!listedSessions(colleagueId).some((session) => session.id === sessionId)) return;
             const key = adapterKey(colleagueId, sessionId);
             const adapter = adapters.get(key);
             if (adapter?.busy) {
@@ -1729,8 +1750,12 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
             adapter?.close?.();
             adapters.delete(key);
             handovers.remove(key);
-            store.closeSession(sessionId, colleagueId);
-            sessionsByColleague.set(colleagueId, sessionsFor(colleagueId).filter((session) => session.id !== sessionId));
+            if (sessionId === DEFAULT_SESSION_ID) {
+              store.closeDefault(colleagueId);
+            } else {
+              store.closeSession(sessionId, colleagueId);
+              sessionsByColleague.set(colleagueId, sessionsFor(colleagueId).filter((session) => session.id !== sessionId));
+            }
             dropSubagentThreadsOf(colleagueId, sessionId);
             broadcast({ type: 'session_closed', colleagueId, sessionId });
             return;

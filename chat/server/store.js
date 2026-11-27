@@ -216,6 +216,10 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
     if (!/duplicate column/i.test(err.message)) throw err;
   }
 
+  // The conversation each colleague had before sessions came in (session id
+  // 'default') shows as a tab only until it is ended; its rows stay.
+  db.exec('CREATE TABLE IF NOT EXISTS default_closed (colleague_id TEXT PRIMARY KEY)');
+
   // And for ending a session: its tab goes away, its rows stay (closed_at set).
   try {
     db.exec('ALTER TABLE sessions ADD COLUMN closed_at TEXT');
@@ -240,9 +244,7 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
   // comment on subagent threads having no server-side history at all).
   const lastMessagesStmt = db.prepare(
     `SELECT colleague_id, role, text, created_at FROM messages
-     WHERE session_id = ? AND id IN (
-       SELECT MAX(id) FROM messages WHERE session_id = ? GROUP BY colleague_id
-     )`
+     WHERE id IN (SELECT MAX(id) FROM messages WHERE colleague_id NOT LIKE 'sub:%' GROUP BY colleague_id)`
   );
   const insertAttachmentStmt = db.prepare(
     'INSERT INTO attachments (kind, message_id, name, mime_type, data) VALUES (?, ?, ?, ?, ?)'
@@ -281,6 +283,11 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
   const listSessionsStmt = db.prepare(
     'SELECT id, colleague_id, title, created_at FROM sessions WHERE colleague_id = ? AND closed_at IS NULL ORDER BY created_at ASC'
   );
+  const defaultHasMessagesStmt = db.prepare(
+    "SELECT 1 FROM messages WHERE colleague_id = ? AND session_id = 'default' AND role IN ('you', 'colleague') LIMIT 1"
+  );
+  const defaultClosedStmt = db.prepare('SELECT 1 FROM default_closed WHERE colleague_id = ?');
+  const closeDefaultStmt = db.prepare('INSERT OR IGNORE INTO default_closed (colleague_id) VALUES (?)');
   const closeSessionStmt = db.prepare(
     "UPDATE sessions SET closed_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ? AND colleague_id = ? AND closed_at IS NULL"
   );
@@ -456,7 +463,7 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
     // all of them together), not N+1 per-colleague lookups.
     getLastMessages() {
       const map = new Map();
-      for (const row of lastMessagesStmt.all(DEFAULT_SESSION_ID, DEFAULT_SESSION_ID)) {
+      for (const row of lastMessagesStmt.all()) {
         map.set(row.colleague_id, { role: row.role, text: row.text, createdAt: row.created_at });
       }
       return map;
@@ -469,6 +476,14 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
     // ones.
     createSession(id, colleagueId, title) {
       insertSessionStmt.run(id, colleagueId, title);
+    },
+    // Whether her pre-sessions conversation still shows as a tab: it has
+    // messages and was not ended.
+    defaultListed(colleagueId) {
+      return Boolean(defaultHasMessagesStmt.get(colleagueId)) && !defaultClosedStmt.get(colleagueId);
+    },
+    closeDefault(colleagueId) {
+      return closeDefaultStmt.run(colleagueId).changes > 0;
     },
     // Ends an extra session: it no longer lists, its messages stay in the
     // database. True if there was an open session to end.
@@ -596,8 +611,8 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
       deleteChannelAttachmentsStmt.run(channelId);
       deleteChannelMessagesStmt.run(channelId);
     },
-    // Main-thread messages only (session_id = 'default'), same scope as
-    // getLastMessages above — parallel sessions and subagent panels
+    // Messages of the pre-sessions conversation only (session_id =
+    // 'default') — parallel sessions and subagent panels
     // aren't what "search everything" means here.
     searchMessages(query) {
       const like = `%${escapeLike(query)}%`;
