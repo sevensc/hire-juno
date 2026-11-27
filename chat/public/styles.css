@@ -3330,3 +3330,6 @@ html.keyboard-open #session-tabs .session-tab { min-height: 2rem; }
 .profile-card__fields dd { margin: 0; overflow-wrap: anywhere; }
 .profile-card__text { text-align: left; line-height: 1.5; margin: 0 0 0.8rem; }
 .profile-card__hint { margin-top: 1.4rem; color: var(--fg-muted); font-size: 0.9rem; }
+.profile-card__takeover { margin-top: 0.6rem; text-align: left; }
+.profile-card__takeover .cli-takeover { text-align: center; }
+.profile-card__takeover .cli-takeover__list { text-align: left; }
