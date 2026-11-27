@@ -53,7 +53,15 @@ import { currentBranch, gitRoot, resolveGitDir } from './worktree.js';
 import { addWorkforce, listWorkforces, removeWorkforce, setActiveWorkforce } from '../../shared/workforceRegistry.js';
 import { getOrCreateSession, saveSessionPort } from '../../shared/chatSessions.js';
 import { portToRemember } from '../../shared/portFlag.js';
-import { adoptCliSession, cliSessionInfo, createHandovers, listCliSessions, transferToTerminal } from './cliSession.js';
+import {
+  TAKEN_OVER_NOTE,
+  adoptCliSession,
+  cliSessionInfo,
+  createHandovers,
+  listCliSessions,
+  transferToTerminal,
+  withNotes,
+} from './cliSession.js';
 import { loadToken, removeToken, saveToken } from './claudeToken.js';
 import { connectRoom } from './roomClient.js';
 import { reactionHint } from './reactions.js';
@@ -493,6 +501,10 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
     };
     // Conversations handed to the terminal: the chat leaves their session alone.
     const handovers = createHandovers();
+    // Conversations just pointed at a terminal session: the first message
+    // after that tells her she now answers in the chat (the session itself
+    // still ends in the terminal, so she would otherwise answer as if there).
+    const takenOver = new Set();
     const adapterFor = (colleagueId, sessionId = DEFAULT_SESSION_ID) => {
       const key = adapterKey(colleagueId, sessionId);
       if (!adapters.has(key)) {
@@ -1970,6 +1982,7 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
               sdkSessionId: payload.sdkSessionId,
               offered,
             });
+            if (result.ok) takenOver.add(adapterKey(colleagueId, sessionId));
             reply(result);
             return;
           }
@@ -2297,7 +2310,8 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
           }
           // A reaction's meaning goes to her with it; the transcript keeps the emoji.
           const hint = reactionHint(payload.reaction);
-          await adapter.sendMessage(hint ? `${text}\n\n[${hint}]` : text, attachments, { uuid, ...(kind === 'queue' ? { priority: 'later' } : {}) });
+          const prompt = withNotes(text, [hint, takenOver.delete(key) ? TAKEN_OVER_NOTE : '']);
+          await adapter.sendMessage(prompt, attachments, { uuid, ...(kind === 'queue' ? { priority: 'later' } : {}) });
         });
       });
     });
