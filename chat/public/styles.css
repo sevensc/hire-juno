@@ -3409,19 +3409,22 @@ html.keyboard-open #session-tabs .session-tab { min-height: 2rem; }
 /* The emoji to pick from, opened with React or by holding the message:
    floating over the bubble's top edge (below it for a message at the top
    of the list), so the six fit in one row on a phone. */
-.message--room > span { position: relative; }
+.message--room > span,
+.message--pickable > span { position: relative; }
+/* The emoji reactions in one row, the quick answers to a colleague in a
+   second one below them. */
 .reaction-picker {
   position: absolute;
   z-index: 5;
   bottom: calc(100% - 0.4rem);
   left: 0.4rem;
   display: flex;
-  flex-wrap: nowrap;
+  flex-direction: column;
   gap: 0.15rem;
   padding: 0.2rem;
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: 1.6rem;
   box-shadow: 0 4px 14px light-dark(rgba(0, 0, 0, 0.12), rgba(0, 0, 0, 0.45));
   white-space: nowrap;
 }
@@ -3854,3 +3857,6 @@ a.gh-card:active, .gh-card__link:active { filter: brightness(0.92); }
 .conversation-mode label { display: flex; align-items: flex-start; gap: 0.5rem; min-height: 2.75rem; padding: 0.35rem 0; cursor: pointer; font-size: 0.88rem; }
 .conversation-mode input { margin-top: 0.2rem; width: 1.1rem; height: 1.1rem; flex-shrink: 0; }
 .conversation-mode label:has(input:disabled) { color: var(--fg-muted); cursor: default; }
+
+.reaction-picker__row { display: flex; flex-wrap: nowrap; gap: 0.15rem; }
+.reaction-picker__row + .reaction-picker__row { border-top: 1px solid var(--border); padding-top: 0.15rem; }

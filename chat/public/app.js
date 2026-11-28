@@ -8573,11 +8573,29 @@
   function isNearBottom() {
     return messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight <= SCROLL_TO_BOTTOM_THRESHOLD;
   }
+  var pinnedToBottom = true;
+  messagesEl.addEventListener("scroll", () => {
+    pinnedToBottom = isNearBottom();
+  }, { passive: true });
+  {
+    let queued = false;
+    const keepPinned = () => {
+      if (!pinnedToBottom || queued) return;
+      queued = true;
+      requestAnimationFrame(() => {
+        queued = false;
+        if (pinnedToBottom) messagesEl.scrollTop = messagesEl.scrollHeight;
+      });
+    };
+    new MutationObserver(keepPinned).observe(messagesEl, { childList: true, subtree: true });
+    messagesEl.addEventListener("load", keepPinned, true);
+  }
   function followThinkingTail() {
     for (const box of messagesEl.querySelectorAll(".message--thinking > span")) box.scrollTop = box.scrollHeight;
   }
   function scrollMessagesToBottom() {
     messagesEl.scrollTop = messagesEl.scrollHeight;
+    pinnedToBottom = true;
     scrollToBottomButtonEl.hidden = true;
   }
   function updateScrollToBottomButton() {
@@ -9091,7 +9109,7 @@
         refreshUnreadTitle();
         renderSidebar();
       }
-      if (update.channelId === activeChannelId) renderChannelMessages();
+      if (update.channelId === activeChannelId) renderChannelMessages({ forceScrollToBottom: update.senderId === "you" });
       return;
     }
     if (update.type === "session_info" || update.type === "usage") {
@@ -10423,11 +10441,14 @@ ${source}`;
     const isToolUse = item.toolInput !== void 0;
     const time = formatMessageTime(item.createdAt);
     const reactions = item.reactions || [];
-    const picking = onEmoji && reactionPickerFor === item.roomId;
+    const quick = onReact && item.text && !item.pending ? reactionsFor(item) : [];
+    const canPick = onEmoji && item.roomId != null && !item.pending || quick.length > 0;
+    const pickerKey = canPick ? pickerKeyOf(item) : null;
+    const picking = pickerKey !== null && reactionPickerFor === pickerKey;
     return m2`
     <${S}>
       ${item.trail?.length ? m2`<${TrailBox} trail=${item.trail} onToggleEntry=${onToggleTrailEntry} />` : null}
-      <div class="message message--${role}${variant ? ` message--${variant}` : ""}${item.pending ? " message--pending" : ""}${onEmoji ? " message--room" : ""}" style=${accent ? `--person: ${accent}` : null} data-room-id=${onEmoji ? item.roomId : null}>
+      <div class="message message--${role}${variant ? ` message--${variant}` : ""}${item.pending ? " message--pending" : ""}${onEmoji ? " message--room" : ""}${pickerKey ? " message--pickable" : ""}" style=${accent ? `--person: ${accent}` : null} data-room-id=${onEmoji ? item.roomId : null} data-picker-key=${pickerKey}>
         ${avatarColleague ? m2`<${Avatar} colleague=${avatarColleague} />` : null}
         ${isToolUse ? m2`
               <span class="tool-use-line" onClick=${onToggle}>${toolText}</span>
@@ -10463,24 +10484,28 @@ ${source}`;
                         >${r3.emoji}${r3.members.length > 1 ? m2`<span class="reaction-chip__count">${r3.members.length}</span>` : null}</button>`;
     })}
                     </span>` : null}
-                ${picking ? m2`<span class=${`reaction-picker${reactionPickerBelow ? " reaction-picker--below" : ""}`} role="group" aria-label="React with">
-                      ${ROOM_EMOJI.map(
+                ${picking ? m2`<span class=${`reaction-picker${reactionPickerBelow ? " reaction-picker--below" : ""}`} role="group" aria-label="React">
+                      ${onEmoji && item.roomId != null ? m2`<span class="reaction-picker__row">${ROOM_EMOJI.map(
       (emoji) => m2`<button type="button" class="reaction-picker__emoji" aria-label=${`React with ${emoji}`} onClick=${(e3) => {
         e3.stopPropagation();
         closeReactionPicker();
         onEmoji(emoji);
       }}>${emoji}</button>`
-    )}
+    )}</span>` : null}
+                      ${quick.length ? m2`<span class="reaction-picker__row reaction-picker__row--quick" role="group" aria-label="Answer her with">${quick.map(
+      (r3) => m2`<button type="button" class="reaction-picker__emoji" title=${r3.label} aria-label=${r3.label} onClick=${(e3) => {
+        e3.stopPropagation();
+        closeReactionPicker();
+        onReact(r3.key);
+      }}>${r3.emoji}</button>`
+    )}</span>` : null}
                     </span>` : null}
                 <span class="message__footer">
                   ${onReply && (item.text || item.attachments?.length) && !item.pending ? m2`<button type="button" class="copy-button" aria-label="Reply to this message" onClick=${onReply}>Reply</button>` : null}
-                  ${onEmoji ? m2`<button type="button" class="copy-button" aria-label="React to this message" aria-expanded=${picking ? "true" : "false"} onClick=${(e3) => {
+                  ${canPick ? m2`<button type="button" class="copy-button" aria-label="React to this message" aria-expanded=${picking ? "true" : "false"} onClick=${(e3) => {
       e3.stopPropagation();
-      toggleReactionPicker(item.roomId);
+      toggleReactionPicker(pickerKey);
     }}>React</button>` : null}
-                  ${onReact && item.text && !item.pending ? reactionsFor(item).map(
-      (r3) => m2`<button type="button" class="reaction-button" title=${r3.label} aria-label=${r3.label} onClick=${() => onReact(r3.key)}>${r3.emoji}</button>`
-    ) : null}
                   ${item.text && !item.artifact ? m2`<button type="button" class="copy-button" aria-label="Copy message as Markdown" onClick=${(event) => copyWithFeedback(item.text, event.currentTarget)}>Copy</button>` : null}
                   ${item.pending ? m2`<time class="message__time">${item.kind === "queue" ? "Queued, answered after this turn" : "Waiting, not read yet"}</time>
                         ${item.canCancel && item.clientId ? m2`<button type="button" class="withdraw-button" disabled=${Boolean(item.withdrawing)} aria-label="Withdraw this message, it has not been read yet" onClick=${onWithdraw}>Withdraw</button>` : null}` : time ? m2`<time class="message__time">${time}</time>` : null}
@@ -11868,15 +11893,26 @@ ${words}`;
   var reactionPickerFor = null;
   var reactionPickerHeldAt = 0;
   var reactionPickerBelow = false;
+  var pickerKeys = /* @__PURE__ */ new WeakMap();
+  var pickerKeyCount = 0;
+  function pickerKeyOf(item) {
+    if (item.roomId != null) return `r${item.roomId}`;
+    if (!pickerKeys.has(item)) pickerKeys.set(item, `m${++pickerKeyCount}`);
+    return pickerKeys.get(item);
+  }
+  function renderActiveMessages() {
+    if (activeChannelId) renderChannelMessages();
+    else renderMessages();
+  }
   function toggleRoomReaction(roomId, emoji) {
     socket.send(JSON.stringify({ type: "room_react", roomId, emoji }));
   }
-  function toggleReactionPicker(roomId, { held = false } = {}) {
-    reactionPickerFor = reactionPickerFor === roomId ? null : roomId;
+  function toggleReactionPicker(key, { held = false } = {}) {
+    reactionPickerFor = reactionPickerFor === key ? null : key;
     reactionPickerHeldAt = held ? Date.now() : 0;
-    const bubble = messagesEl.querySelector(`.message[data-room-id="${Number(roomId)}"] > span`);
-    reactionPickerBelow = Boolean(bubble) && bubble.getBoundingClientRect().top - messagesEl.getBoundingClientRect().top < 64;
-    renderChannelMessages();
+    const bubble = messagesEl.querySelector(`.message[data-picker-key="${key}"] > span`);
+    reactionPickerBelow = Boolean(bubble) && bubble.getBoundingClientRect().top - messagesEl.getBoundingClientRect().top < 112;
+    renderActiveMessages();
     const picker = messagesEl.querySelector(".reaction-picker");
     if (picker) {
       const rect = picker.getBoundingClientRect();
@@ -11888,7 +11924,7 @@ ${words}`;
   function closeReactionPicker() {
     if (reactionPickerFor === null) return;
     reactionPickerFor = null;
-    if (activeChannelId) renderChannelMessages();
+    renderActiveMessages();
   }
   document.addEventListener("click", (event) => {
     if (Date.now() - reactionPickerHeldAt < 800) return;
@@ -11932,7 +11968,7 @@ ${words}`;
       holdTimer = onControl ? null : setTimeout(() => {
         if (!start || start.swiping) return;
         navigator.vibrate?.(10);
-        toggleReactionPicker(item.roomId, { held: true });
+        toggleReactionPicker(pickerKeyOf(item), { held: true });
       }, HOLD_MS);
     }, { passive: true });
     messagesEl.addEventListener("touchmove", (e3) => {
