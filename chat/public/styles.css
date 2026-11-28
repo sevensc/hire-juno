@@ -3823,3 +3823,34 @@ a.gh-card:active, .gh-card__link:active { filter: brightness(0.92); }
 .worktree-repo[hidden] { display: none; }
 .worktree-repo input { width: 1.1rem; height: 1.1rem; flex-shrink: 0; }
 .worktree-repo:has(input:disabled) { color: var(--fg-muted); cursor: default; }
+
+/* Remote mode without repositories (renderRemoteNotice), and the choice
+   of mode in the conversation settings. */
+#remote-notice {
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 1rem;
+  border-top: 1px solid var(--auto-mode-border);
+  background: var(--auto-mode-bg);
+  font-size: 0.85rem;
+}
+#remote-notice:not([hidden]) { display: flex; }
+#remote-notice span { flex: 1; min-width: 0; }
+#remote-notice button {
+  min-height: 2.75rem;
+  padding: 0 0.8rem;
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  cursor: pointer;
+  flex-shrink: 0;
+  touch-action: manipulation;
+}
+#remote-notice button:active { filter: brightness(0.92); }
+.conversation-mode { border: none; margin: 0 0 0.5rem; padding: 0; }
+.conversation-mode legend { font-size: 0.85rem; font-weight: 600; margin-bottom: 0.2rem; }
+.conversation-mode label { display: flex; align-items: flex-start; gap: 0.5rem; min-height: 2.75rem; padding: 0.35rem 0; cursor: pointer; font-size: 0.88rem; }
+.conversation-mode input { margin-top: 0.2rem; width: 1.1rem; height: 1.1rem; flex-shrink: 0; }
+.conversation-mode label:has(input:disabled) { color: var(--fg-muted); cursor: default; }

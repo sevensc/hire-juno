@@ -158,7 +158,10 @@ export function buildSystemPrompt({ colleagueId, ownProfile, worktreeNote = '', 
 // useWorktree.js); it creates one and returns { ok, created, branch, path } or
 // { ok: false, message }. Claude only; it becomes her `use_worktree` tool.
 // `serverNote`: see buildServerNote; empty outside a server.
-export function createAdapter(colleague, { targetDir, cwd = targetDir, resume, model, useWorktree, worktrees = [], serverNote = '' }) {
+// `remoteLocked`: the conversation works on GitHub repositories and none are
+// picked yet; writing and running tools are taken out of her session then.
+export const REMOTE_LOCKED_TOOLS = ['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'Bash', 'Task', 'Agent'];
+export function createAdapter(colleague, { targetDir, cwd = targetDir, resume, model, useWorktree, worktrees = [], remoteLocked = false, serverNote = '' }) {
   const ownProfile = readProfileBody(targetDir, colleague.id) ?? `You are ${colleague.name}.`;
   const ownNote = cwd === targetDir
     ? ''
@@ -171,13 +174,26 @@ export function createAdapter(colleague, { targetDir, cwd = targetDir, resume, m
       'Do not change files in their original checkouts.' +
       (cwd === targetDir ? ` Your own working directory stays ${cwd}.` : '')
     : '';
-  const worktreeNote = ownNote + othersNote;
+  const lockedNote = remoteLocked
+    ? '\n\nThis conversation works on GitHub repositories, and none are picked for it yet. Until the person picks them ' +
+      '(conversation settings, Repositories), writing or editing files and running commands are switched off for you here; ' +
+      'reading and talking work. If you are asked to change something, say that the repositories need to be picked first.'
+    : '';
+  const worktreeNote = ownNote + othersNote + lockedNote;
   const wantsCopilot = colleague.adapter.some((a) => a.toLowerCase().includes('copilot'));
   const offer = useWorktree && !wantsCopilot ? `\n\n${WORKTREE_OFFER}` : '';
   const systemPrompt = buildSystemPrompt({ colleagueId: colleague.id, ownProfile, worktreeNote, offer, serverNote });
   return wantsCopilot
     ? new CopilotAdapter(colleague, { cwd })
-    : new ClaudeAdapter(colleague, { systemPrompt, cwd, resume, model, useWorktree, additionalDirectories: worktrees.map((w) => w.path) });
+    : new ClaudeAdapter(colleague, {
+        systemPrompt,
+        cwd,
+        resume,
+        model,
+        useWorktree,
+        additionalDirectories: worktrees.map((w) => w.path),
+        disallowedTools: remoteLocked ? REMOTE_LOCKED_TOOLS : [],
+      });
 }
 
 // Only added when the `use_worktree` tool exists for the conversation.

@@ -204,3 +204,27 @@ test('a database with one worktree per conversation is rebuilt for several, rows
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('conversation mode: local by default, remote stored; remote without repositories locks writing and running', async () => {
+  const { createAdapter, REMOTE_LOCKED_TOOLS } = await import('../chat/server/agentAdapter.js');
+  const store = openStore();
+  assert.equal(store.getConversationMode('kim', 's1'), 'local');
+  store.setConversationMode('kim', 's1', 'remote');
+  assert.equal(store.getConversationMode('kim', 's1'), 'remote');
+  store.setConversationMode('kim', 's1', 'nonsense');
+  assert.equal(store.getConversationMode('kim', 's1'), 'local');
+  assert.deepEqual(REMOTE_LOCKED_TOOLS.filter((t) => ['Write', 'Edit', 'Bash'].includes(t)), ['Write', 'Edit', 'Bash']);
+  assert.ok(!REMOTE_LOCKED_TOOLS.includes('Read'));
+  const dir = mkdtempSync(join(tmpdir(), 'mode-'));
+  try {
+    const colleague = { id: 'kim', name: 'Kim', adapter: ['claude'] };
+    const locked = createAdapter(colleague, { targetDir: dir, remoteLocked: true });
+    assert.match(locked.systemPrompt, /none are picked for it yet/);
+    locked.close?.();
+    const free = createAdapter(colleague, { targetDir: dir });
+    assert.doesNotMatch(free.systemPrompt, /none are picked/);
+    free.close?.();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

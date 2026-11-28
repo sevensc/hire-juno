@@ -122,7 +122,10 @@ export class ClaudeAdapter {
   // above); see createAdapter in agentAdapter.js.
   // `additionalDirectories`: further working-directory roots (the
   // conversation's worktrees of other repositories).
-  constructor(colleague, { systemPrompt, cwd, resume, model, useWorktree, additionalDirectories = [] }) {
+  // `disallowedTools`: tools taken out of the session entirely (sdk.d.ts:
+  // "removed from the model's context and cannot be used, even if they
+  // would otherwise be allowed").
+  constructor(colleague, { systemPrompt, cwd, resume, model, useWorktree, additionalDirectories = [], disallowedTools = [] }) {
     this.colleague = colleague;
     this.systemPrompt = systemPrompt;
     this.cwd = cwd;
@@ -177,6 +180,7 @@ export class ClaudeAdapter {
         // the target repo and nothing points the session there.
         cwd,
         ...(additionalDirectories.length ? { additionalDirectories } : {}),
+        ...(disallowedTools.length ? { disallowedTools } : {}),
         includePartialMessages: true,
         // Makes the CLI hand every user message that carries a uuid back as
         // `isReplay: true` at the moment the session takes it up (measured: a

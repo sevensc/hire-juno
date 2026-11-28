@@ -319,6 +319,19 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
       ALTER TABLE conversation_worktrees_new RENAME TO conversation_worktrees;
       COMMIT;`);
   }
+  // How a conversation works: 'local' (in the workforce folder and what the
+  // colleague's profile allows; the default) or 'remote' (on GitHub
+  // repositories picked for it, see useWorktree.js).
+  db.exec(`CREATE TABLE IF NOT EXISTS conversation_modes (
+    colleague_id TEXT NOT NULL,
+    session_id TEXT NOT NULL DEFAULT 'default',
+    mode TEXT NOT NULL,
+    PRIMARY KEY (colleague_id, session_id)
+  )`);
+  const getModeStmt = db.prepare('SELECT mode FROM conversation_modes WHERE colleague_id = ? AND session_id = ?');
+  const setModeStmt = db.prepare(
+    'INSERT INTO conversation_modes (colleague_id, session_id, mode) VALUES (?, ?, ?) ON CONFLICT(colleague_id, session_id) DO UPDATE SET mode = excluded.mode'
+  );
   const getWorktreesStmt = db.prepare(
     'SELECT path, branch, repo_path AS repoPath FROM conversation_worktrees WHERE colleague_id = ? AND session_id = ? ORDER BY created_at, rowid'
   );
@@ -605,6 +618,12 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
     // work with one), or null.
     getWorktree(colleagueId, sessionId) {
       return getWorktreesStmt.get(colleagueId, sessionId || DEFAULT_SESSION_ID) ?? null;
+    },
+    getConversationMode(colleagueId, sessionId) {
+      return getModeStmt.get(colleagueId, sessionId || DEFAULT_SESSION_ID)?.mode === 'remote' ? 'remote' : 'local';
+    },
+    setConversationMode(colleagueId, sessionId, mode) {
+      setModeStmt.run(colleagueId, sessionId || DEFAULT_SESSION_ID, mode === 'remote' ? 'remote' : 'local');
     },
     // All worktrees of a conversation, oldest first.
     getWorktrees(colleagueId, sessionId) {

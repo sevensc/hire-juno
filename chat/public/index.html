@@ -161,6 +161,8 @@ try {
       Einstellungsprozess läuft
     </div>
     <div id="handover-notice" role="status" hidden></div>
+    <!-- Remote mode without picked repositories: she cannot write or run yet. -->
+    <div id="remote-notice" role="status" hidden></div>
     <div id="messages" role="log" aria-live="polite"></div>
     <div id="attachment-preview" hidden></div>
     <form id="composer">
@@ -395,7 +397,7 @@ try {
       <div id="conv-settings-terminal"></div>
     </section>
     <section id="conv-settings-worktree-section" hidden>
-      <h3>Worktree</h3>
+      <h3>Repositories</h3>
       <div id="conv-settings-worktree"></div>
     </section>
     <!-- "New session" lives here alongside the other per-conversation
