@@ -122,12 +122,15 @@ export function githubOwnerOf(remoteUrl) {
   return m ? m[1] : null;
 }
 
-// The search text sent to GitHub: the words typed, the kind, and the
-// account to search in unless the words already name a repo, user or org.
-export function searchQuery(words, kind, owner) {
+// The search text sent to GitHub: the words typed, the kind, only open
+// ones unless `all` (or the words say is:closed/is:merged/is:open
+// themselves), and the account to search in unless the words already
+// name a repo, user or org.
+export function searchQuery(words, kind, owner, { all = false } = {}) {
   const text = String(words || '').replace(/\s+/g, ' ').trim().slice(0, 200);
   const scoped = /(?:^|\s)(?:repo|user|org):\S+/i.test(text);
-  return [text, kind === 'pull' ? 'is:pr' : 'is:issue', !scoped && owner ? `user:${owner}` : ''].filter(Boolean).join(' ');
+  const stated = /(?:^|\s)(?:is|state):(?:open|closed|merged)\b/i.test(text);
+  return [text, kind === 'pull' ? 'is:pr' : 'is:issue', !all && !stated ? 'is:open' : '', !scoped && owner ? `user:${owner}` : ''].filter(Boolean).join(' ');
 }
 
 function shapeSearchItem(item) {
@@ -175,10 +178,11 @@ export function createGithubQuery({ run = execFile, now = () => Date.now(), env 
   return query;
 }
 
-// search(words, kind, owner): "/issue …" and "/pr …", eight results at most.
+// search(words, kind, owner, { all }): "/issue …" and "/pr …", eight
+// results at most, open ones only unless `all`.
 export function createGithubSearch(options = {}) {
   const query = createGithubQuery(options);
-  const search = (words, kind, owner) => query(searchQuery(words, kind, owner), 8);
+  const search = (words, kind, owner, flags) => query(searchQuery(words, kind, owner, flags), 8);
   search.clear = query.clear;
   return search;
 }

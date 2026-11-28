@@ -3688,3 +3688,10 @@ a.gh-card:active, .gh-card__link:active { filter: brightness(0.92); }
 .gh-menu__board-title { display: block; font-size: 0.75rem; font-weight: 600; color: var(--fg-muted); margin-bottom: 0.25rem; }
 .gh-menu__note { margin: 0.2rem 0; font-size: 0.78rem; color: var(--fg-muted); }
 .gh-menu__error { color: var(--danger, #d64545); }
+#mention-autocomplete li.command-candidate--switch {
+  display: flex;
+  font-size: 0.8rem;
+  color: var(--accent);
+  border-top: 1px solid var(--border);
+  border-radius: 0 0 0.4rem 0.4rem;
+}
