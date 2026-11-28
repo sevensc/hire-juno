@@ -975,15 +975,90 @@ async function renderConvSettingsWorktree() {
   convSettingsWorktreeSectionEl.hidden = false;
   const hint = document.createElement('p');
   hint.className = 'model-picker__hint';
-  if (info.worktree) {
-    hint.textContent =
-      `Repo: ${info.worktree.repoName || 'unknown'}. Branch: ${info.worktree.branch}. ` +
-      `Worktree folder: ${info.worktree.path}.`;
-    convSettingsWorktreeEl.append(hint);
-    return;
+  const current = info.worktrees || (info.worktree ? [info.worktree] : []);
+  if (current.length) {
+    const list = document.createElement('ul');
+    list.className = 'worktree-list';
+    for (const w of current) {
+      const li = document.createElement('li');
+      const name = document.createElement('strong');
+      name.textContent = w.repoName || 'repository';
+      const meta = document.createElement('span');
+      meta.textContent = ` · branch ${w.branch} · ${w.path}`;
+      li.append(name, meta);
+      list.appendChild(li);
+    }
+    convSettingsWorktreeEl.append(list);
   }
   hint.textContent =
-    'Creates a git worktree and a branch for this conversation. She keeps what she knows and works there from her next message on. There is no way back from here yet. One worktree per conversation. Leave the path empty for the folder this chat was started in; for another repo, enter its absolute path.';
+    'Each repository picked gets a git worktree on its own branch for this conversation, and she works in them freely from her next message on (files there need no approval). They are removed again when a branch\'s pull request is merged or closed, or when the conversation is closed (you are asked first if work would be lost).';
+  // GitHub repositories, several at once: each cloned here once, then a
+  // fresh branch from its default branch for this conversation.
+  const chosen = new Set(current.map((w) => w.repoName));
+  const repoFilter = document.createElement('input');
+  repoFilter.type = 'search';
+  repoFilter.className = 'worktree-repo-filter';
+  repoFilter.placeholder = 'Filter GitHub repositories';
+  repoFilter.setAttribute('aria-label', 'Filter GitHub repositories');
+  const repoList = document.createElement('div');
+  repoList.className = 'worktree-repo-list';
+  repoList.setAttribute('role', 'group');
+  repoList.setAttribute('aria-label', 'GitHub repositories');
+  repoList.textContent = 'Loading GitHub repositories…';
+  const repoButton = document.createElement('button');
+  repoButton.type = 'button';
+  repoButton.textContent = 'Work in the selected repositories';
+  repoButton.disabled = true;
+  const picked = () => [...repoList.querySelectorAll('input:checked:not(:disabled)')].map((box) => box.value);
+  const updateButton = () => {
+    const n = picked().length;
+    repoButton.disabled = !n;
+    repoButton.textContent = n > 1 ? `Work in these ${n} repositories` : 'Work in the selected repository';
+  };
+  fetch('api/github-repos')
+    .then((r) => r.json())
+    .then((data) => {
+      repoList.textContent = '';
+      if (!data.repos?.length) {
+        repoList.textContent = data.error === 'unavailable' ? 'GitHub needs the GitHub CLI (gh) here.' : 'No GitHub repositories found.';
+        return;
+      }
+      for (const repo of data.repos) {
+        const label = document.createElement('label');
+        label.className = 'worktree-repo';
+        label.dataset.slug = repo.slug.toLowerCase();
+        const box = document.createElement('input');
+        box.type = 'checkbox';
+        box.value = repo.slug;
+        // Already worked in: shown, ticked, not pickable again.
+        const already = chosen.has(repo.slug.split('/')[1]);
+        box.checked = already;
+        box.disabled = already;
+        box.addEventListener('change', updateButton);
+        const text = document.createElement('span');
+        text.textContent = `${repo.slug}${repo.private ? ' (private)' : ''}`;
+        if (repo.description) label.title = repo.description;
+        label.append(box, text);
+        repoList.appendChild(label);
+      }
+    })
+    .catch(() => { repoList.textContent = 'Could not load GitHub repositories.'; });
+  repoFilter.addEventListener('input', () => {
+    const q = repoFilter.value.trim().toLowerCase();
+    for (const label of repoList.querySelectorAll('.worktree-repo')) label.hidden = Boolean(q) && !label.dataset.slug.includes(q);
+  });
+  repoButton.addEventListener('click', () => {
+    const repos = picked();
+    if (!repos.length) return;
+    error.hidden = true;
+    error.classList.remove('model-picker__progress');
+    repoButton.disabled = true;
+    button.disabled = true;
+    socket.send(JSON.stringify({ type: 'use_worktree', colleagueId, sessionId, githubRepos: repos }));
+  });
+  const orLocal = document.createElement('p');
+  orLocal.className = 'model-picker__hint';
+  orLocal.textContent = 'Or a repository on this machine: leave the path empty for the folder this chat was started in, or enter its absolute path.';
   const pathInput = document.createElement('input');
   pathInput.type = 'text';
   pathInput.placeholder = 'Repo path (empty: the folder this chat was started in)';
@@ -998,12 +1073,14 @@ async function renderConvSettingsWorktree() {
   error.hidden = true;
   button.addEventListener('click', () => {
     error.hidden = true;
+    error.classList.remove('model-picker__progress');
     button.disabled = true; // until the server answers
+    repoButton.disabled = true;
     const repoPath = pathInput.value.trim();
     socket.send(JSON.stringify({ type: 'use_worktree', colleagueId, sessionId, ...(repoPath ? { repoPath } : {}) }));
   });
-  convSettingsWorktreeEl.append(pathInput, button, hint, error);
-  worktreeForm = { colleagueId, sessionId, button, error };
+  convSettingsWorktreeEl.append(hint, repoFilter, repoList, repoButton, orLocal, pathInput, button, error);
+  worktreeForm = { colleagueId, sessionId, button, repoButton, error };
 }
 
 // --- Continue in the terminal ----------------------------------------
@@ -1463,8 +1540,11 @@ function renderPaneHeader() {
     if (info?.worktree) {
       const chip = document.createElement('span');
       chip.className = 'pane-header__branch';
-      chip.textContent = info.worktree.branch;
-      chip.title = info.worktree.repoName
+      const all = info.worktrees || [info.worktree];
+      chip.textContent = all.length > 1 ? `${info.worktree.branch} · ${all.length} repos` : info.worktree.branch;
+      chip.title = all.length > 1
+        ? `This conversation's own worktrees, on branch ${info.worktree.branch}: ${all.map((w) => w.repoName).join(', ')}`
+        : info.worktree.repoName
         ? `Branch of this conversation's own worktree in ${info.worktree.repoName}`
         : "Branch of this conversation's own worktree";
       entries.appendChild(chip);
@@ -3038,10 +3118,33 @@ const handleSocketMessage = (event) => {
     return;
   }
 
+  if (update.type === 'worktree_progress') {
+    const form = worktreeForm;
+    if (form && form.colleagueId === update.colleagueId && form.sessionId === update.sessionId) {
+      form.error.hidden = false;
+      form.error.classList.add('model-picker__progress');
+      form.error.textContent = update.message;
+    }
+    return;
+  }
+
+  // Closing a conversation whose worktree holds work that would be lost.
+  if (update.type === 'session_close_confirm') {
+    const what = [update.dirty ? 'changes that are not committed' : '', update.unpushed ? `${update.unpushed} commit${update.unpushed === 1 ? '' : 's'} not pushed` : ''].filter(Boolean).join(' and ');
+    const where = update.repos?.length ? ` (${update.repos.join(', ')})` : '';
+    if (window.confirm(`Its worktrees have ${what}${where}. Close anyway and delete all its worktrees and their branches? That work is lost.`)) {
+      socket.send(JSON.stringify({ type: 'close_session', colleagueId: update.colleagueId, sessionId: update.sessionId, discard: true }));
+    }
+    return;
+  }
+
   if (update.type === 'worktree_changed') {
     const key = convKey(update.colleagueId, update.sessionId);
     const info = worktreeInfo.get(key) || { available: true };
-    worktreeInfo.set(key, { ...info, available: true, worktree: { branch: update.branch, path: update.path, repoName: update.repoName } });
+    // `worktrees`: all of the conversation's worktrees (an empty list once
+    // the last one was removed); older servers send only the one.
+    const list = Array.isArray(update.worktrees) ? update.worktrees : update.branch ? [{ branch: update.branch, path: update.path, repoName: update.repoName }] : [];
+    worktreeInfo.set(key, { ...info, available: true, worktree: list[0] || null, worktrees: list });
     if (key === activeConvKey()) {
       renderPaneHeader();
       refreshDiffIfOpen();
@@ -3095,6 +3198,8 @@ const handleSocketMessage = (event) => {
     const form = worktreeForm;
     if (form && form.colleagueId === update.colleagueId && form.sessionId === update.sessionId) {
       form.button.disabled = false;
+      if (form.repoButton) form.repoButton.disabled = false;
+      form.error.classList.remove('model-picker__progress');
       form.error.textContent = update.message || 'Could not create the worktree.';
       form.error.hidden = false;
     }

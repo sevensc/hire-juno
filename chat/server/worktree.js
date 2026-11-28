@@ -71,12 +71,44 @@ export function chatBranchName(colleagueId, conversationId) {
   return `chat/${part(colleagueId)}-${part(conversationId).slice(0, 12)}`;
 }
 
-// Creates `branch` from the current HEAD of `repoDir` and checks it out in
-// a new worktree at `worktreeDir` (which must not exist yet). Throws with
-// git's own message when that fails, e.g. the branch already exists.
-export function createWorktree({ repoDir, worktreeDir, branch }) {
-  git(repoDir, ['worktree', 'add', '-b', branch, worktreeDir, 'HEAD']);
+// Creates `branch` from `start` (default: the current HEAD of `repoDir`)
+// and checks it out in a new worktree at `worktreeDir` (which must not
+// exist yet). Throws with git's own message when that fails, e.g. the
+// branch already exists.
+export function createWorktree({ repoDir, worktreeDir, branch, start = 'HEAD' }) {
+  git(repoDir, ['worktree', 'add', '-b', branch, worktreeDir, start]);
   return { path: worktreeDir, branch };
+}
+
+// What would be lost if the worktree went away: `dirty` (changes not
+// committed, untracked files included) and `unpushed` (commits on its
+// branch that no branch of the remote has). An unreadable worktree counts
+// as having both, so nothing is removed on a guess.
+export function worktreeChanges(worktreeDir, branch) {
+  try {
+    const dirty = git(worktreeDir, ['status', '--porcelain']).trim() !== '';
+    const unpushed = Number(git(worktreeDir, ['rev-list', '--count', branch, '--not', '--remotes']).trim()) || 0;
+    return { dirty, unpushed };
+  } catch {
+    return { dirty: true, unpushed: 1, unreadable: true };
+  }
+}
+
+// Removes the worktree (folder and registration) and deletes its local
+// branch, which only ever held this conversation's work. Commits already
+// pushed stay on the remote. Missing pieces are skipped, not errors.
+export function discardWorktree(repoDir, worktreeDir, branch) {
+  try {
+    git(repoDir, ['worktree', 'remove', '--force', worktreeDir]);
+  } catch {
+    // already gone: drop a stale registration if there is one
+    try { git(repoDir, ['worktree', 'prune']); } catch { /* not a repo anymore */ }
+  }
+  try {
+    git(repoDir, ['branch', '-D', branch]);
+  } catch {
+    // no such branch
+  }
 }
 
 // Every worktree of the repo as { path, branch|null, head }; the first one

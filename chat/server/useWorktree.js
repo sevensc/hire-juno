@@ -8,6 +8,7 @@ import { existsSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, isAbsolute, join as joinPath, sep } from 'node:path';
 
+import { parseRepoSlug } from './githubRepos.js';
 import { chatBranchName, createWorktree, gitRoot, worktreeFolderName, worktreesDir } from './worktree.js';
 
 // Whether a conversation could get a worktree: a workforce id to keep it
@@ -65,9 +66,22 @@ export function worktreeIsStartRepo(repoPath, startDir) {
 // repo's top folder to branch from instead.
 // `busy`: the conversation's adapter is mid-turn; the button refuses then,
 // the tool (which runs inside the turn) passes false.
+// A conversation's worktree of one repository, if it has one.
+function worktreeOfRepo(store, colleagueId, sessionId, repoDir) {
+  const want = real(repoDir) || repoDir;
+  return store.getWorktrees(colleagueId, sessionId).find((w) => (real(w.repoPath || '') || w.repoPath) === want) || null;
+}
+
+// Where a conversation's worktree of a repository goes: the first one keeps
+// the folder name it always had; each further one gets the repository's
+// name appended, so several sit side by side.
+function worktreePathFor(store, workforceId, colleagueId, sessionId, repoLabel) {
+  const base = joinPath(worktreesDir(workforceId), worktreeFolderName(colleagueId, sessionId));
+  if (!store.getWorktrees(colleagueId, sessionId).length) return base;
+  return `${base}--${String(repoLabel).toLowerCase().replace(/[^a-z0-9._-]+/g, '-')}`;
+}
+
 export function activateWorktree({ store, workforceId, repoDir, repoPath, colleagueId, sessionId, busy = false }) {
-  const existing = store.getWorktree(colleagueId, sessionId);
-  if (existing) return { ok: true, created: false, branch: existing.branch, path: existing.path, repoPath: existing.repoPath };
   if (!workforceId) {
     return { ok: false, message: 'A worktree needs a workforce id to be stored under, and this workforce has none yet.' };
   }
@@ -82,9 +96,11 @@ export function activateWorktree({ store, workforceId, repoDir, repoPath, collea
       return { ok: false, message: 'The workforce folder is not a git repository. Give the path of the repo to work in.' };
     }
   }
+  const existing = worktreeOfRepo(store, colleagueId, sessionId, source);
+  if (existing) return { ok: true, created: false, branch: existing.branch, path: existing.path, repoPath: existing.repoPath };
   if (busy) return { ok: false, message: 'She is still answering. Try again once the reply is finished.' };
   const branch = chatBranchName(colleagueId, sessionId);
-  const path = joinPath(worktreesDir(workforceId), worktreeFolderName(colleagueId, sessionId));
+  const path = worktreePathFor(store, workforceId, colleagueId, sessionId, basename(source));
   try {
     createWorktree({ repoDir: source, worktreeDir: path, branch });
   } catch (err) {
@@ -92,4 +108,67 @@ export function activateWorktree({ store, workforceId, repoDir, repoPath, collea
   }
   store.setWorktree(colleagueId, sessionId, path, branch, source);
   return { ok: true, created: true, branch, path, repoPath: source };
+}
+
+// Like activateWorktree, with a GitHub repository ("owner/name") as the
+// base: its local clone is made or fetched first (githubRepos.ensureClone),
+// and the new branch starts from the remote's default branch, so the work
+// begins on the current state of GitHub. Async: a first clone takes a while.
+// `onProgress(message)` says what is happening.
+export async function activateGithubWorktree({ store, repos, workforceId, githubRepo, colleagueId, sessionId, busy = false, onProgress = () => {} }) {
+  if (!workforceId) return { ok: false, message: 'A worktree needs a workforce id to be stored under, and this workforce has none yet.' };
+  const repo = parseRepoSlug(githubRepo);
+  if (!repo) return { ok: false, message: 'That is not a GitHub repository (owner/name).' };
+  if (busy) return { ok: false, message: 'She is still answering. Try again once the reply is finished.' };
+  let clone;
+  try {
+    onProgress(`Getting ${repo.slug} from GitHub…`);
+    clone = await repos.ensureClone(workforceId, repo);
+  } catch (err) {
+    return { ok: false, message: `Could not get ${repo.slug}: ${String(err.stderr || err.message).trim().split('\n').pop()}` };
+  }
+  // Already one of this repository (perhaps made while the clone was fetched).
+  const existing = worktreeOfRepo(store, colleagueId, sessionId, clone.dir);
+  if (existing) return { ok: true, created: false, branch: existing.branch, path: existing.path, repoPath: existing.repoPath };
+  const branch = chatBranchName(colleagueId, sessionId);
+  const path = worktreePathFor(store, workforceId, colleagueId, sessionId, `${repo.owner}-${repo.name}`);
+  try {
+    createWorktree({ repoDir: clone.dir, worktreeDir: path, branch, start: clone.start });
+  } catch (err) {
+    return { ok: false, message: `Could not create the worktree: ${(err.stderr || err.message).toString().trim()}` };
+  }
+  store.setWorktree(colleagueId, sessionId, path, branch, clone.dir);
+  return { ok: true, created: true, branch, path, repoPath: clone.dir, base: clone.start };
+}
+
+// Free work in a conversation's own worktrees: a file tool (read, write,
+// edit, search) whose path lies inside one of them needs no question; the
+// worktrees are local copies on their own branches, and nothing reaches a
+// remote without a push. The path must be absolute and stays inside after
+// symlinks are resolved. Shell commands are not covered: what they touch
+// cannot be read from them reliably, so they keep the usual permissions.
+const FILE_TOOLS = new Set(['Read', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'Glob', 'Grep', 'LS']);
+
+function realOrParent(path) {
+  let current = path;
+  for (let i = 0; i < 64; i++) {
+    const r = real(current);
+    if (r) return current === path ? r : joinPath(r, path.slice(current.length));
+    const parent = joinPath(current, '..');
+    if (parent === current) return null;
+    current = parent;
+  }
+  return null;
+}
+
+export function worktreeToolAllowed(worktreePaths, toolName, input) {
+  if (!FILE_TOOLS.has(toolName) || !worktreePaths?.length) return false;
+  const target = input?.file_path ?? input?.notebook_path ?? input?.path;
+  if (typeof target !== 'string' || !isAbsolute(target)) return false;
+  const resolved = realOrParent(target);
+  if (!resolved) return false;
+  return worktreePaths.some((p) => {
+    const root = real(p);
+    return Boolean(root) && (resolved === root || resolved.startsWith(root + sep));
+  });
 }
