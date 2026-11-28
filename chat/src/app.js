@@ -2844,6 +2844,24 @@ const SCROLL_TO_BOTTOM_THRESHOLD = 48;
 function isNearBottom() {
   return messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight <= SCROLL_TO_BOTTOM_THRESHOLD;
 }
+// Whoever is at the bottom stays there while the list grows after a render:
+// preview cards, diagrams and pictures fill in a moment later, and without
+// this they push the newest message out of view.
+let pinnedToBottom = true;
+messagesEl.addEventListener('scroll', () => { pinnedToBottom = isNearBottom(); }, { passive: true });
+{
+  let queued = false;
+  const keepPinned = () => {
+    if (!pinnedToBottom || queued) return;
+    queued = true;
+    requestAnimationFrame(() => {
+      queued = false;
+      if (pinnedToBottom) messagesEl.scrollTop = messagesEl.scrollHeight;
+    });
+  };
+  new MutationObserver(keepPinned).observe(messagesEl, { childList: true, subtree: true });
+  messagesEl.addEventListener('load', keepPinned, true); // pictures, as they arrive
+}
 // A live "thinking" box is height-limited (see .message--thinking in
 // styles.css); while it fills up it should show its newest lines, not
 // stay on the first ones.
@@ -2852,6 +2870,7 @@ function followThinkingTail() {
 }
 function scrollMessagesToBottom() {
   messagesEl.scrollTop = messagesEl.scrollHeight;
+  pinnedToBottom = true;
   scrollToBottomButtonEl.hidden = true;
 }
 // Called after every render (whether or not it auto-scrolled) and on
@@ -3541,7 +3560,8 @@ const handleSocketMessage = (event) => {
       refreshUnreadTitle();
       renderSidebar();
     }
-    if (update.channelId === activeChannelId) renderChannelMessages();
+    // Your own message (it comes back from the server): the list goes down to it.
+    if (update.channelId === activeChannelId) renderChannelMessages({ forceScrollToBottom: update.senderId === 'you' });
     return;
   }
 
@@ -5198,11 +5218,16 @@ function MessageRow({ role, avatarColleague, nameTag, item, toolText, onToggle, 
   const isToolUse = item.toolInput !== undefined;
   const time = formatMessageTime(item.createdAt);
   const reactions = item.reactions || [];
-  const picking = onEmoji && reactionPickerFor === item.roomId;
+  // One picker per message: the emoji reactions (team room) and the quick
+  // answers to a colleague (👍 ✖️ 📖 ❓, each telling her something).
+  const quick = onReact && item.text && !item.pending ? reactionsFor(item) : [];
+  const canPick = (onEmoji && item.roomId != null && !item.pending) || quick.length > 0;
+  const pickerKey = canPick ? pickerKeyOf(item) : null;
+  const picking = pickerKey !== null && reactionPickerFor === pickerKey;
   return html`
     <${Fragment}>
       ${item.trail?.length ? html`<${TrailBox} trail=${item.trail} onToggleEntry=${onToggleTrailEntry} />` : null}
-      <div class="message message--${role}${variant ? ` message--${variant}` : ''}${item.pending ? ' message--pending' : ''}${onEmoji ? ' message--room' : ''}" style=${accent ? `--person: ${accent}` : null} data-room-id=${onEmoji ? item.roomId : null}>
+      <div class="message message--${role}${variant ? ` message--${variant}` : ''}${item.pending ? ' message--pending' : ''}${onEmoji ? ' message--room' : ''}${pickerKey ? ' message--pickable' : ''}" style=${accent ? `--person: ${accent}` : null} data-room-id=${onEmoji ? item.roomId : null} data-picker-key=${pickerKey}>
         ${avatarColleague ? html`<${Avatar} colleague=${avatarColleague} />` : null}
         ${isToolUse
           ? html`
@@ -5251,23 +5276,25 @@ function MessageRow({ role, avatarColleague, nameTag, item, toolText, onToggle, 
                     </span>`
                   : null}
                 ${picking
-                  ? html`<span class=${`reaction-picker${reactionPickerBelow ? ' reaction-picker--below' : ''}`} role="group" aria-label="React with">
-                      ${ROOM_EMOJI.map(
-                        (emoji) => html`<button type="button" class="reaction-picker__emoji" aria-label=${`React with ${emoji}`} onClick=${(e) => { e.stopPropagation(); closeReactionPicker(); onEmoji(emoji); }}>${emoji}</button>`
-                      )}
+                  ? html`<span class=${`reaction-picker${reactionPickerBelow ? ' reaction-picker--below' : ''}`} role="group" aria-label="React">
+                      ${onEmoji && item.roomId != null
+                        ? html`<span class="reaction-picker__row">${ROOM_EMOJI.map(
+                            (emoji) => html`<button type="button" class="reaction-picker__emoji" aria-label=${`React with ${emoji}`} onClick=${(e) => { e.stopPropagation(); closeReactionPicker(); onEmoji(emoji); }}>${emoji}</button>`
+                          )}</span>`
+                        : null}
+                      ${quick.length
+                        ? html`<span class="reaction-picker__row reaction-picker__row--quick" role="group" aria-label="Answer her with">${quick.map(
+                            (r) => html`<button type="button" class="reaction-picker__emoji" title=${r.label} aria-label=${r.label} onClick=${(e) => { e.stopPropagation(); closeReactionPicker(); onReact(r.key); }}>${r.emoji}</button>`
+                          )}</span>`
+                        : null}
                     </span>`
                   : null}
                 <span class="message__footer">
                   ${onReply && (item.text || item.attachments?.length) && !item.pending
                     ? html`<button type="button" class="copy-button" aria-label="Reply to this message" onClick=${onReply}>Reply</button>`
                     : null}
-                  ${onEmoji
-                    ? html`<button type="button" class="copy-button" aria-label="React to this message" aria-expanded=${picking ? 'true' : 'false'} onClick=${(e) => { e.stopPropagation(); toggleReactionPicker(item.roomId); }}>React</button>`
-                    : null}
-                  ${onReact && item.text && !item.pending
-                    ? reactionsFor(item).map(
-                        (r) => html`<button type="button" class="reaction-button" title=${r.label} aria-label=${r.label} onClick=${() => onReact(r.key)}>${r.emoji}</button>`
-                      )
+                  ${canPick
+                    ? html`<button type="button" class="copy-button" aria-label="React to this message" aria-expanded=${picking ? 'true' : 'false'} onClick=${(e) => { e.stopPropagation(); toggleReactionPicker(pickerKey); }}>React</button>`
                     : null}
                   ${item.text && !item.artifact
                     ? html`<button type="button" class="copy-button" aria-label="Copy message as Markdown" onClick=${(event) => copyWithFeedback(item.text, event.currentTarget)}>Copy</button>`
@@ -7215,16 +7242,31 @@ let reactionPickerFor = null; // the room message id whose picker is open
 let reactionPickerHeldAt = 0; // when a long press opened it
 let reactionPickerBelow = false; // no room above the message for it
 
+// Which message a picker belongs to: its id in the team room, otherwise a
+// number given to the message object for as long as it is on screen.
+const pickerKeys = new WeakMap();
+let pickerKeyCount = 0;
+function pickerKeyOf(item) {
+  if (item.roomId != null) return `r${item.roomId}`;
+  if (!pickerKeys.has(item)) pickerKeys.set(item, `m${++pickerKeyCount}`);
+  return pickerKeys.get(item);
+}
+function renderActiveMessages() {
+  if (activeChannelId) renderChannelMessages();
+  else renderMessages();
+}
+
 function toggleRoomReaction(roomId, emoji) {
   socket.send(JSON.stringify({ type: 'room_react', roomId, emoji }));
 }
 
-function toggleReactionPicker(roomId, { held = false } = {}) {
-  reactionPickerFor = reactionPickerFor === roomId ? null : roomId;
+function toggleReactionPicker(key, { held = false } = {}) {
+  reactionPickerFor = reactionPickerFor === key ? null : key;
   reactionPickerHeldAt = held ? Date.now() : 0;
-  const bubble = messagesEl.querySelector(`.message[data-room-id="${Number(roomId)}"] > span`);
-  reactionPickerBelow = Boolean(bubble) && bubble.getBoundingClientRect().top - messagesEl.getBoundingClientRect().top < 64;
-  renderChannelMessages();
+  const bubble = messagesEl.querySelector(`.message[data-picker-key="${key}"] > span`);
+  // Two rows need more room above the message than one.
+  reactionPickerBelow = Boolean(bubble) && bubble.getBoundingClientRect().top - messagesEl.getBoundingClientRect().top < 112;
+  renderActiveMessages();
   // Kept on screen on a narrow phone: moved in by what would stick out.
   const picker = messagesEl.querySelector('.reaction-picker');
   if (picker) {
@@ -7238,7 +7280,7 @@ function toggleReactionPicker(roomId, { held = false } = {}) {
 function closeReactionPicker() {
   if (reactionPickerFor === null) return;
   reactionPickerFor = null;
-  if (activeChannelId) renderChannelMessages();
+  renderActiveMessages();
 }
 
 document.addEventListener('click', (event) => {
@@ -7293,7 +7335,7 @@ function jumpToRoomMessage(roomId) {
     holdTimer = onControl ? null : setTimeout(() => {
       if (!start || start.swiping) return;
       navigator.vibrate?.(10);
-      toggleReactionPicker(item.roomId, { held: true });
+      toggleReactionPicker(pickerKeyOf(item), { held: true });
     }, HOLD_MS);
   }, { passive: true });
   // The direction is settled by the first move: mostly to the right is a
