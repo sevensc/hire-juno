@@ -990,8 +990,36 @@ async function renderConvSettingsWorktree() {
     }
     convSettingsWorktreeEl.append(list);
   }
-  hint.textContent =
-    'Each repository picked gets a git worktree on its own branch for this conversation, and she works in them freely from her next message on (files there need no approval). They are removed again when a branch\'s pull request is merged or closed, or when the conversation is closed (you are asked first if work would be lost).';
+  // Two ways to work: locally (the folder this chat runs in, with what her
+  // profile allows) or on GitHub repositories picked for the conversation.
+  const mode = info.mode === 'remote' ? 'remote' : 'local';
+  const modes = document.createElement('fieldset');
+  modes.className = 'conversation-mode';
+  const legend = document.createElement('legend');
+  legend.textContent = 'Where she works';
+  modes.appendChild(legend);
+  for (const [value, label] of [
+    ['local', 'Locally: in the folder this chat runs in, with what her profile allows'],
+    ['remote', 'On GitHub repositories: picked below; until then she cannot write or run anything'],
+  ]) {
+    const row = document.createElement('label');
+    const radio = document.createElement('input');
+    radio.type = 'radio';
+    radio.name = 'conversation-mode';
+    radio.value = value;
+    radio.checked = mode === value;
+    // A conversation that already works in worktrees keeps its mode.
+    radio.disabled = current.length > 0 && mode !== value;
+    radio.addEventListener('change', () => socket.send(JSON.stringify({ type: 'set_conversation_mode', colleagueId, sessionId, mode: value })));
+    const text = document.createElement('span');
+    text.textContent = label;
+    row.append(radio, text);
+    modes.appendChild(row);
+  }
+  convSettingsWorktreeEl.prepend(modes);
+  hint.textContent = mode === 'remote'
+    ? 'Each repository picked gets a git worktree on its own branch for this conversation, and she works in them freely from her next message on (files there need no approval). They are removed again when a branch\'s pull request is merged or closed, or when the conversation is closed (you are asked first if work would be lost).'
+    : 'Her profile sets what she may access. Optionally she works in her own git worktree of a repository on this machine, on a branch for this conversation; it is removed again like the GitHub ones.';
   // GitHub repositories, several at once: each cloned here once, then a
   // fresh branch from its default branch for this conversation.
   const chosen = new Set(current.map((w) => w.repoName));
@@ -1056,9 +1084,6 @@ async function renderConvSettingsWorktree() {
     button.disabled = true;
     socket.send(JSON.stringify({ type: 'use_worktree', colleagueId, sessionId, githubRepos: repos }));
   });
-  const orLocal = document.createElement('p');
-  orLocal.className = 'model-picker__hint';
-  orLocal.textContent = 'Or a repository on this machine: leave the path empty for the folder this chat was started in, or enter its absolute path.';
   const pathInput = document.createElement('input');
   pathInput.type = 'text';
   pathInput.placeholder = 'Repo path (empty: the folder this chat was started in)';
@@ -1079,7 +1104,8 @@ async function renderConvSettingsWorktree() {
     const repoPath = pathInput.value.trim();
     socket.send(JSON.stringify({ type: 'use_worktree', colleagueId, sessionId, ...(repoPath ? { repoPath } : {}) }));
   });
-  convSettingsWorktreeEl.append(hint, repoFilter, repoList, repoButton, orLocal, pathInput, button, error);
+  if (mode === 'remote') convSettingsWorktreeEl.append(hint, repoFilter, repoList, repoButton, error);
+  else convSettingsWorktreeEl.append(hint, pathInput, button, error);
   worktreeForm = { colleagueId, sessionId, button, repoButton, error };
 }
 
@@ -1105,7 +1131,29 @@ async function loadCliInfo(colleagueId, sessionId) {
 }
 
 // The line above the composer while the terminal has the conversation.
+// Remote mode with no repositories picked yet: says so above the composer,
+// with the way to pick them.
+const remoteNoticeEl = document.getElementById('remote-notice');
+function renderRemoteNotice() {
+  remoteNoticeEl.innerHTML = '';
+  const colleagueId = activeColleagueId;
+  const info = colleagueId && !activeChannelId && !isSubagentThread(colleagueId) && activeSessionId !== NEW_SESSION
+    ? worktreeInfo.get(convKey(colleagueId, activeSessionId))
+    : null;
+  const locked = info?.mode === 'remote' && !(info.worktrees || []).length;
+  remoteNoticeEl.hidden = !locked;
+  if (!locked) return;
+  const text = document.createElement('span');
+  text.textContent = 'Works on GitHub repositories, none picked yet: she can read and talk, but not write or run anything.';
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.textContent = 'Pick repositories';
+  button.addEventListener('click', () => openConvSettingsModal());
+  remoteNoticeEl.append(text, button);
+}
+
 function renderHandoverNotice() {
+  renderRemoteNotice();
   handoverNoticeEl.innerHTML = '';
   const colleagueId = activeColleagueId;
   const sessionId = activeSessionId;
@@ -3118,6 +3166,16 @@ const handleSocketMessage = (event) => {
     return;
   }
 
+  if (update.type === 'conversation_mode') {
+    const key = convKey(update.colleagueId, update.sessionId);
+    worktreeInfo.set(key, { ...(worktreeInfo.get(key) || { available: true }), mode: update.mode });
+    if (key === activeConvKey()) {
+      renderRemoteNotice();
+      if (!convSettingsBackdropEl.hidden) renderConvSettingsWorktree();
+    }
+    return;
+  }
+
   if (update.type === 'worktree_progress') {
     const form = worktreeForm;
     if (form && form.colleagueId === update.colleagueId && form.sessionId === update.sessionId) {
@@ -3145,6 +3203,7 @@ const handleSocketMessage = (event) => {
     // the last one was removed); older servers send only the one.
     const list = Array.isArray(update.worktrees) ? update.worktrees : update.branch ? [{ branch: update.branch, path: update.path, repoName: update.repoName }] : [];
     worktreeInfo.set(key, { ...info, available: true, worktree: list[0] || null, worktrees: list });
+    if (key === activeConvKey()) renderRemoteNotice();
     if (key === activeConvKey()) {
       renderPaneHeader();
       refreshDiffIfOpen();

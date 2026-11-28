@@ -7193,7 +7193,31 @@
       }
       convSettingsWorktreeEl.append(list2);
     }
-    hint.textContent = "Each repository picked gets a git worktree on its own branch for this conversation, and she works in them freely from her next message on (files there need no approval). They are removed again when a branch's pull request is merged or closed, or when the conversation is closed (you are asked first if work would be lost).";
+    const mode = info.mode === "remote" ? "remote" : "local";
+    const modes = document.createElement("fieldset");
+    modes.className = "conversation-mode";
+    const legend = document.createElement("legend");
+    legend.textContent = "Where she works";
+    modes.appendChild(legend);
+    for (const [value, label] of [
+      ["local", "Locally: in the folder this chat runs in, with what her profile allows"],
+      ["remote", "On GitHub repositories: picked below; until then she cannot write or run anything"]
+    ]) {
+      const row = document.createElement("label");
+      const radio = document.createElement("input");
+      radio.type = "radio";
+      radio.name = "conversation-mode";
+      radio.value = value;
+      radio.checked = mode === value;
+      radio.disabled = current.length > 0 && mode !== value;
+      radio.addEventListener("change", () => socket.send(JSON.stringify({ type: "set_conversation_mode", colleagueId, sessionId, mode: value })));
+      const text2 = document.createElement("span");
+      text2.textContent = label;
+      row.append(radio, text2);
+      modes.appendChild(row);
+    }
+    convSettingsWorktreeEl.prepend(modes);
+    hint.textContent = mode === "remote" ? "Each repository picked gets a git worktree on its own branch for this conversation, and she works in them freely from her next message on (files there need no approval). They are removed again when a branch's pull request is merged or closed, or when the conversation is closed (you are asked first if work would be lost)." : "Her profile sets what she may access. Optionally she works in her own git worktree of a repository on this machine, on a branch for this conversation; it is removed again like the GitHub ones.";
     const chosen = new Set(current.map((w3) => w3.repoName));
     const repoFilter = document.createElement("input");
     repoFilter.type = "search";
@@ -7254,9 +7278,6 @@
       button.disabled = true;
       socket.send(JSON.stringify({ type: "use_worktree", colleagueId, sessionId, githubRepos: repos }));
     });
-    const orLocal = document.createElement("p");
-    orLocal.className = "model-picker__hint";
-    orLocal.textContent = "Or a repository on this machine: leave the path empty for the folder this chat was started in, or enter its absolute path.";
     const pathInput = document.createElement("input");
     pathInput.type = "text";
     pathInput.placeholder = "Repo path (empty: the folder this chat was started in)";
@@ -7277,7 +7298,8 @@
       const repoPath = pathInput.value.trim();
       socket.send(JSON.stringify({ type: "use_worktree", colleagueId, sessionId, ...repoPath ? { repoPath } : {} }));
     });
-    convSettingsWorktreeEl.append(hint, repoFilter, repoList, repoButton, orLocal, pathInput, button, error2);
+    if (mode === "remote") convSettingsWorktreeEl.append(hint, repoFilter, repoList, repoButton, error2);
+    else convSettingsWorktreeEl.append(hint, pathInput, button, error2);
     worktreeForm = { colleagueId, sessionId, button, repoButton, error: error2 };
   }
   var cliInfo = /* @__PURE__ */ new Map();
@@ -7296,7 +7318,24 @@
       if (!convSettingsBackdropEl.hidden) renderConvSettingsTerminal({ reload: false });
     }
   }
+  var remoteNoticeEl = document.getElementById("remote-notice");
+  function renderRemoteNotice() {
+    remoteNoticeEl.innerHTML = "";
+    const colleagueId = activeColleagueId;
+    const info = colleagueId && !activeChannelId && !isSubagentThread(colleagueId) && activeSessionId !== NEW_SESSION ? worktreeInfo.get(convKey(colleagueId, activeSessionId)) : null;
+    const locked = info?.mode === "remote" && !(info.worktrees || []).length;
+    remoteNoticeEl.hidden = !locked;
+    if (!locked) return;
+    const text2 = document.createElement("span");
+    text2.textContent = "Works on GitHub repositories, none picked yet: she can read and talk, but not write or run anything.";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = "Pick repositories";
+    button.addEventListener("click", () => openConvSettingsModal());
+    remoteNoticeEl.append(text2, button);
+  }
   function renderHandoverNotice() {
+    renderRemoteNotice();
     handoverNoticeEl.innerHTML = "";
     const colleagueId = activeColleagueId;
     const sessionId = activeSessionId;
@@ -8762,6 +8801,15 @@
       refreshSettingsModalIfOpen();
       return;
     }
+    if (update.type === "conversation_mode") {
+      const key2 = convKey(update.colleagueId, update.sessionId);
+      worktreeInfo.set(key2, { ...worktreeInfo.get(key2) || { available: true }, mode: update.mode });
+      if (key2 === activeConvKey()) {
+        renderRemoteNotice();
+        if (!convSettingsBackdropEl.hidden) renderConvSettingsWorktree();
+      }
+      return;
+    }
     if (update.type === "worktree_progress") {
       const form2 = worktreeForm;
       if (form2 && form2.colleagueId === update.colleagueId && form2.sessionId === update.sessionId) {
@@ -8784,6 +8832,7 @@
       const info = worktreeInfo.get(key2) || { available: true };
       const list2 = Array.isArray(update.worktrees) ? update.worktrees : update.branch ? [{ branch: update.branch, path: update.path, repoName: update.repoName }] : [];
       worktreeInfo.set(key2, { ...info, available: true, worktree: list2[0] || null, worktrees: list2 });
+      if (key2 === activeConvKey()) renderRemoteNotice();
       if (key2 === activeConvKey()) {
         renderPaneHeader();
         refreshDiffIfOpen();

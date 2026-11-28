@@ -539,10 +539,14 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
         // Worktrees of other repositories: working-directory roots of her
         // session as well, and named in her prompt.
         const otherWorktrees = conversationWorktrees(colleagueId, sessionId).filter((w) => w.path !== cwd);
+        // Remote mode without picked repositories: no writing or running.
+        const mode = store.getConversationMode(colleagueId, sessionId);
+        const remoteLocked = mode === 'remote' && !conversationWorktrees(colleagueId, sessionId).length;
         // She may move the conversation into a worktree herself (a tool of
         // hers, see useWorktree.js), if it can have one.
         let replaceWhenIdle = false;
-        const useWorktree = canOfferWorktree({ workforceId: workforce?.id, existing: worktree })
+        // Her own tool makes a worktree of a repo on this machine: local mode only.
+        const useWorktree = mode === 'local' && canOfferWorktree({ workforceId: workforce?.id, existing: worktree })
           ? ({ repoPath } = {}) => {
               const result = activateWorktree({ store, workforceId: workforce?.id, repoDir: targetDir, repoPath, colleagueId, sessionId });
               if (result.ok) result.cwdIsWorktree = worktreeIsStartRepo(result.repoPath, targetDir);
@@ -569,6 +573,7 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
           model,
           useWorktree,
           worktrees: otherWorktrees,
+          remoteLocked,
           serverNote: socketPath ? buildServerNote({ server: true, person, context: readContextFile(contextFile) }) : '',
         });
         adapter.onIdle = () => {
@@ -1226,6 +1231,7 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
             JSON.stringify({
               // The folder to branch from may also be named by the person.
               available: Boolean(workforce?.id),
+              mode: store.getConversationMode(colleagueId, sessionId),
               worktree: list[0] || null,
               worktrees: list,
             })
@@ -2319,6 +2325,15 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
               ...(typeof payload.githubRepo === 'string' ? [payload.githubRepo] : []),
             ].filter((r) => typeof r === 'string' && r.trim()).slice(0, 10);
             const results = [];
+            const mode = store.getConversationMode(colleagueId, sessionId);
+            if (mode === 'remote' && !wanted.length) {
+              fail('This conversation works on GitHub repositories: pick them from the list.');
+              return;
+            }
+            if (mode === 'local' && wanted.length) {
+              fail('This conversation works locally: switch it to GitHub repositories first.');
+              return;
+            }
             if (wanted.length) {
               for (const githubRepo of wanted) {
                 results.push(await activateGithubWorktree({
@@ -2354,6 +2369,32 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
             const list = worktreeList(colleagueId, sessionId);
             broadcast({ type: 'worktree_changed', colleagueId, sessionId, ...(list[0] || { branch: null, path: null, repoName: null }), worktrees: list });
             if (failed.length) fail(failed.map((r) => r.message).join(' '));
+            return;
+          }
+
+          if (payload.type === 'set_conversation_mode') {
+            // Local (workforce folder, what her profile allows) or remote
+            // (GitHub repositories picked for it; without any, no writing or
+            // running). Her session restarts with the new tools once idle.
+            const colleagueId = payload.colleagueId;
+            const sessionId = payload.sessionId || DEFAULT_SESSION_ID;
+            const mode = payload.mode === 'remote' ? 'remote' : 'local';
+            if (!readRoster(targetDir).some((c) => c.id === colleagueId)) return;
+            store.setConversationMode(colleagueId, sessionId, mode);
+            const key = adapterKey(colleagueId, sessionId);
+            const adapter = adapters.get(key);
+            if (adapter?.busy) {
+              const previous = adapter.onIdle;
+              adapter.onIdle = () => {
+                previous?.();
+                adapter.close?.();
+                if (adapters.get(key) === adapter) adapters.delete(key);
+              };
+            } else if (adapter) {
+              adapter.close?.();
+              adapters.delete(key);
+            }
+            broadcast({ type: 'conversation_mode', colleagueId, sessionId, mode, locked: mode === 'remote' && !conversationWorktrees(colleagueId, sessionId).length });
             return;
           }
 
