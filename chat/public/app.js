@@ -11343,8 +11343,10 @@ ${source}`;
   }
   var githubSearchTimer = null;
   var githubSearchState = { key: "", loading: false, results: [], error: null, owner: null };
+  var githubSearchAll = false;
   function githubSearchFor(kind, words) {
     const key = `${kind}
+${githubSearchAll}
 ${words}`;
     if (githubSearchState.key === key) return githubSearchState;
     clearTimeout(githubSearchTimer);
@@ -11352,7 +11354,7 @@ ${words}`;
     if (!words) return githubSearchState;
     const state = githubSearchState;
     githubSearchTimer = setTimeout(() => {
-      fetch(`api/github-search?kind=${kind}&q=${encodeURIComponent(words)}`).then((r3) => r3.json()).then((data) => {
+      fetch(`api/github-search?kind=${kind}&q=${encodeURIComponent(words)}${githubSearchAll ? "&all=1" : ""}`).then((r3) => r3.json()).then((data) => {
         state.results = data.results || [];
         state.error = data.error || null;
         state.owner = data.owner || null;
@@ -11384,11 +11386,11 @@ ${words}`;
     }
     if (token.search) {
       const found = githubSearchFor(token.search, token.words);
-      const what = token.search === "pull" ? "pull requests" : "issues";
+      const what = `${githubSearchAll ? "" : "open "}${token.search === "pull" ? "pull requests" : "issues"}`;
       const where = found.owner ? ` in ${found.owner}` : "";
       const note2 = !token.words ? `Type words to search ${what}${where}; repo:owner/name searches one repository.` : found.loading ? `Searching ${what}\u2026` : found.error === "unavailable" ? "GitHub search needs the GitHub CLI (gh) on this server." : found.error ? "The search did not work. Try other words." : !found.results.length ? `No ${what} found${where}.` : null;
       const keep2 = mentionState?.kind === "command" && mentionState.search ? Math.min(mentionState.selectedIndex, Math.max(found.results.length - 1, 0)) : 0;
-      mentionState = { kind: "command", ...token, matches: found.loading ? [] : found.results.map((r3) => ({ ...r3, result: true })), note: note2, selectedIndex: keep2 };
+      mentionState = { kind: "command", ...token, matches: found.loading ? [] : found.results.map((r3) => ({ ...r3, result: true })), note: note2, selectedIndex: keep2, searchSwitch: Boolean(token.words) };
       renderMentionAutocomplete();
       return;
     }
@@ -11468,6 +11470,19 @@ ${words}`;
         const li = document.createElement("li");
         li.className = "command-candidate command-candidate--note";
         li.textContent = mentionState.note;
+        mentionAutocompleteEl.appendChild(li);
+      }
+      if (mentionState.searchSwitch) {
+        const li = document.createElement("li");
+        li.className = "command-candidate command-candidate--switch";
+        li.setAttribute("role", "switch");
+        li.setAttribute("aria-checked", String(githubSearchAll));
+        li.textContent = githubSearchAll ? "Showing closed and merged too \xB7 show only open ones" : "Only open ones \xB7 show closed and merged too";
+        li.addEventListener("mousedown", (event) => {
+          event.preventDefault();
+          githubSearchAll = !githubSearchAll;
+          refreshSlashList();
+        });
         mentionAutocompleteEl.appendChild(li);
       }
       return;
