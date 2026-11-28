@@ -107,3 +107,58 @@ export function createGithubPreviews({ run = execFile, now = () => Date.now() } 
     return entry.value;
   };
 }
+
+// The GitHub account (user or organisation) a repo's `origin` points to,
+// e.g. "acme" for git@github.com:acme/web.git, or null.
+export function githubOwnerOf(remoteUrl) {
+  const m = String(remoteUrl || '').trim().match(/github\.com[:/]([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))\/[A-Za-z0-9._-]+?(?:\.git)?\/?$/);
+  return m ? m[1] : null;
+}
+
+// The search text sent to GitHub: the words typed, the kind, and the
+// account to search in unless the words already name a repo, user or org.
+export function searchQuery(words, kind, owner) {
+  const text = String(words || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+  const scoped = /(?:^|\s)(?:repo|user|org):\S+/i.test(text);
+  return [text, kind === 'pull' ? 'is:pr' : 'is:issue', !scoped && owner ? `user:${owner}` : ''].filter(Boolean).join(' ');
+}
+
+// search(words, kind, owner) resolving to { results: [...] } (newest
+// activity first, at most eight) or { error }.
+export function createGithubSearch({ run = execFile, now = () => Date.now() } = {}) {
+  const cache = new Map();
+  return function search(words, kind, owner) {
+    const q = searchQuery(words, kind, owner);
+    const hit = cache.get(q);
+    if (hit && now() - hit.at < 30000) return hit.value;
+    const value = new Promise((resolve) => {
+      run('gh', ['api', '-X', 'GET', 'search/issues', '-f', `q=${q}`, '-f', 'sort=updated', '-f', 'per_page=8'], { timeout: 10000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
+        if (err) return resolve({ error: err.code === 'ENOENT' ? 'unavailable' : 'failed' });
+        try {
+          const data = JSON.parse(stdout);
+          resolve({
+            results: (data.items || []).map((item) => {
+              const [repoOwner, repo] = String(item.repository_url || '').split('/').slice(-2);
+              const isPull = Boolean(item.pull_request);
+              return {
+                owner: repoOwner,
+                repo,
+                number: item.number,
+                kind: isPull ? 'pull' : 'issue',
+                title: String(item.title || ''),
+                state: isPull && item.pull_request?.merged_at ? 'merged' : item.draft && item.state === 'open' ? 'draft' : item.state,
+                url: item.html_url,
+                updatedAt: item.updated_at || null,
+              };
+            }).filter((r) => r.owner && r.repo && Number.isInteger(r.number) && /^https:\/\/github\.com\//.test(r.url || '')),
+          });
+        } catch {
+          resolve({ error: 'failed' });
+        }
+      });
+    });
+    cache.set(q, { at: now(), value });
+    if (cache.size > 200) cache.delete(cache.keys().next().value);
+    return value;
+  };
+}
