@@ -308,6 +308,9 @@ export class ClaudeAdapter {
           this.onUpdate?.({ type: 'subagent_end', id: ended.id, report: ended.report });
         }
         if (message.subtype === 'init') {
+          // Commands bound to a terminal (exit, statusline, ...) are left
+          // out of the chat's command list (see supportedCommands).
+          this._terminalCommands = new Set(message.terminal_slash_commands || []);
           this.onUpdate?.({ type: 'session_info', model: message.model, effort: message.effort ?? null });
           // Separate from onUpdate on purpose (see the constructor
           // comment) — this is what makes a resume after a server
@@ -568,6 +571,15 @@ export class ClaudeAdapter {
   // the first message has been sent.
   async supportedModels() {
     return this._session.supportedModels();
+  }
+
+  // Her slash commands and skills, as the SDK reports them ({ name,
+  // description, argumentHint }), without the ones that only make sense in
+  // a terminal. Sent as a message ("/name args"), the session runs them.
+  async supportedCommands() {
+    const list = await this._session.supportedCommands();
+    const terminal = this._terminalCommands || new Set();
+    return list.filter((c) => !terminal.has(c.name));
   }
 
   // Switches the model for the replies that follow, in the running
