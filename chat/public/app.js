@@ -7863,7 +7863,7 @@
   }
   function toolInputSummary(input2) {
     if (!input2) return "";
-    const value = input2.command ?? input2.file_path ?? input2.path ?? input2.pattern ?? input2.query;
+    const value = input2.command ?? input2.file_path ?? input2.path ?? input2.pattern ?? input2.query ?? input2.description;
     const text2 = typeof value === "string" ? value : JSON.stringify(input2);
     return text2.length > 80 ? text2.slice(0, 80) + "\u2026" : text2;
   }
