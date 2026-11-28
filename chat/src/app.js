@@ -16,7 +16,7 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 
 import { renderMarkdown } from './markdown.js';
 import { youtubeEmbedUrl, youtubeThumbnail, youtubeVideos } from './youtube.js';
-import { githubRefs, relativeTime } from './github-links.js';
+import { githubRef, githubRefs, relativeTime } from './github-links.js';
 import { nextMenuIndex, pickSendKind } from './send-kind.js';
 import { pickConversationToRestore, recallOpenConversation, rememberOpenConversation } from './open-conversation.js';
 import { buildIssueUrl } from './issue-link.js';
@@ -909,6 +909,10 @@ function closeConvSettingsModal() {
 }
 
 convSettingsCloseEl.addEventListener('click', closeConvSettingsModal);
+document.getElementById('conv-settings-media').addEventListener('click', () => {
+  closeConvSettingsModal();
+  openMediaView(activeChannelId ? { channelId: activeChannelId } : { colleagueId: activeColleagueId, sessionId: activeSessionId });
+});
 convSettingsBackdropEl.addEventListener('click', (event) => {
   if (event.target === convSettingsBackdropEl) closeConvSettingsModal();
 });
@@ -4395,6 +4399,113 @@ function renderProfileView() {
   `, panel);
 }
 
+// Shared media: the pictures, links and documents of one conversation, or
+// of all of them ({ all: true }), in three tabs, newest first.
+let mediaScope = null;
+let mediaData = null;
+let mediaTab = 'pictures';
+async function openMediaView(scope) {
+  mediaScope = scope;
+  mediaData = null;
+  mediaTab = 'pictures';
+  artifactViewerEl.hidden = false;
+  artifactViewerEl.dataset.view = 'media';
+  renderMediaView();
+  artifactViewerEl.querySelector('.artifact-viewer__header button')?.focus();
+  const q = scope.all ? 'all=1'
+    : scope.channelId ? `channelId=${encodeURIComponent(scope.channelId)}`
+    : `colleagueId=${encodeURIComponent(scope.colleagueId)}${scope.sessionId && scope.sessionId !== NEW_SESSION ? `&sessionId=${encodeURIComponent(scope.sessionId)}` : ''}`;
+  try {
+    const data = await fetch(`api/media?${q}`).then((r) => r.json());
+    if (mediaScope !== scope) return;
+    mediaData = data;
+  } catch {
+    if (mediaScope !== scope) return;
+    mediaData = { error: true, pictures: [], links: [], docs: [] };
+  }
+  if (artifactViewerEl.dataset.view === 'media') renderMediaView();
+}
+
+function MediaOrigin({ item }) {
+  const parts = [mediaScope?.all ? item.where : '', item.who, item.createdAt ? formatMessageTime(item.createdAt) : ''].filter(Boolean);
+  return html`<span class="media-origin">${parts.join(' · ')}</span>`;
+}
+
+function linkLabel(url) {
+  const gh = githubRef(url);
+  if (gh) return { title: `${gh.owner}/${gh.repo} #${gh.number}`, kind: gh.kind === 'pull' ? 'Pull request' : 'Issue' };
+  if (youtubeVideos(url).length) return { title: url.replace(/^https?:\/\//, ''), kind: 'YouTube' };
+  try {
+    const u = new URL(url);
+    return { title: `${u.hostname.replace(/^www\./, '')}${u.pathname === '/' ? '' : u.pathname}`, kind: '' };
+  } catch {
+    return { title: url, kind: '' };
+  }
+}
+
+function renderMediaView() {
+  let panel = artifactViewerEl.querySelector('.artifact-viewer__panel--media');
+  if (!panel) {
+    panel = document.createElement('div');
+    panel.className = 'artifact-viewer__panel artifact-viewer__panel--media';
+    panel.setAttribute('role', 'dialog');
+    panel.setAttribute('aria-modal', 'true');
+    artifactViewerEl.replaceChildren(panel);
+  }
+  const scope = mediaScope || {};
+  const title = scope.all ? 'Shared media, all chats'
+    : scope.channelId ? `Shared in #${channelsById.get(scope.channelId)?.name || 'channel'}`
+    : `Shared with ${colleaguesById.get(scope.colleagueId)?.name || 'her'}`;
+  panel.setAttribute('aria-label', title);
+  const data = mediaData;
+  const tabs = [
+    ['pictures', 'Pictures', data?.pictures?.length],
+    ['links', 'Links', data?.links?.length],
+    ['docs', 'Documents', data?.docs?.length],
+  ];
+  const pick = (name) => { mediaTab = name; renderMediaView(); };
+  let body;
+  if (!data) body = html`<p class="profile-note">Loading…</p>`;
+  else if (data.error) body = html`<p class="profile-error" role="alert">Could not load what was shared.</p>`;
+  else if (mediaTab === 'pictures') {
+    body = data.pictures.length
+      ? html`<ul class="media-grid">${data.pictures.map((p) => html`<li key=${p.url}>
+          <button type="button" class="media-thumb" aria-label=${`${p.name}${p.who ? `, from ${p.who}` : ''}`} onClick=${(e) => openImageLightbox(e.currentTarget.querySelector('img'))}>
+            <img src=${p.url} alt=${p.name} loading="lazy" />
+          </button>
+          <${MediaOrigin} item=${p} />
+        </li>`)}</ul>`
+      : html`<p class="profile-note">No pictures shared yet.</p>`;
+  } else if (mediaTab === 'links') {
+    body = data.links.length
+      ? html`<ul class="media-list">${data.links.map((l) => {
+          const label = linkLabel(l.url);
+          return html`<li key=${l.url}><a class="media-link" href=${l.url} target="_blank" rel="noopener noreferrer">
+            <span class="media-link__title">${label.kind ? html`<span class="media-link__kind">${label.kind}</span> ` : null}${label.title}</span>
+            <${MediaOrigin} item=${l} />
+          </a></li>`;
+        })}</ul>`
+      : html`<p class="profile-note">No links shared yet.</p>`;
+  } else {
+    body = data.docs.length
+      ? html`<ul class="media-list">${data.docs.map((d) => html`<li key=${d.id}><button type="button" class="media-link" onClick=${() => openArtifact(d.id)}>
+          <span class="media-link__title"><span class="media-link__kind">${d.kind === 'transcript' ? 'Transcript' : 'Document'}</span> ${d.title}</span>
+          <${MediaOrigin} item=${d} />
+        </button></li>`)}</ul>`
+      : html`<p class="profile-note">No documents yet. Call transcripts and documents from the team room show here.</p>`;
+  }
+  render(html`
+    <div class="artifact-viewer__header">
+      <h2>${title}</h2>
+      <button type="button" onClick=${closeArtifact}>Close</button>
+    </div>
+    <div class="media-tabs" role="tablist">
+      ${tabs.map(([name, label, count]) => html`<button type="button" role="tab" class="media-tab" aria-selected=${mediaTab === name ? 'true' : 'false'} onClick=${() => pick(name)}>${label}${count ? html` <span class="profile-list__count">${count}</span>` : null}</button>`)}
+    </div>
+    <div class="artifact-viewer__body media-body">${body}</div>
+  `, panel);
+}
+
 function closeArtifact() {
   artifactViewerEl.hidden = true;
   artifactViewerEl.innerHTML = '';
@@ -6068,6 +6179,16 @@ function renderChannelsSection() {
     entry.setAttribute('aria-label', `Profile${waiting ? `, ${waiting} waiting for you on GitHub` : ''}`);
     entry.addEventListener('click', openProfileView);
     sidebarEl.appendChild(entry);
+    // Everything shared in all chats: pictures, links, documents.
+    const media = document.createElement('button');
+    media.type = 'button';
+    media.className = 'open-questions-entry media-entry';
+    media.innerHTML = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M21 17l-5-5-9 8"/></svg>';
+    const mediaLabel = document.createElement('span');
+    mediaLabel.textContent = 'Shared media';
+    media.appendChild(mediaLabel);
+    media.addEventListener('click', () => openMediaView({ all: true }));
+    sidebarEl.appendChild(media);
   }
 
   // The team's open questions (team room only): one entry with a count.

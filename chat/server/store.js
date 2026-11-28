@@ -262,6 +262,31 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
      )`
   );
   const getAttachmentStmt = db.prepare('SELECT mime_type, data FROM attachments WHERE id = ?');
+  // Shared media (see media() below): pictures and messages with links,
+  // newest first, for one conversation or across all of them.
+  const MEDIA_LIMIT = 300;
+  const messagePicturesStmt = db.prepare(
+    `SELECT a.id, a.name, a.mime_type, m.colleague_id, m.session_id, m.role AS sender, m.created_at
+     FROM attachments a JOIN messages m ON a.kind = 'message' AND a.message_id = m.id
+     WHERE m.colleague_id NOT LIKE 'sub:%' AND (@all OR (m.colleague_id = @colleagueId AND m.session_id = @sessionId))
+     ORDER BY m.id DESC LIMIT ${MEDIA_LIMIT}`
+  );
+  const channelPicturesStmt = db.prepare(
+    `SELECT a.id, a.name, a.mime_type, c.channel_id, c.sender_id AS sender, c.created_at
+     FROM attachments a JOIN channel_messages c ON a.kind = 'channel_message' AND a.message_id = c.id
+     WHERE @all OR c.channel_id = @channelId
+     ORDER BY c.id DESC LIMIT ${MEDIA_LIMIT}`
+  );
+  const messageLinksStmt = db.prepare(
+    `SELECT id, colleague_id, session_id, role AS sender, text, created_at FROM messages
+     WHERE text LIKE '%http%' AND colleague_id NOT LIKE 'sub:%' AND (@all OR (colleague_id = @colleagueId AND session_id = @sessionId))
+     ORDER BY id DESC LIMIT ${MEDIA_LIMIT}`
+  );
+  const channelLinksStmt = db.prepare(
+    `SELECT id, channel_id, sender_id AS sender, text, created_at FROM channel_messages
+     WHERE text LIKE '%http%' AND (@all OR channel_id = @channelId)
+     ORDER BY id DESC LIMIT ${MEDIA_LIMIT}`
+  );
   const deleteMessageAttachmentsStmt = db.prepare(
     `DELETE FROM attachments WHERE kind = 'message' AND message_id IN (
        SELECT id FROM messages WHERE colleague_id = ? AND session_id = ?
@@ -519,6 +544,26 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
     getChannelHistory(channelId) {
       const attachments = groupAttachments(channelAttachmentsStmt.all(channelId));
       return channelHistoryStmt.all(channelId).map((row) => ({ ...row, attachments: attachments.get(row.id) }));
+    },
+    // Pictures and messages carrying links, for one conversation
+    // ({ colleagueId, sessionId } or { channelId }) or for all of them
+    // ({ all: true }): { pictures: [...], linkMessages: [...] }, newest
+    // first. Only ids and names for pictures; the bytes stay with
+    // api/attachment.
+    media({ colleagueId = null, sessionId = DEFAULT_SESSION_ID, channelId = null, all = false } = {}) {
+      const one = { all: all ? 1 : 0, colleagueId, sessionId: sessionId || DEFAULT_SESSION_ID, channelId };
+      const pictures = [];
+      const linkMessages = [];
+      if (all || colleagueId) {
+        for (const r of messagePicturesStmt.all(one)) pictures.push({ id: r.id, name: r.name, mimeType: r.mime_type, colleagueId: r.colleague_id, sessionId: r.session_id, sender: r.sender, createdAt: r.created_at });
+        for (const r of messageLinksStmt.all(one)) linkMessages.push({ colleagueId: r.colleague_id, sessionId: r.session_id, sender: r.sender, text: r.text, createdAt: r.created_at });
+      }
+      if (all || channelId) {
+        for (const r of channelPicturesStmt.all(one)) pictures.push({ id: r.id, name: r.name, mimeType: r.mime_type, channelId: r.channel_id, sender: r.sender, createdAt: r.created_at });
+        for (const r of channelLinksStmt.all(one)) linkMessages.push({ channelId: r.channel_id, sender: r.sender, text: r.text, createdAt: r.created_at });
+      }
+      const newest = (a, b) => String(b.createdAt).localeCompare(String(a.createdAt));
+      return { pictures: pictures.sort(newest), linkMessages: linkMessages.sort(newest) };
     },
     // The bytes of one stored image, or null.
     getAttachment(id) {
