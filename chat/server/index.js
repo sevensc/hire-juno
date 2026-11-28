@@ -921,6 +921,37 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
           return;
         }
 
+        if (req.method === 'GET' && route === 'api/commands') {
+          // Her slash commands and skills for the composer's "/" list, asked
+          // of a session of hers that is already running (the list is the
+          // same in all of them). Unlike api/models this never starts one:
+          // each session is a process of its own, and typing "/" should
+          // not cost one. Not running yet: `started: false`.
+          const colleagueId = url.searchParams.get('colleagueId') || '';
+          const sessionId = url.searchParams.get('sessionId') || DEFAULT_SESSION_ID;
+          const own = adapters.get(adapterKey(colleagueId, sessionId));
+          const adapter = own || [...adapters.entries()].find(([k]) => k.startsWith(`${colleagueId}::`))?.[1] || null;
+          let commands = null;
+          if (adapter && typeof adapter.supportedCommands === 'function') {
+            try {
+              commands = await adapter.supportedCommands();
+            } catch {
+              commands = null;
+            }
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json' }).end(
+            JSON.stringify({
+              started: Boolean(adapter),
+              supported: Array.isArray(commands),
+              commands: (commands || [])
+                // Internal ones ("__…") and ones the CLI marks as removed stay out.
+                .filter((c) => c && /^[A-Za-z0-9][A-Za-z0-9:_-]{0,63}$/.test(c.name || '') && !/^\(removed\)/i.test(c.description || ''))
+                .map((c) => ({ name: c.name, description: String(c.description || '').slice(0, 300), argumentHint: String(c.argumentHint || '').slice(0, 80) })),
+            })
+          );
+          return;
+        }
+
         if (req.method === 'GET' && route === 'api/models') {
           // What the conversation's settings dialog offers. Asked of the
           // colleague's own adapter, so opening the dialog starts her
@@ -2375,7 +2406,10 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
           }
           // A reaction's meaning goes to her with it; the transcript keeps the emoji.
           const hint = reactionHint(payload.reaction);
-          const prompt = withNotes(text, [hint, takenOver.delete(key) ? TAKEN_OVER_NOTE : '']);
+          // A slash command ("/compact", a skill) goes to her session as typed:
+          // a note after it would become the command's arguments.
+          const isCommand = typeof text === 'string' && /^\/[A-Za-z0-9:_-]+(?:\s|$)/.test(text) && !attachments?.length;
+          const prompt = isCommand ? text : withNotes(text, [hint, takenOver.delete(key) ? TAKEN_OVER_NOTE : '']);
           await adapter.sendMessage(prompt, attachments, { uuid, ...(kind === 'queue' ? { priority: 'later' } : {}) });
         });
       });
