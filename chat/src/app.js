@@ -16,6 +16,7 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 
 import { renderMarkdown } from './markdown.js';
 import { youtubeEmbedUrl, youtubeThumbnail, youtubeVideos } from './youtube.js';
+import { githubRefs, relativeTime } from './github-links.js';
 import { nextMenuIndex, pickSendKind } from './send-kind.js';
 import { pickConversationToRestore, recallOpenConversation, rememberOpenConversation } from './open-conversation.js';
 import { buildIssueUrl } from './issue-link.js';
@@ -4478,6 +4479,88 @@ function YouTubeCard({ video }) {
   </button>`;
 }
 
+// A GitHub issue or pull request linked in a message, as a card: title,
+// state, labels and a few facts, fetched by this chat's server (with the
+// GitHub CLI's account). The whole card opens it on GitHub.
+const githubPreviewCache = new Map(); // "owner/repo#n" -> Promise<preview>
+function loadGithubPreview(ref) {
+  const key = `${ref.owner}/${ref.repo}#${ref.number}`.toLowerCase();
+  if (!githubPreviewCache.has(key)) {
+    const q = new URLSearchParams({ owner: ref.owner, repo: ref.repo, kind: ref.kind, number: String(ref.number) });
+    const request = fetch(`api/github-preview?${q}`)
+      .then((r) => (r.ok ? r.json() : { error: 'not_found' }))
+      .catch(() => ({ error: 'offline' }));
+    githubPreviewCache.set(key, request);
+    // A failure is asked again later; a preview stays for the page's life.
+    request.then((p) => { if (p.error) setTimeout(() => githubPreviewCache.delete(key), 30000); });
+  }
+  return githubPreviewCache.get(key);
+}
+
+const GH_STATE_LABEL = { open: 'Open', closed: 'Closed', merged: 'Merged', draft: 'Draft' };
+
+function GithubKindIcon({ kind }) {
+  // Drawn for this app (see DESIGN.md, icons): an issue is a ring with a
+  // dot, a pull request two branch ends joined into one line.
+  return kind === 'pull'
+    ? html`<svg class="gh-card__icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="5" r="2.2" /><circle cx="6" cy="19" r="2.2" /><circle cx="18" cy="19" r="2.2" /><path d="M6 7.2v9.6" /><path d="M18 16.8V10a3 3 0 0 0-3-3h-4" /><path d="M13 4.5 10.5 7 13 9.5" /></svg>`
+    : html`<svg class="gh-card__icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="8.5" /><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none" /></svg>`;
+}
+
+function GithubCard({ gref }) {
+  const [preview, setPreview] = useState(null);
+  useEffect(() => {
+    let live = true;
+    loadGithubPreview(gref).then((p) => { if (live) setPreview(p); });
+    return () => { live = false; };
+  }, [gref.url]);
+  const where = `${gref.owner}/${gref.repo}`;
+  if (!preview) {
+    return html`<span class="gh-card gh-card--loading" aria-live="polite">
+      <span class="gh-card__head"><${GithubKindIcon} kind=${gref.kind} /><span class="gh-card__repo">${where}</span><span>#${gref.number}</span></span>
+      <span class="gh-card__meta">Loading preview…</span>
+    </span>`;
+  }
+  // No GitHub CLI on this server: the link alone, as before.
+  if (preview.error === 'unavailable') return null;
+  if (preview.error) {
+    return html`<a class="gh-card gh-card--empty" href=${gref.url} target="_blank" rel="noopener noreferrer">
+      <span class="gh-card__head"><${GithubKindIcon} kind=${gref.kind} /><span class="gh-card__repo">${where}</span><span>#${gref.number}</span></span>
+      <span class="gh-card__meta">No preview: not found, or no access with this server's GitHub account.</span>
+    </a>`;
+  }
+  const facts = [
+    preview.author ? `by ${preview.author}` : '',
+    preview.updatedAt ? `updated ${relativeTime(preview.updatedAt)}` : '',
+    preview.comments ? `${preview.comments} ${preview.comments === 1 ? 'comment' : 'comments'}` : '',
+    preview.kind === 'pull' && preview.changedFiles ? `${preview.changedFiles} ${preview.changedFiles === 1 ? 'file' : 'files'}` : '',
+  ].filter(Boolean);
+  const stateName = preview.state === 'closed' && preview.kind === 'issue' && preview.reason === 'not_planned' ? 'Not planned' : GH_STATE_LABEL[preview.state] || preview.state;
+  // Colour: open green, merged or a finished issue purple, a PR closed
+  // unmerged red, a draft or an issue closed as not planned grey.
+  const tone = preview.state === 'open' ? 'open'
+    : preview.state === 'merged' ? 'merged'
+    : preview.state === 'draft' || preview.reason === 'not_planned' ? 'muted'
+    : preview.kind === 'issue' ? 'merged' : 'closed';
+  return html`<a class=${`gh-card gh-card--${tone}`} href=${gref.url} target="_blank" rel="noopener noreferrer" aria-label=${`${preview.kind === 'pull' ? 'Pull request' : 'Issue'} ${where} #${preview.number}: ${preview.title}, ${stateName}. Opens on GitHub.`}>
+    <span class="gh-card__head">
+      <${GithubKindIcon} kind=${preview.kind} />
+      <span class="gh-card__repo">${where}</span><span>#${preview.number}</span>
+      <span class="gh-card__state">${stateName}</span>
+    </span>
+    <span class="gh-card__title">${preview.title}</span>
+    ${preview.body ? html`<span class="gh-card__body">${preview.body}</span>` : null}
+    ${preview.labels?.length
+      ? html`<span class="gh-card__labels">${preview.labels.map((l) => html`<span class="gh-card__label"><span class="gh-card__dot" style=${l.color ? `background: #${l.color}` : null}></span>${l.name}</span>`)}</span>`
+      : null}
+    <span class="gh-card__meta">
+      ${facts.join(' · ')}
+      ${preview.kind === 'pull' ? html`${facts.length ? ' · ' : ''}<span class="gh-card__add">+${preview.additions}</span> <span class="gh-card__del">−${preview.deletions}</span>` : null}
+      ${preview.kind === 'pull' && preview.head && preview.base ? html`<span class="gh-card__branches">${preview.head} → ${preview.base}</span>` : null}
+    </span>
+  </a>`;
+}
+
 function MessageRow({ role, avatarColleague, nameTag, item, toolText, onToggle, onToggleTrailEntry, onWithdraw, variant = null, onReply = null, onReact = null, accent = null, onEmoji = null, roomYouId = null }) {
   const isToolUse = item.toolInput !== undefined;
   const time = formatMessageTime(item.createdAt);
@@ -4511,6 +4594,9 @@ function MessageRow({ role, avatarColleague, nameTag, item, toolText, onToggle, 
                   : item.text ? html`<span dangerouslySetInnerHTML=${{ __html: renderMarkdown(item.text) }} />` : null}
                 ${item.text && !item.artifact
                   ? youtubeVideos(item.text).map((video) => html`<${YouTubeCard} key=${video.id} video=${video} />`)
+                  : null}
+                ${item.text && !item.artifact
+                  ? githubRefs(item.text).map((gref) => html`<${GithubCard} key=${gref.url} gref=${gref} />`)
                   : null}
                 ${(item.attachments || []).map(
                   (attachment, i) => html`<img key=${i} class="attachment-thumb" src=${attachment.dataUrl} alt=${attachment.name} role="button" tabindex="0" />`

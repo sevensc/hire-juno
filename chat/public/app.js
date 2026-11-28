@@ -5806,6 +5806,49 @@
     return `https://i.ytimg.com/vi/${id}/hqdefault.jpg`;
   }
 
+  // chat/src/github-links.js
+  var OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
+  var REPO = /^[A-Za-z0-9._-]{1,100}$/;
+  function githubRef(href) {
+    let url;
+    try {
+      url = new URL(href);
+    } catch {
+      return null;
+    }
+    if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+    const host = url.hostname.toLowerCase();
+    if (host !== "github.com" && host !== "www.github.com") return null;
+    const [owner, repo, section, number] = url.pathname.split("/").filter(Boolean);
+    if (!OWNER.test(owner || "") || !REPO.test(repo || "") || repo === "." || repo === "..") return null;
+    const kind = section === "issues" ? "issue" : section === "pull" ? "pull" : null;
+    if (!kind || !/^\d{1,9}$/.test(number || "")) return null;
+    return { owner, repo, kind, number: Number(number), url: `https://github.com/${owner}/${repo}/${section}/${number}` };
+  }
+  function githubRefs(text2, max = 3) {
+    const out = [];
+    for (const match of String(text2 || "").matchAll(/https?:\/\/[^\s<>()"'\]]+/g)) {
+      const ref = githubRef(match[0].replace(/[.,;:!?]+$/, ""));
+      const key = ref && `${ref.owner}/${ref.repo}#${ref.number}`.toLowerCase();
+      if (ref && !out.some((r3) => `${r3.owner}/${r3.repo}#${r3.number}`.toLowerCase() === key)) out.push(ref);
+      if (out.length >= max) break;
+    }
+    return out;
+  }
+  function relativeTime(iso, now = Date.now()) {
+    const t4 = Date.parse(iso || "");
+    if (!Number.isFinite(t4)) return "";
+    const s3 = Math.max(0, Math.round((now - t4) / 1e3));
+    if (s3 < 60) return "just now";
+    if (s3 < 3600) return `${Math.floor(s3 / 60)} min ago`;
+    if (s3 < 86400) return `${Math.floor(s3 / 3600)} h ago`;
+    if (s3 < 30 * 86400) {
+      const d3 = Math.floor(s3 / 86400);
+      return `${d3} ${d3 === 1 ? "day" : "days"} ago`;
+    }
+    return new Date(t4).toLocaleDateString();
+  }
+
   // chat/src/send-kind.js
   function pickSendKind({ typing, requested }) {
     return typing && requested === "queue" ? "queue" : "send";
@@ -9731,6 +9774,72 @@
     <span class="youtube-card__play" aria-hidden="true"></span>
   </button>`;
   }
+  var githubPreviewCache = /* @__PURE__ */ new Map();
+  function loadGithubPreview(ref) {
+    const key = `${ref.owner}/${ref.repo}#${ref.number}`.toLowerCase();
+    if (!githubPreviewCache.has(key)) {
+      const q2 = new URLSearchParams({ owner: ref.owner, repo: ref.repo, kind: ref.kind, number: String(ref.number) });
+      const request = fetch(`api/github-preview?${q2}`).then((r3) => r3.ok ? r3.json() : { error: "not_found" }).catch(() => ({ error: "offline" }));
+      githubPreviewCache.set(key, request);
+      request.then((p3) => {
+        if (p3.error) setTimeout(() => githubPreviewCache.delete(key), 3e4);
+      });
+    }
+    return githubPreviewCache.get(key);
+  }
+  var GH_STATE_LABEL = { open: "Open", closed: "Closed", merged: "Merged", draft: "Draft" };
+  function GithubKindIcon({ kind }) {
+    return kind === "pull" ? m2`<svg class="gh-card__icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="5" r="2.2" /><circle cx="6" cy="19" r="2.2" /><circle cx="18" cy="19" r="2.2" /><path d="M6 7.2v9.6" /><path d="M18 16.8V10a3 3 0 0 0-3-3h-4" /><path d="M13 4.5 10.5 7 13 9.5" /></svg>` : m2`<svg class="gh-card__icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="8.5" /><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none" /></svg>`;
+  }
+  function GithubCard({ gref }) {
+    const [preview, setPreview] = d2(null);
+    h2(() => {
+      let live = true;
+      loadGithubPreview(gref).then((p3) => {
+        if (live) setPreview(p3);
+      });
+      return () => {
+        live = false;
+      };
+    }, [gref.url]);
+    const where = `${gref.owner}/${gref.repo}`;
+    if (!preview) {
+      return m2`<span class="gh-card gh-card--loading" aria-live="polite">
+      <span class="gh-card__head"><${GithubKindIcon} kind=${gref.kind} /><span class="gh-card__repo">${where}</span><span>#${gref.number}</span></span>
+      <span class="gh-card__meta">Loading preview…</span>
+    </span>`;
+    }
+    if (preview.error === "unavailable") return null;
+    if (preview.error) {
+      return m2`<a class="gh-card gh-card--empty" href=${gref.url} target="_blank" rel="noopener noreferrer">
+      <span class="gh-card__head"><${GithubKindIcon} kind=${gref.kind} /><span class="gh-card__repo">${where}</span><span>#${gref.number}</span></span>
+      <span class="gh-card__meta">No preview: not found, or no access with this server's GitHub account.</span>
+    </a>`;
+    }
+    const facts = [
+      preview.author ? `by ${preview.author}` : "",
+      preview.updatedAt ? `updated ${relativeTime(preview.updatedAt)}` : "",
+      preview.comments ? `${preview.comments} ${preview.comments === 1 ? "comment" : "comments"}` : "",
+      preview.kind === "pull" && preview.changedFiles ? `${preview.changedFiles} ${preview.changedFiles === 1 ? "file" : "files"}` : ""
+    ].filter(Boolean);
+    const stateName = preview.state === "closed" && preview.kind === "issue" && preview.reason === "not_planned" ? "Not planned" : GH_STATE_LABEL[preview.state] || preview.state;
+    const tone = preview.state === "open" ? "open" : preview.state === "merged" ? "merged" : preview.state === "draft" || preview.reason === "not_planned" ? "muted" : preview.kind === "issue" ? "merged" : "closed";
+    return m2`<a class=${`gh-card gh-card--${tone}`} href=${gref.url} target="_blank" rel="noopener noreferrer" aria-label=${`${preview.kind === "pull" ? "Pull request" : "Issue"} ${where} #${preview.number}: ${preview.title}, ${stateName}. Opens on GitHub.`}>
+    <span class="gh-card__head">
+      <${GithubKindIcon} kind=${preview.kind} />
+      <span class="gh-card__repo">${where}</span><span>#${preview.number}</span>
+      <span class="gh-card__state">${stateName}</span>
+    </span>
+    <span class="gh-card__title">${preview.title}</span>
+    ${preview.body ? m2`<span class="gh-card__body">${preview.body}</span>` : null}
+    ${preview.labels?.length ? m2`<span class="gh-card__labels">${preview.labels.map((l3) => m2`<span class="gh-card__label"><span class="gh-card__dot" style=${l3.color ? `background: #${l3.color}` : null}></span>${l3.name}</span>`)}</span>` : null}
+    <span class="gh-card__meta">
+      ${facts.join(" \xB7 ")}
+      ${preview.kind === "pull" ? m2`${facts.length ? " \xB7 " : ""}<span class="gh-card__add">+${preview.additions}</span> <span class="gh-card__del">−${preview.deletions}</span>` : null}
+      ${preview.kind === "pull" && preview.head && preview.base ? m2`<span class="gh-card__branches">${preview.head} → ${preview.base}</span>` : null}
+    </span>
+  </a>`;
+  }
   function MessageRow({ role, avatarColleague, nameTag, item, toolText, onToggle, onToggleTrailEntry, onWithdraw, variant = null, onReply = null, onReact = null, accent = null, onEmoji = null, roomYouId = null }) {
     const isToolUse = item.toolInput !== void 0;
     const time = formatMessageTime(item.createdAt);
@@ -9757,6 +9866,7 @@
                       <span class="artifact-card__open">Open</span>
                     </button>` : item.text ? m2`<span dangerouslySetInnerHTML=${{ __html: renderMarkdown(item.text) }} />` : null}
                 ${item.text && !item.artifact ? youtubeVideos(item.text).map((video) => m2`<${YouTubeCard} key=${video.id} video=${video} />`) : null}
+                ${item.text && !item.artifact ? githubRefs(item.text).map((gref) => m2`<${GithubCard} key=${gref.url} gref=${gref} />`) : null}
                 ${(item.attachments || []).map(
       (attachment, i3) => m2`<img key=${i3} class="attachment-thumb" src=${attachment.dataUrl} alt=${attachment.name} role="button" tabindex="0" />`
     )}
