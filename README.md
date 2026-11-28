@@ -20,13 +20,30 @@
 
 ## Contents
 
+- [See it in action](#see-it-in-action)
 - [The idea in one sentence](#the-idea-in-one-sentence)
 - [You don't start from nothing](#you-dont-start-from-nothing)
+- [The chat](#the-chat)
 - [Several workforces in parallel](#several-workforces-in-parallel)
 - [Set it up](#set-it-up)
 - [How to actually talk to her](#how-to-actually-talk-to-her)
 - [License](#license)
 - [Contributing](#contributing)
+
+---
+
+## See it in action
+
+<p align="center">
+  <a href="docs/media/hire-juno-tour.mp4"><img src="docs/media/hire-juno-tour.png" alt="Feature tour of hire-juno: a play button over the chat, Juno hiring a design reviewer" width="720"></a>
+</p>
+
+A three-minute tour with a made-up team, Sample Studio: hiring a
+colleague with Juno, the assessment center, a feedback review, the team
+room on two phones, GitHub inside the chat, work on GitHub repositories,
+and the profile. Every screen is the real chat; for the recording the
+colleagues answer from a script, so no model was called. How it was made,
+and how to record it again: [scripts/tour](scripts/tour/README.md).
 
 ---
 
@@ -51,6 +68,22 @@ The panel shown is the default — swapped or extended per hire when the
 role's access rights call for it (`hr/hiring.md` step 16), not reopened
 by default on every hire.
 
+**Probation** (`hr/probation.md`): one month, measured against the
+success criteria agreed in the hiring conversation. Supervisor and Juno
+spend five minutes a week on it and note in the colleague's journal
+whether each criterion is on track and which new rules went into the
+personnel file. At the end the supervisor decides: active, one more
+month, or let them go (the file stays, so rehiring with a better cut is
+cheap).
+
+**Feedback review** (`hr/feedback-review.md`): monthly for every active
+colleague. Supervisor and Juno go through the journal and the memory.
+Feedback that came up twice and is not yet a rule becomes one in the
+personnel file, or a skill when it is a how-to for a particular
+situation. Instructions the colleague followed outside their assignment
+are sorted: a one-off stays a one-off, a recurring one becomes a skill,
+a proposal to the supervisor, or a reason to hire.
+
 ---
 
 ## You don't start from nothing
@@ -67,6 +100,40 @@ assessment center and probation.
 
 That is the difference from a collection of prompt templates: the
 process isn't documentation you're supposed to follow — it's staffed.
+
+---
+
+## The chat
+
+Once the template is set up, `npx hire-juno chat` opens a chat with your
+colleagues in the browser (details in [chat/README.md](chat/README.md)):
+
+- **Conversations.** One per colleague, with as many tabs as you like.
+  Replies stream in together with her thinking and every tool she uses;
+  a card asks you when a tool needs your OK; sub-agents get windows of
+  their own. A conversation can move to the terminal and back.
+- **Markdown and diagrams.** Tables, code blocks and Mermaid diagrams,
+  drawn in place.
+- **Slash commands.** `/` lists the chat's own commands and the
+  colleague's commands and skills.
+- **GitHub.** Links to issues and pull requests turn into cards with
+  state, labels and size, and from the card you close, reopen, label,
+  assign or move them on a project board. `/issue` and `/pr` search; your
+  profile lists what is assigned to you or waiting for your review.
+- **Repositories.** Each conversation works either locally, where the
+  colleague's personnel file sets what she may access, or on GitHub
+  repositories you pick for it. Each picked repository gets its own git
+  worktree on a branch for the conversation, and she works there
+  freely; until repositories are picked she can read and talk, but
+  writing and running are switched off. A worktree goes away again when
+  its pull request is merged or closed, or when the conversation is
+  closed (you are asked first if work would be lost).
+- **Team room.** On a server, the people of a team and their colleagues
+  share one channel: replies, emoji reactions, @mentions that bring a
+  colleague in, video calls with transcripts, open questions, and an
+  overview of every picture, link and document shared.
+- **On the phone.** Add it to the home screen; on a server it sends push
+  notifications.
 
 ---
 
