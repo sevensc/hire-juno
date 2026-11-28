@@ -66,9 +66,9 @@ export function previewFrom(ref, issue, pull = null) {
   };
 }
 
-function ghApi(path, run) {
+function ghApi(path, run, env) {
   return new Promise((resolve, reject) => {
-    run('gh', ['api', '-H', 'Accept: application/vnd.github+json', path], { timeout: 10000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
+    run('gh', ['api', '-H', 'Accept: application/vnd.github+json', path], { env, timeout: 10000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
       if (err) return reject(err);
       try {
         resolve(JSON.parse(stdout));
@@ -79,11 +79,13 @@ function ghApi(path, run) {
   });
 }
 
-// `run`: execFile, replaceable in tests. Returns preview(ref) resolving to
-// a preview or { error: 'unavailable' | 'not_found' }.
-export function createGithubPreviews({ run = execFile, now = () => Date.now() } = {}) {
+// `run`: execFile, replaceable in tests; `env()`: the environment for `gh`
+// (the person's token, see githubAccount.js). Returns preview(ref)
+// resolving to a preview or { error: 'unavailable' | 'not_found' };
+// preview.clear() forgets what was fetched (after a change of account).
+export function createGithubPreviews({ run = execFile, now = () => Date.now(), env = () => undefined } = {}) {
   const cache = new Map(); // key -> { at, ttl, value: Promise }
-  return function preview(ref) {
+  function preview(ref) {
     const key = `${ref.owner}/${ref.repo}#${ref.number}`.toLowerCase();
     const hit = cache.get(key);
     if (hit && now() - hit.at < hit.ttl) return hit.value;
@@ -93,8 +95,8 @@ export function createGithubPreviews({ run = execFile, now = () => Date.now() } 
       try {
         // The issues endpoint answers for PRs too; a PR then also gets its
         // pull request data (merged, draft, size, branches).
-        const issue = await ghApi(`${base}/issues/${ref.number}`, run);
-        const pull = issue.pull_request ? await ghApi(`${base}/pulls/${ref.number}`, run).catch(() => null) : null;
+        const issue = await ghApi(`${base}/issues/${ref.number}`, run, env());
+        const pull = issue.pull_request ? await ghApi(`${base}/pulls/${ref.number}`, run, env()).catch(() => null) : null;
         return previewFrom(ref, issue, pull);
       } catch (err) {
         entry.ttl = FAIL_TTL_MS;
@@ -105,7 +107,11 @@ export function createGithubPreviews({ run = execFile, now = () => Date.now() } 
     cache.set(key, entry);
     if (cache.size > 500) cache.delete(cache.keys().next().value);
     return entry.value;
-  };
+  }
+  preview.clear = () => cache.clear();
+  // Forgets one issue or PR (after the chat changed it on GitHub).
+  preview.forget = (ref) => cache.delete(`${ref.owner}/${ref.repo}#${ref.number}`.toLowerCase());
+  return preview;
 }
 
 // The GitHub account (user or organisation) a repo's `origin` points to,
@@ -123,42 +129,72 @@ export function searchQuery(words, kind, owner) {
   return [text, kind === 'pull' ? 'is:pr' : 'is:issue', !scoped && owner ? `user:${owner}` : ''].filter(Boolean).join(' ');
 }
 
-// search(words, kind, owner) resolving to { results: [...] } (newest
-// activity first, at most eight) or { error }.
-export function createGithubSearch({ run = execFile, now = () => Date.now() } = {}) {
+function shapeSearchItem(item) {
+  const [repoOwner, repo] = String(item.repository_url || '').split('/').slice(-2);
+  const isPull = Boolean(item.pull_request);
+  return {
+    owner: repoOwner,
+    repo,
+    number: item.number,
+    kind: isPull ? 'pull' : 'issue',
+    title: String(item.title || ''),
+    state: isPull && item.pull_request?.merged_at ? 'merged' : item.draft && item.state === 'open' ? 'draft' : item.state,
+    url: item.html_url,
+    updatedAt: item.updated_at || null,
+  };
+}
+
+// query(q, perPage) resolving to { results } (newest activity first) or
+// { error }, straight from GitHub's issue search. Cached for 30 seconds;
+// query.clear() forgets everything.
+export function createGithubQuery({ run = execFile, now = () => Date.now(), env = () => undefined } = {}) {
   const cache = new Map();
-  return function search(words, kind, owner) {
-    const q = searchQuery(words, kind, owner);
-    const hit = cache.get(q);
+  function query(q, perPage = 8) {
+    const key = `${perPage}\n${q}`;
+    const hit = cache.get(key);
     if (hit && now() - hit.at < 30000) return hit.value;
     const value = new Promise((resolve) => {
-      run('gh', ['api', '-X', 'GET', 'search/issues', '-f', `q=${q}`, '-f', 'sort=updated', '-f', 'per_page=8'], { timeout: 10000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
+      run('gh', ['api', '-X', 'GET', 'search/issues', '-f', `q=${q}`, '-f', 'sort=updated', '-f', `per_page=${perPage}`], { env: env(), timeout: 10000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
         if (err) return resolve({ error: err.code === 'ENOENT' ? 'unavailable' : 'failed' });
         try {
           const data = JSON.parse(stdout);
           resolve({
-            results: (data.items || []).map((item) => {
-              const [repoOwner, repo] = String(item.repository_url || '').split('/').slice(-2);
-              const isPull = Boolean(item.pull_request);
-              return {
-                owner: repoOwner,
-                repo,
-                number: item.number,
-                kind: isPull ? 'pull' : 'issue',
-                title: String(item.title || ''),
-                state: isPull && item.pull_request?.merged_at ? 'merged' : item.draft && item.state === 'open' ? 'draft' : item.state,
-                url: item.html_url,
-                updatedAt: item.updated_at || null,
-              };
-            }).filter((r) => r.owner && r.repo && Number.isInteger(r.number) && /^https:\/\/github\.com\//.test(r.url || '')),
+            results: (data.items || []).map(shapeSearchItem).filter((r) => r.owner && r.repo && Number.isInteger(r.number) && /^https:\/\/github\.com\//.test(r.url || '')),
           });
         } catch {
           resolve({ error: 'failed' });
         }
       });
     });
-    cache.set(q, { at: now(), value });
+    cache.set(key, { at: now(), value });
     if (cache.size > 200) cache.delete(cache.keys().next().value);
     return value;
-  };
+  }
+  query.clear = () => cache.clear();
+  return query;
+}
+
+// search(words, kind, owner): "/issue …" and "/pr …", eight results at most.
+export function createGithubSearch(options = {}) {
+  const query = createGithubQuery(options);
+  const search = (words, kind, owner) => query(searchQuery(words, kind, owner), 8);
+  search.clear = query.clear;
+  return search;
+}
+
+// assigned(login): what is open and waiting for this person: issues and
+// pull requests assigned to them, and pull requests asking for their review.
+export function createGithubAssigned(options = {}) {
+  const query = createGithubQuery(options);
+  async function assigned(login) {
+    const [issues, pulls, reviews] = await Promise.all([
+      query(`is:open is:issue assignee:${login}`, 30),
+      query(`is:open is:pr assignee:${login}`, 30),
+      query(`is:open is:pr review-requested:${login}`, 30),
+    ]);
+    const error = issues.error || pulls.error || reviews.error || null;
+    return { issues: issues.results || [], pulls: pulls.results || [], reviews: reviews.results || [], ...(error ? { error } : {}) };
+  }
+  assigned.clear = query.clear;
+  return assigned;
 }

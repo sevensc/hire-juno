@@ -39,7 +39,8 @@ import { WebSocketServer } from 'ws';
 
 import { buildServerNote, createAdapter } from './agentAdapter.js';
 import { waitUntilIdle } from './drain.js';
-import { cleanRef as cleanGithubRef, createGithubPreviews, createGithubSearch, githubOwnerOf } from './githubPreview.js';
+import { cleanRef as cleanGithubRef, createGithubAssigned, createGithubPreviews, createGithubSearch, githubOwnerOf } from './githubPreview.js';
+import { createGithubAccount } from './githubAccount.js';
 import { createPermissions, VIA_ALLOW_ALL, VIA_ALWAYS_ALLOW } from './permissions.js';
 import { validateModelChoice } from './modelChoice.js';
 import { writeLimitLog } from './limitLog.js';
@@ -684,10 +685,21 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
       senderId === 'you' ? OPERATOR_NAME : readRoster(targetDir).find((c) => c.id === senderId)?.name || senderId;
 
     // Issue and PR previews for GitHub links in a conversation (via `gh`).
-    const githubPreview = createGithubPreviews();
+    // The person's own GitHub token, if they set one (else `gh` as it is
+    // signed in here); every GitHub call of the chat itself goes through it.
+    const githubAccount = createGithubAccount();
+    const githubEnv = () => githubAccount.env();
+    const githubPreview = createGithubPreviews({ env: githubEnv });
     // "/issue …" and "/pr …" search, by default in the GitHub account the
     // workforce repo's origin belongs to.
-    const githubSearch = createGithubSearch();
+    const githubSearch = createGithubSearch({ env: githubEnv });
+    // The profile's "assigned to you" lists.
+    const githubAssigned = createGithubAssigned({ env: githubEnv });
+    const githubAccountChanged = () => {
+      githubPreview.clear();
+      githubSearch.clear();
+      githubAssigned.clear();
+    };
     let githubOwner;
     const workforceGithubOwner = () => {
       if (githubOwner === undefined) {
@@ -734,7 +746,7 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
               teamName: workforce?.id || 'hire-juno',
               version: PACKAGE_VERSION,
               // Present only on a socket server: whether a Claude token is set. Never the token.
-              ...(socketPath ? { claudeToken: hasClaudeToken ? 'set' : 'missing', pushKey: pusher.publicKey() } : {}),
+              ...(socketPath ? { claudeToken: hasClaudeToken ? 'set' : 'missing', pushKey: pusher.publicKey(), person } : {}),
             })
           );
           return;
@@ -1036,6 +1048,20 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
           }
           const preview = await githubPreview(ref);
           res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end(JSON.stringify(preview));
+          return;
+        }
+
+        if (req.method === 'GET' && route === 'api/github-account') {
+          res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end(
+            JSON.stringify({ ...(await githubAccount.account()), canSetToken: Boolean(socketPath) })
+          );
+          return;
+        }
+
+        if (req.method === 'GET' && route === 'api/github-assigned') {
+          const { login } = await githubAccount.account();
+          const lists = login ? await githubAssigned(login) : { needsLogin: true };
+          res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end(JSON.stringify({ login, ...lists }));
           return;
         }
 
@@ -1906,6 +1932,27 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
             } else if (typeof payload.endpoint === 'string') {
               pusher.unsubscribe(payload.endpoint);
             }
+            return;
+          }
+
+          if (payload.type === 'set_github_token' || payload.type === 'remove_github_token' || payload.type === 'set_github_login') {
+            try {
+              if (payload.type === 'set_github_token') {
+                // Like the Claude token: only where nobody can sign in to
+                // `gh` in a terminal for themselves.
+                if (!socketPath) throw new Error('Sign in with `gh auth login` in a terminal on this computer instead.');
+                await githubAccount.setToken(payload.token);
+              } else if (payload.type === 'remove_github_token') {
+                githubAccount.removeToken();
+              } else {
+                githubAccount.setLogin(payload.login);
+              }
+            } catch (err) {
+              ws.send(JSON.stringify({ type: 'github_account_failed', message: err.message }));
+              return;
+            }
+            githubAccountChanged();
+            broadcast({ type: 'github_account', ...(await githubAccount.account()), canSetToken: Boolean(socketPath) });
             return;
           }
 
