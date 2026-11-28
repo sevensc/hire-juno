@@ -8,7 +8,9 @@
 // sessions keep their own GitHub identity.
 //
 // The GitHub login (for "assigned to me") comes from the token; without
-// one it is what the person entered, or whom `gh` itself is signed in as.
+// one from the sign-in in front of this chat, where a login proxy passes
+// the GitHub name on (--github-login-header); else it is what the person
+// entered, or whom `gh` itself is signed in as.
 
 import { execFile } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
@@ -51,6 +53,7 @@ export function createGithubAccount({ home = homedir(), run = execFile, baseEnv 
   let token = validGithubToken(readTrimmed(tokenFile));
   let login = validLogin(readTrimmed(loginFile));
   let ghLogin; // whom plain `gh` is signed in as: undefined = not asked yet
+  let signInLogin = null; // from the login proxy's header, see noteSignIn
 
   const userOf = (env) => new Promise((resolve) => {
     run('gh', ['api', 'user', '--jq', '.login'], { env, timeout: 10000 }, (err, stdout) => resolve(err ? null : validLogin(stdout)));
@@ -62,9 +65,18 @@ export function createGithubAccount({ home = homedir(), run = execFile, baseEnv 
       return token ? { ...baseEnv, GH_TOKEN: token, GITHUB_TOKEN: token } : baseEnv;
     },
     hasToken: () => Boolean(token),
-    // { login, source: 'token' | 'entered' | 'gh' | null, token: bool }
+    // The GitHub name the login proxy reported for the person using this
+    // chat (every request carries it). Returns whether it changed.
+    noteSignIn(value) {
+      const next = validLogin(value);
+      if (!next || next === signInLogin) return false;
+      signInLogin = next;
+      return true;
+    },
+    // { login, source: 'token' | 'sign-in' | 'entered' | 'gh' | null, token: bool }
     async account() {
       if (token) return { login, source: 'token', token: true };
+      if (signInLogin) return { login: signInLogin, source: 'sign-in', token: false };
       if (login) return { login, source: 'entered', token: false };
       if (ghLogin === undefined) ghLogin = await userOf(baseEnv);
       return { login: ghLogin, source: ghLogin ? 'gh' : null, token: false };

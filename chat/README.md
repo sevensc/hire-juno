@@ -67,6 +67,13 @@ One instance serves one person. For several people on one server:
 The web app manifest is served as before, so the chat can be added to a
 phone's home screen from the proxied address.
 
+If the proxy signs people in with GitHub and passes their GitHub name on
+in a request header, `--github-login-header <header>` (e.g.
+`X-Auth-Request-User`) lets the chat take it from there: the profile then
+lists what is assigned to that person on GitHub without asking for the
+name. Off unless given, and only with `--socket`. The proxy must remove
+that header from what the browser sends, or anyone could claim a name.
+
 ### Team room
 
 `hire-juno-room` adds one shared conversation for the people on such a

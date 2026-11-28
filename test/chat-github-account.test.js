@@ -57,3 +57,20 @@ test('assigned to me: issues, pull requests and review requests of one login', a
   assert.equal(lists.issues.length, 1);
   assert.equal(lists.reviews[0].number, 3);
 });
+
+test('the GitHub name from the sign-in comes before an entered one, after the token', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'gh-signin-'));
+  try {
+    const run = (cmd, args, opts, done) => (opts.env?.GH_TOKEN === GOOD ? done(null, 'kim\n') : done(new Error('no')));
+    const account = createGithubAccount({ home, run, baseEnv: {} });
+    account.setLogin('typed-name');
+    assert.equal(account.noteSignIn('not a login!'), false);
+    assert.equal(account.noteSignIn('Ana-B'), true);
+    assert.equal(account.noteSignIn('Ana-B'), false, 'unchanged');
+    assert.deepEqual(await account.account(), { login: 'Ana-B', source: 'sign-in', token: false });
+    await account.setToken(GOOD);
+    assert.deepEqual(await account.account(), { login: 'kim', source: 'token', token: true });
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
