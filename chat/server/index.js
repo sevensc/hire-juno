@@ -42,6 +42,7 @@ import { waitUntilIdle } from './drain.js';
 import { cleanRef as cleanGithubRef, createGithubAssigned, createGithubPreviews, createGithubSearch, githubOwnerOf } from './githubPreview.js';
 import { createGithubAccount } from './githubAccount.js';
 import { createGithubActions } from './githubActions.js';
+import { buildMedia } from './media.js';
 import { createPermissions, VIA_ALLOW_ALL, VIA_ALWAYS_ALLOW } from './permissions.js';
 import { validateModelChoice } from './modelChoice.js';
 import { writeLimitLog } from './limitLog.js';
@@ -1051,6 +1052,46 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
           }
           const preview = await githubPreview(ref);
           res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end(JSON.stringify(preview));
+          return;
+        }
+
+        if (req.method === 'GET' && route === 'api/media') {
+          // Shared pictures, links and documents: of one conversation
+          // (colleagueId + sessionId, or channelId), or of all (all=1).
+          const all = url.searchParams.get('all') === '1';
+          const colleagueId = url.searchParams.get('colleagueId') || null;
+          const sessionId = url.searchParams.get('sessionId') || DEFAULT_SESSION_ID;
+          const channelId = url.searchParams.get('channelId') || null;
+          const roster = readRoster(targetDir);
+          const nameOf = (id) => roster.find((c) => c.id === id)?.name || id;
+          const titles = new Map();
+          const sessionTitle = (cid, sid) => {
+            if (!sid || sid === DEFAULT_SESSION_ID) return '';
+            if (!titles.has(cid)) titles.set(cid, new Map(store.listSessions(cid).map((x) => [x.id, x.title])));
+            return titles.get(cid).get(sid) || '';
+          };
+          const where = (item) => {
+            if (item.colleagueId) {
+              const title = sessionTitle(item.colleagueId, item.sessionId);
+              return title ? `${nameOf(item.colleagueId)} · ${title}` : nameOf(item.colleagueId);
+            }
+            if (item.channelId === ROOM_CHANNEL_ID) return '#team';
+            return `#${channelsById.get(item.channelId)?.name || 'channel'}`;
+          };
+          const who = (item) => {
+            if (item.memberId !== undefined) return item.agent ? item.agent.name : item.memberId === roomState.you?.id ? 'You' : item.memberName;
+            if (item.sender === 'you') return 'You';
+            if (item.colleagueId) return item.sender === 'system' ? '' : nameOf(item.colleagueId);
+            return nameOf(item.sender);
+          };
+          const inRoom = roomState.enabled && (all || channelId === ROOM_CHANNEL_ID);
+          const stored = all ? store.media({ all: true })
+            : colleagueId ? store.media({ colleagueId, sessionId })
+            : channelId && channelId !== ROOM_CHANNEL_ID ? store.media({ channelId })
+            : { pictures: [], linkMessages: [] };
+          res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end(
+            JSON.stringify(buildMedia({ stored, roomMessages: inRoom ? roomState.messages : [], where, who }))
+          );
           return;
         }
 
