@@ -39,7 +39,7 @@ import { WebSocketServer } from 'ws';
 
 import { buildServerNote, createAdapter } from './agentAdapter.js';
 import { waitUntilIdle } from './drain.js';
-import { cleanRef as cleanGithubRef, createGithubPreviews } from './githubPreview.js';
+import { cleanRef as cleanGithubRef, createGithubPreviews, createGithubSearch, githubOwnerOf } from './githubPreview.js';
 import { createPermissions, VIA_ALLOW_ALL, VIA_ALWAYS_ALLOW } from './permissions.js';
 import { validateModelChoice } from './modelChoice.js';
 import { writeLimitLog } from './limitLog.js';
@@ -685,6 +685,20 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
 
     // Issue and PR previews for GitHub links in a conversation (via `gh`).
     const githubPreview = createGithubPreviews();
+    // "/issue …" and "/pr …" search, by default in the GitHub account the
+    // workforce repo's origin belongs to.
+    const githubSearch = createGithubSearch();
+    let githubOwner;
+    const workforceGithubOwner = () => {
+      if (githubOwner === undefined) {
+        try {
+          githubOwner = githubOwnerOf(execFileSync('git', ['-C', targetDir, 'remote', 'get-url', 'origin'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 }));
+        } catch {
+          githubOwner = null;
+        }
+      }
+      return githubOwner;
+    };
     const server = createServer(async (req, res) => {
       const url = new URL(req.url, 'http://127.0.0.1');
       const parts = routeParts(url.pathname);
@@ -1022,6 +1036,15 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
           }
           const preview = await githubPreview(ref);
           res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end(JSON.stringify(preview));
+          return;
+        }
+
+        if (req.method === 'GET' && route === 'api/github-search') {
+          const kind = url.searchParams.get('kind') === 'pull' ? 'pull' : 'issue';
+          const words = (url.searchParams.get('q') || '').trim();
+          const owner = workforceGithubOwner();
+          const found = words ? await githubSearch(words, kind, owner) : { results: [] };
+          res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end(JSON.stringify({ ...found, owner }));
           return;
         }
 

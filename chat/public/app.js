@@ -11049,7 +11049,11 @@ ${source}`;
       description: "Start or join the video call of the team room",
       where: "room",
       run: () => startOrJoinRoomCall(activeChannelId)
-    }
+    },
+    // GitHub search: the words after the command search as you type, picking
+    // a result puts its link in the composer (the message then shows its card).
+    { name: "issue", argumentHint: "<search words>", description: "Find a GitHub issue and put its link here", search: "issue", run: () => "keep" },
+    { name: "pr", argumentHint: "<search words>", description: "Find a GitHub pull request and put its link here", search: "pull", run: () => "keep" }
   ];
   function chatCommandsHere() {
     const room = Boolean(activeChannelId && channelsById.get(activeChannelId)?.room);
@@ -11077,8 +11081,34 @@ ${source}`;
   function currentSlashToken() {
     const caret = input.selectionStart;
     const before = input.value.slice(0, caret);
+    const search = before.match(/^\/(issue|pr)\s+([\s\S]*)$/i);
+    if (search) return { start: 0, end: input.value.length, query: "", search: search[1].toLowerCase() === "pr" ? "pull" : "issue", words: search[2].trim() };
     const match = before.match(/^\/([A-Za-z0-9:_-]*)$/);
     return match ? { start: 0, end: caret, query: match[1] } : null;
+  }
+  var githubSearchTimer = null;
+  var githubSearchState = { key: "", loading: false, results: [], error: null, owner: null };
+  function githubSearchFor(kind, words) {
+    const key = `${kind}
+${words}`;
+    if (githubSearchState.key === key) return githubSearchState;
+    clearTimeout(githubSearchTimer);
+    githubSearchState = { key, loading: Boolean(words), results: [], error: null, owner: githubSearchState.owner };
+    if (!words) return githubSearchState;
+    const state = githubSearchState;
+    githubSearchTimer = setTimeout(() => {
+      fetch(`api/github-search?kind=${kind}&q=${encodeURIComponent(words)}`).then((r3) => r3.json()).then((data) => {
+        state.results = data.results || [];
+        state.error = data.error || null;
+        state.owner = data.owner || null;
+      }).catch(() => {
+        state.error = "failed";
+      }).finally(() => {
+        state.loading = false;
+        if (githubSearchState === state && mentionState?.kind === "command") refreshSlashList();
+      });
+    }, 300);
+    return state;
   }
   function slashCandidates(query) {
     const q2 = query.toLowerCase();
@@ -11097,6 +11127,16 @@ ${source}`;
       closeMentionAutocomplete();
       return;
     }
+    if (token.search) {
+      const found = githubSearchFor(token.search, token.words);
+      const what = token.search === "pull" ? "pull requests" : "issues";
+      const where = found.owner ? ` in ${found.owner}` : "";
+      const note2 = !token.words ? `Type words to search ${what}${where}; repo:owner/name searches one repository.` : found.loading ? `Searching ${what}\u2026` : found.error === "unavailable" ? "GitHub search needs the GitHub CLI (gh) on this server." : found.error ? "The search did not work. Try other words." : !found.results.length ? `No ${what} found${where}.` : null;
+      const keep2 = mentionState?.kind === "command" && mentionState.search ? Math.min(mentionState.selectedIndex, Math.max(found.results.length - 1, 0)) : 0;
+      mentionState = { kind: "command", ...token, matches: found.loading ? [] : found.results.map((r3) => ({ ...r3, result: true })), note: note2, selectedIndex: keep2 };
+      renderMentionAutocomplete();
+      return;
+    }
     const { matches, note } = slashCandidates(token.query);
     if (!matches.length && !note) {
       closeMentionAutocomplete();
@@ -11111,8 +11151,7 @@ ${source}`;
     if (!match) return false;
     const command = chatCommandsHere().find((c3) => c3.name === match[1].toLowerCase());
     if (!command) return false;
-    command.run(match[2] || "");
-    return true;
+    return command.run(match[2] || "") || true;
   }
   function closeMentionAutocomplete() {
     mentionState = null;
@@ -11127,6 +11166,27 @@ ${source}`;
       mentionState.matches.forEach((candidate, index) => {
         const li = document.createElement("li");
         li.className = "command-candidate";
+        if (candidate.result) {
+          li.classList.add("command-candidate--result", `command-candidate--${candidate.state}`);
+          li.setAttribute("aria-selected", String(index === mentionState.selectedIndex));
+          const where = document.createElement("span");
+          where.className = "command-candidate__name";
+          where.textContent = `${candidate.repo} #${candidate.number}`;
+          const state = document.createElement("span");
+          state.className = "command-candidate__args";
+          state.textContent = `${GH_STATE_LABEL[candidate.state] || candidate.state}${candidate.updatedAt ? ` \xB7 ${relativeTime(candidate.updatedAt)}` : ""}`;
+          const title = document.createElement("span");
+          title.className = "command-candidate__description";
+          title.textContent = candidate.title;
+          li.append(where, state, title);
+          li.addEventListener("mousedown", (event) => {
+            event.preventDefault();
+            acceptMention(candidate);
+          });
+          if (index === mentionState.selectedIndex) requestAnimationFrame(() => li.scrollIntoView({ block: "nearest" }));
+          mentionAutocompleteEl.appendChild(li);
+          return;
+        }
         li.setAttribute("aria-selected", String(index === mentionState.selectedIndex));
         const name = document.createElement("span");
         name.className = "command-candidate__name";
@@ -11189,7 +11249,7 @@ ${source}`;
   function acceptMention(candidate) {
     if (!candidate) return;
     const { start, end } = mentionState;
-    const insertion = mentionState.kind === "command" ? `/${candidate.name} ` : `@${candidate.id} `;
+    const insertion = candidate.result ? `${candidate.url} ` : mentionState.kind === "command" ? `/${candidate.name} ` : `@${candidate.id} `;
     input.value = input.value.slice(0, start) + insertion + input.value.slice(end);
     const caret = start + insertion.length;
     input.focus();
@@ -11430,10 +11490,13 @@ ${source}`;
     }
     const typed = input.value.trim();
     if (!typed && !pendingAttachment) return;
-    if (!pendingAttachment && runChatCommand(typed)) {
-      input.value = "";
-      autoResizeComposer();
-      clearReply();
+    const ran = !pendingAttachment && runChatCommand(typed);
+    if (ran) {
+      if (ran !== "keep") {
+        input.value = "";
+        autoResizeComposer();
+        clearReply();
+      }
       return;
     }
     const roomReply = replyTarget?.roomId != null && Boolean(channelsById.get(activeChannelId)?.room);

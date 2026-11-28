@@ -3596,3 +3596,5 @@ a.gh-card:active { filter: brightness(0.92); }
 #mention-autocomplete li[aria-selected="true"] .command-candidate__args,
 #mention-autocomplete li[aria-selected="true"] .command-candidate__description { color: rgba(255, 255, 255, 0.8); }
 #mention-autocomplete li.command-candidate--note { display: block; cursor: default; color: var(--fg-muted); font-size: 0.8rem; }
+.command-candidate--open:not([aria-selected="true"]) .command-candidate__args { color: var(--gh-open); }
+.command-candidate--merged:not([aria-selected="true"]) .command-candidate__args { color: var(--gh-merged); }
