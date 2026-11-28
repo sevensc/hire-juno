@@ -7178,41 +7178,81 @@
     convSettingsWorktreeSectionEl.hidden = false;
     const hint = document.createElement("p");
     hint.className = "model-picker__hint";
-    if (info.worktree) {
-      hint.textContent = `Repo: ${info.worktree.repoName || "unknown"}. Branch: ${info.worktree.branch}. Worktree folder: ${info.worktree.path}.`;
-      convSettingsWorktreeEl.append(hint);
-      return;
-    }
-    hint.textContent = "Creates a git worktree and a branch for this conversation. She keeps what she knows and works there from her next message on. One worktree per conversation. It is removed again when the branch's pull request is merged or closed, or when the conversation is closed (you are asked first if work would be lost).";
-    const repoSelect = document.createElement("select");
-    repoSelect.setAttribute("aria-label", "GitHub repository");
-    repoSelect.className = "worktree-repo-select";
-    const placeholder = document.createElement("option");
-    placeholder.value = "";
-    placeholder.textContent = "Loading GitHub repositories\u2026";
-    repoSelect.appendChild(placeholder);
-    fetch("api/github-repos").then((r3) => r3.json()).then((data) => {
-      placeholder.textContent = data.repos?.length ? `A GitHub repository${data.owner ? ` of ${data.owner}` : ""}\u2026` : data.error === "unavailable" ? "GitHub needs the GitHub CLI (gh) here" : "No GitHub repositories found";
-      for (const repo of data.repos || []) {
-        const option = document.createElement("option");
-        option.value = repo.slug;
-        option.textContent = `${repo.slug}${repo.private ? " (private)" : ""}`;
-        if (repo.description) option.title = repo.description;
-        repoSelect.appendChild(option);
+    const current = info.worktrees || (info.worktree ? [info.worktree] : []);
+    if (current.length) {
+      const list2 = document.createElement("ul");
+      list2.className = "worktree-list";
+      for (const w3 of current) {
+        const li = document.createElement("li");
+        const name = document.createElement("strong");
+        name.textContent = w3.repoName || "repository";
+        const meta = document.createElement("span");
+        meta.textContent = ` \xB7 branch ${w3.branch} \xB7 ${w3.path}`;
+        li.append(name, meta);
+        list2.appendChild(li);
       }
-    }).catch(() => {
-      placeholder.textContent = "Could not load GitHub repositories";
-    });
+      convSettingsWorktreeEl.append(list2);
+    }
+    hint.textContent = "Each repository picked gets a git worktree on its own branch for this conversation, and she works in them freely from her next message on (files there need no approval). They are removed again when a branch's pull request is merged or closed, or when the conversation is closed (you are asked first if work would be lost).";
+    const chosen = new Set(current.map((w3) => w3.repoName));
+    const repoFilter = document.createElement("input");
+    repoFilter.type = "search";
+    repoFilter.className = "worktree-repo-filter";
+    repoFilter.placeholder = "Filter GitHub repositories";
+    repoFilter.setAttribute("aria-label", "Filter GitHub repositories");
+    const repoList = document.createElement("div");
+    repoList.className = "worktree-repo-list";
+    repoList.setAttribute("role", "group");
+    repoList.setAttribute("aria-label", "GitHub repositories");
+    repoList.textContent = "Loading GitHub repositories\u2026";
     const repoButton = document.createElement("button");
     repoButton.type = "button";
-    repoButton.textContent = "Work in a worktree of this repository";
+    repoButton.textContent = "Work in the selected repositories";
+    repoButton.disabled = true;
+    const picked = () => [...repoList.querySelectorAll("input:checked:not(:disabled)")].map((box) => box.value);
+    const updateButton = () => {
+      const n3 = picked().length;
+      repoButton.disabled = !n3;
+      repoButton.textContent = n3 > 1 ? `Work in these ${n3} repositories` : "Work in the selected repository";
+    };
+    fetch("api/github-repos").then((r3) => r3.json()).then((data) => {
+      repoList.textContent = "";
+      if (!data.repos?.length) {
+        repoList.textContent = data.error === "unavailable" ? "GitHub needs the GitHub CLI (gh) here." : "No GitHub repositories found.";
+        return;
+      }
+      for (const repo of data.repos) {
+        const label = document.createElement("label");
+        label.className = "worktree-repo";
+        label.dataset.slug = repo.slug.toLowerCase();
+        const box = document.createElement("input");
+        box.type = "checkbox";
+        box.value = repo.slug;
+        const already = chosen.has(repo.slug.split("/")[1]);
+        box.checked = already;
+        box.disabled = already;
+        box.addEventListener("change", updateButton);
+        const text2 = document.createElement("span");
+        text2.textContent = `${repo.slug}${repo.private ? " (private)" : ""}`;
+        if (repo.description) label.title = repo.description;
+        label.append(box, text2);
+        repoList.appendChild(label);
+      }
+    }).catch(() => {
+      repoList.textContent = "Could not load GitHub repositories.";
+    });
+    repoFilter.addEventListener("input", () => {
+      const q2 = repoFilter.value.trim().toLowerCase();
+      for (const label of repoList.querySelectorAll(".worktree-repo")) label.hidden = Boolean(q2) && !label.dataset.slug.includes(q2);
+    });
     repoButton.addEventListener("click", () => {
-      if (!repoSelect.value) return;
+      const repos = picked();
+      if (!repos.length) return;
       error2.hidden = true;
       error2.classList.remove("model-picker__progress");
       repoButton.disabled = true;
       button.disabled = true;
-      socket.send(JSON.stringify({ type: "use_worktree", colleagueId, sessionId, githubRepo: repoSelect.value }));
+      socket.send(JSON.stringify({ type: "use_worktree", colleagueId, sessionId, githubRepos: repos }));
     });
     const orLocal = document.createElement("p");
     orLocal.className = "model-picker__hint";
@@ -7237,7 +7277,7 @@
       const repoPath = pathInput.value.trim();
       socket.send(JSON.stringify({ type: "use_worktree", colleagueId, sessionId, ...repoPath ? { repoPath } : {} }));
     });
-    convSettingsWorktreeEl.append(hint, repoSelect, repoButton, orLocal, pathInput, button, error2);
+    convSettingsWorktreeEl.append(hint, repoFilter, repoList, repoButton, orLocal, pathInput, button, error2);
     worktreeForm = { colleagueId, sessionId, button, repoButton, error: error2 };
   }
   var cliInfo = /* @__PURE__ */ new Map();
@@ -7644,8 +7684,9 @@
       if (info?.worktree) {
         const chip = document.createElement("span");
         chip.className = "pane-header__branch";
-        chip.textContent = info.worktree.branch;
-        chip.title = info.worktree.repoName ? `Branch of this conversation's own worktree in ${info.worktree.repoName}` : "Branch of this conversation's own worktree";
+        const all = info.worktrees || [info.worktree];
+        chip.textContent = all.length > 1 ? `${info.worktree.branch} \xB7 ${all.length} repos` : info.worktree.branch;
+        chip.title = all.length > 1 ? `This conversation's own worktrees, on branch ${info.worktree.branch}: ${all.map((w3) => w3.repoName).join(", ")}` : info.worktree.repoName ? `Branch of this conversation's own worktree in ${info.worktree.repoName}` : "Branch of this conversation's own worktree";
         entries.appendChild(chip);
       }
       const line = statsLine(key);
@@ -8732,7 +8773,8 @@
     }
     if (update.type === "session_close_confirm") {
       const what = [update.dirty ? "changes that are not committed" : "", update.unpushed ? `${update.unpushed} commit${update.unpushed === 1 ? "" : "s"} not pushed` : ""].filter(Boolean).join(" and ");
-      if (window.confirm(`Its worktree has ${what}. Close anyway and delete the worktree and its branch? That work is lost.`)) {
+      const where = update.repos?.length ? ` (${update.repos.join(", ")})` : "";
+      if (window.confirm(`Its worktrees have ${what}${where}. Close anyway and delete all its worktrees and their branches? That work is lost.`)) {
         socket.send(JSON.stringify({ type: "close_session", colleagueId: update.colleagueId, sessionId: update.sessionId, discard: true }));
       }
       return;
@@ -8740,7 +8782,8 @@
     if (update.type === "worktree_changed") {
       const key2 = convKey(update.colleagueId, update.sessionId);
       const info = worktreeInfo.get(key2) || { available: true };
-      worktreeInfo.set(key2, { ...info, available: true, worktree: update.branch ? { branch: update.branch, path: update.path, repoName: update.repoName } : null });
+      const list2 = Array.isArray(update.worktrees) ? update.worktrees : update.branch ? [{ branch: update.branch, path: update.path, repoName: update.repoName }] : [];
+      worktreeInfo.set(key2, { ...info, available: true, worktree: list2[0] || null, worktrees: list2 });
       if (key2 === activeConvKey()) {
         renderPaneHeader();
         refreshDiffIfOpen();

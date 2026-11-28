@@ -24,8 +24,9 @@ function setup() {
   process.env.HOME = home;
   const rows = new Map();
   const store = {
-    getWorktree: (c, s) => rows.get(`${c}::${s}`) ?? null,
-    setWorktree: (c, s, path, branch, repoPath = null) => rows.set(`${c}::${s}`, { path, branch, repoPath }),
+    getWorktree: (c, s) => rows.get(`${c}::${s}`)?.[0] ?? null,
+    getWorktrees: (c, s) => rows.get(`${c}::${s}`) ?? [],
+    setWorktree: (c, s, path, branch, repoPath = null) => rows.set(`${c}::${s}`, [...(rows.get(`${c}::${s}`) || []).filter((w) => w.path !== path), { path, branch, repoPath }]),
   };
   const done = () => {
     process.env.HOME = oldHome;
@@ -42,7 +43,7 @@ test('activateWorktree creates the worktree, saves it and reports it', () => {
     assert.equal(result.created, true);
     assert.match(result.branch, /^chat\/kim-s1$/);
     assert.ok(existsSync(join(result.path, 'a.txt')));
-    assert.deepEqual(rows.get('kim::s1'), { path: result.path, branch: result.branch, repoPath: repo });
+    assert.deepEqual(rows.get('kim::s1'), [{ path: result.path, branch: result.branch, repoPath: repo }]);
     assert.equal(result.repoPath, repo);
   } finally {
     done();

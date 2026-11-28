@@ -120,7 +120,9 @@ export class ClaudeAdapter {
   // option required). Omitted entirely for a first-ever conversation.
   // `useWorktree`: when set, she gets the `use_worktree` tool (worktreeServer
   // above); see createAdapter in agentAdapter.js.
-  constructor(colleague, { systemPrompt, cwd, resume, model, useWorktree }) {
+  // `additionalDirectories`: further working-directory roots (the
+  // conversation's worktrees of other repositories).
+  constructor(colleague, { systemPrompt, cwd, resume, model, useWorktree, additionalDirectories = [] }) {
     this.colleague = colleague;
     this.systemPrompt = systemPrompt;
     this.cwd = cwd;
@@ -174,6 +176,7 @@ export class ClaudeAdapter {
         // spawnable subagents, because .claude/agents/<id>.md lives in
         // the target repo and nothing points the session there.
         cwd,
+        ...(additionalDirectories.length ? { additionalDirectories } : {}),
         includePartialMessages: true,
         // Makes the CLI hand every user message that carries a uuid back as
         // `isReplay: true` at the moment the session takes it up (measured: a

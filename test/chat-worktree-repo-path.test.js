@@ -34,8 +34,9 @@ function setup() {
   process.env.HOME = join(base, 'home');
   const rows = new Map();
   const store = {
-    getWorktree: (c, s) => rows.get(`${c}::${s}`) ?? null,
-    setWorktree: (c, s, path, branch, repoPath = null) => rows.set(`${c}::${s}`, { path, branch, repoPath }),
+    getWorktree: (c, s) => rows.get(`${c}::${s}`)?.[0] ?? null,
+    getWorktrees: (c, s) => rows.get(`${c}::${s}`) ?? [],
+    setWorktree: (c, s, path, branch, repoPath = null) => rows.set(`${c}::${s}`, [...(rows.get(`${c}::${s}`) || []).filter((w) => w.path !== path), { path, branch, repoPath }]),
   };
   const done = () => {
     process.env.HOME = oldHome;
@@ -87,7 +88,7 @@ test('activateWorktree with repoPath branches from that repo and saves it', () =
     assert.equal(result.ok, true);
     assert.equal(result.repoPath, other);
     assert.ok(existsSync(join(result.path, 'b.txt')));
-    assert.equal(rows.get('kim::s1').repoPath, other);
+    assert.equal(rows.get('kim::s1')[0].repoPath, other);
     const listed = execFileSync('git', ['worktree', 'list', '--porcelain'], { cwd: other, encoding: 'utf8' });
     assert.ok(listed.includes(`worktree ${result.path}`));
     assert.equal(worktreeIsStartRepo(result.repoPath, repo), false);
@@ -148,7 +149,7 @@ test('the system prompt names the worktree of another repo and keeps cwd', () =>
   try {
     const colleague = { id: 'kim', name: 'Kim', adapter: ['claude'] };
     const adapter = createAdapter(colleague, {
-      targetDir: repo, cwd: repo, worktree: { path: '/w/x-1', branch: 'chat/kim-s1' },
+      targetDir: repo, cwd: repo, worktrees: [{ path: '/w/x-1', branch: 'chat/kim-s1' }],
     });
     assert.equal(adapter.cwd, repo);
     assert.match(adapter.systemPrompt, /\/w\/x-1/);
@@ -163,8 +164,9 @@ test('the store keeps repo_path with the worktree, null when none is given', () 
   store.setWorktree('kim', 's2', '/w/b', 'chat/b');
   assert.deepEqual(store.getWorktree('kim', 's1'), { path: '/w/a', branch: 'chat/a', repoPath: '/r/one' });
   assert.equal(store.getWorktree('kim', 's2').repoPath, null);
-  store.setWorktree('kim', 's1', '/w/c', 'chat/c', '/r/two'); // still one row per conversation
-  assert.equal(store.getWorktree('kim', 's1').repoPath, '/r/two');
+  store.setWorktree('kim', 's1', '/w/c', 'chat/c', '/r/two'); // a second repository, a second row
+  assert.equal(store.getWorktree('kim', 's1').repoPath, '/r/one');
+  assert.deepEqual(store.getWorktrees('kim', 's1').map((w) => w.repoPath), ['/r/one', '/r/two']);
 });
 
 test('a database from before repo_path gets the column and keeps its rows', () => {

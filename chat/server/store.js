@@ -71,9 +71,10 @@ const SCHEMA = `
     data BLOB NOT NULL
   );
 
-  -- A conversation that works in its own git worktree, on its own branch
-  -- (see worktree.js). A row only exists once the worktree has been
-  -- created; no row means the conversation works in the workforce folder.
+  -- A git worktree a conversation works in, on its own branch (see
+  -- worktree.js); one per repository, several per conversation. A row only
+  -- exists once the worktree has been created; no row means the
+  -- conversation works in the workforce folder only.
   CREATE TABLE IF NOT EXISTS conversation_worktrees (
     colleague_id TEXT NOT NULL,
     session_id TEXT NOT NULL DEFAULT 'default',
@@ -83,7 +84,7 @@ const SCHEMA = `
     -- existed, which always meant the workforce folder's repo).
     repo_path TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-    PRIMARY KEY (colleague_id, session_id)
+    PRIMARY KEY (colleague_id, session_id, path)
   );
 
   -- One row per sub-agent window of a colleague (the Agent/Task call she
@@ -297,16 +298,37 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
        SELECT id FROM channel_messages WHERE channel_id = ?
      )`
   );
-  const getWorktreeStmt = db.prepare(
-    'SELECT path, branch, repo_path AS repoPath FROM conversation_worktrees WHERE colleague_id = ? AND session_id = ?'
+  // A conversation may work in several worktrees (one per repository); a
+  // table from before that had one row per conversation as its key and is
+  // rebuilt once with (conversation, path) as the key, rows kept.
+  const worktreeTableSql = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'conversation_worktrees'").get()?.sql || '';
+  if (/PRIMARY KEY\s*\(\s*colleague_id\s*,\s*session_id\s*\)/i.test(worktreeTableSql)) {
+    db.exec(`BEGIN;
+      CREATE TABLE conversation_worktrees_new (
+        colleague_id TEXT NOT NULL,
+        session_id TEXT NOT NULL DEFAULT 'default',
+        path TEXT NOT NULL,
+        branch TEXT NOT NULL,
+        repo_path TEXT,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+        PRIMARY KEY (colleague_id, session_id, path)
+      );
+      INSERT INTO conversation_worktrees_new (colleague_id, session_id, path, branch, repo_path, created_at)
+        SELECT colleague_id, session_id, path, branch, repo_path, created_at FROM conversation_worktrees;
+      DROP TABLE conversation_worktrees;
+      ALTER TABLE conversation_worktrees_new RENAME TO conversation_worktrees;
+      COMMIT;`);
+  }
+  const getWorktreesStmt = db.prepare(
+    'SELECT path, branch, repo_path AS repoPath FROM conversation_worktrees WHERE colleague_id = ? AND session_id = ? ORDER BY created_at, rowid'
   );
   const allWorktreesStmt = db.prepare(
     'SELECT colleague_id AS colleagueId, session_id AS sessionId, path, branch, repo_path AS repoPath FROM conversation_worktrees'
   );
-  const clearWorktreeStmt = db.prepare('DELETE FROM conversation_worktrees WHERE colleague_id = ? AND session_id = ?');
+  const clearWorktreeStmt = db.prepare('DELETE FROM conversation_worktrees WHERE colleague_id = ? AND session_id = ? AND path = ?');
   const setWorktreeStmt = db.prepare(
     `INSERT INTO conversation_worktrees (colleague_id, session_id, path, branch, repo_path) VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(colleague_id, session_id) DO UPDATE SET path = excluded.path, branch = excluded.branch, repo_path = excluded.repo_path`
+     ON CONFLICT(colleague_id, session_id, path) DO UPDATE SET branch = excluded.branch, repo_path = excluded.repo_path`
   );
   const insertSessionStmt = db.prepare('INSERT INTO sessions (id, colleague_id, title) VALUES (?, ?, ?)');
   const listSessionsStmt = db.prepare(
@@ -579,16 +601,22 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
     // The model chosen for this conversation, or null for "the default".
     // The worktree this conversation works in, {path, branch, repoPath}
     // (repoPath null for rows from before it was saved), or null.
+    // The first of them (the changes dialog and the colleague's own tool
+    // work with one), or null.
     getWorktree(colleagueId, sessionId) {
-      return getWorktreeStmt.get(colleagueId, sessionId || DEFAULT_SESSION_ID) ?? null;
+      return getWorktreesStmt.get(colleagueId, sessionId || DEFAULT_SESSION_ID) ?? null;
+    },
+    // All worktrees of a conversation, oldest first.
+    getWorktrees(colleagueId, sessionId) {
+      return getWorktreesStmt.all(colleagueId, sessionId || DEFAULT_SESSION_ID);
     },
     // Every conversation's worktree, for the cleanup when its PR is done.
     listWorktrees() {
       return allWorktreesStmt.all();
     },
-    // Forgets a conversation's worktree (after it was removed from disk).
-    clearWorktree(colleagueId, sessionId) {
-      clearWorktreeStmt.run(colleagueId, sessionId || DEFAULT_SESSION_ID);
+    // Forgets one worktree of a conversation (after it was removed from disk).
+    clearWorktree(colleagueId, sessionId, path) {
+      clearWorktreeStmt.run(colleagueId, sessionId || DEFAULT_SESSION_ID, path);
     },
     setWorktree(colleagueId, sessionId, path, branch, repoPath = null) {
       setWorktreeStmt.run(colleagueId, sessionId || DEFAULT_SESSION_ID, path, branch, repoPath);

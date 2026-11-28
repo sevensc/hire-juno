@@ -150,31 +150,34 @@ export function buildSystemPrompt({ colleagueId, ownProfile, worktreeNote = '', 
 // option silently would be a claim about behavior nobody verified.
 // `cwd` is where she works; it differs from `targetDir` (where her profile
 // is read from) when the conversation has its own git worktree of the
-// workforce folder's repo. `worktree` ({ path, branch }) is set when the
-// conversation has a worktree of another repo: `cwd` stays `targetDir` then
+// workforce folder's repo. `worktrees` ([{ path, branch }]) are the
+// conversation's worktrees of other repos: `cwd` stays as it is then
 // (her project settings and agents are read from there) and the prompt
 // names the worktree.
 // `useWorktree`: set when the conversation can have a worktree (see
 // useWorktree.js); it creates one and returns { ok, created, branch, path } or
 // { ok: false, message }. Claude only; it becomes her `use_worktree` tool.
 // `serverNote`: see buildServerNote; empty outside a server.
-export function createAdapter(colleague, { targetDir, cwd = targetDir, resume, model, useWorktree, worktree, serverNote = '' }) {
+export function createAdapter(colleague, { targetDir, cwd = targetDir, resume, model, useWorktree, worktrees = [], serverNote = '' }) {
   const ownProfile = readProfileBody(targetDir, colleague.id) ?? `You are ${colleague.name}.`;
-  const worktreeNote =
-    worktree && cwd === targetDir
-      ? `\n\nThis conversation has a git worktree of another repository, on its own branch ${worktree.branch}, at ` +
-        `${worktree.path}. For work on that repository, work there by absolute path or cd into it, and do not ` +
-        `change files in the original checkout. Your own working directory stays ${cwd}.`
-      : cwd === targetDir
-      ? ''
-      : `\n\nYour working directory is ${cwd}, a git worktree on its own branch for this conversation. ` +
-        `Work only inside it and do not change files in ${targetDir}.`;
+  const ownNote = cwd === targetDir
+    ? ''
+    : `\n\nYour working directory is ${cwd}, a git worktree on its own branch for this conversation. ` +
+      `Work only inside it and do not change files in ${targetDir}.`;
+  const othersNote = worktrees.length
+    ? `\n\nThis conversation has its own git worktrees of ${worktrees.length === 1 ? 'another repository' : 'other repositories'}, ` +
+      `each on its own branch:\n${worktrees.map((w) => `- ${w.path} (branch ${w.branch})`).join('\n')}\n` +
+      'Work on those repositories there, by absolute path or by cd into them; you may change files there freely. ' +
+      'Do not change files in their original checkouts.' +
+      (cwd === targetDir ? ` Your own working directory stays ${cwd}.` : '')
+    : '';
+  const worktreeNote = ownNote + othersNote;
   const wantsCopilot = colleague.adapter.some((a) => a.toLowerCase().includes('copilot'));
   const offer = useWorktree && !wantsCopilot ? `\n\n${WORKTREE_OFFER}` : '';
   const systemPrompt = buildSystemPrompt({ colleagueId: colleague.id, ownProfile, worktreeNote, offer, serverNote });
   return wantsCopilot
     ? new CopilotAdapter(colleague, { cwd })
-    : new ClaudeAdapter(colleague, { systemPrompt, cwd, resume, model, useWorktree });
+    : new ClaudeAdapter(colleague, { systemPrompt, cwd, resume, model, useWorktree, additionalDirectories: worktrees.map((w) => w.path) });
 }
 
 // Only added when the `use_worktree` tool exists for the conversation.

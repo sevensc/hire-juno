@@ -52,7 +52,7 @@ import { extractMentions, extractVocativeAddresses } from './mentions.js';
 import { findLayout, readRoster, readRosterCard, resolveAvatarPath } from './roster.js';
 import { ATTACHMENT_MIME_TYPES, DEFAULT_SESSION_ID, openStore } from './store.js';
 import { resolveWorkforce } from './workforceId.js';
-import { activateGithubWorktree, activateWorktree, canOfferWorktree, worktreeIsStartRepo } from './useWorktree.js';
+import { activateGithubWorktree, activateWorktree, canOfferWorktree, worktreeIsStartRepo, worktreeToolAllowed } from './useWorktree.js';
 import { createGithubRepos } from './githubRepos.js';
 import { cleanUpFinishedWorktrees, worktreeOnClose } from './worktreeCleanup.js';
 import { currentBranch, gitRoot, resolveGitDir } from './worktree.js';
@@ -505,10 +505,14 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
     // she keeps the workforce folder as cwd (her agents and settings are
     // read from there) and the prompt names the worktree (see createAdapter).
     const conversationCwd = (colleagueId, sessionId) => {
-      const worktree = store.getWorktree(colleagueId, sessionId);
-      const worktreeThere = worktree && existsSync(worktree.path);
-      return worktreeThere && worktreeIsStartRepo(worktree.repoPath, targetDir) ? worktree.path : targetDir;
+      const own = store.getWorktrees(colleagueId, sessionId).find((w) => existsSync(w.path) && worktreeIsStartRepo(w.repoPath, targetDir));
+      return own ? own.path : targetDir;
     };
+    // A conversation's worktrees as the tabs show them.
+    const worktreeList = (colleagueId, sessionId) =>
+      store.getWorktrees(colleagueId, sessionId).map((w) => ({ branch: w.branch, path: w.path, repoName: basename(w.repoPath || gitRoot(targetDir) || '') }));
+    // The conversation's worktrees still on disk (all repositories).
+    const conversationWorktrees = (colleagueId, sessionId) => store.getWorktrees(colleagueId, sessionId).filter((w) => existsSync(w.path));
     // Conversations handed to the terminal: the chat leaves their session alone.
     const handovers = createHandovers();
     // Conversations just pointed at a terminal session: the first message
@@ -531,8 +535,10 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
         // Works in her conversation's own worktree when it has one (and the
         // folder is still there), otherwise in the workforce folder.
         const worktree = store.getWorktree(colleagueId, sessionId);
-        const worktreeThere = worktree && existsSync(worktree.path);
         const cwd = conversationCwd(colleagueId, sessionId);
+        // Worktrees of other repositories: working-directory roots of her
+        // session as well, and named in her prompt.
+        const otherWorktrees = conversationWorktrees(colleagueId, sessionId).filter((w) => w.path !== cwd);
         // She may move the conversation into a worktree herself (a tool of
         // hers, see useWorktree.js), if it can have one.
         let replaceWhenIdle = false;
@@ -550,6 +556,7 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
                   branch: result.branch,
                   path: result.path,
                   repoName: basename(result.repoPath),
+                  worktrees: worktreeList(colleagueId, sessionId),
                 });
               }
               return result;
@@ -561,7 +568,7 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
           resume,
           model,
           useWorktree,
-          worktree: worktreeThere ? worktree : undefined,
+          worktrees: otherWorktrees,
           serverNote: socketPath ? buildServerNote({ server: true, person, context: readContextFile(contextFile) }) : '',
         });
         adapter.onIdle = () => {
@@ -1214,14 +1221,13 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
           // and a workforce id to keep it under) and the one it has.
           const colleagueId = url.searchParams.get('colleagueId') || '';
           const sessionId = url.searchParams.get('sessionId') || DEFAULT_SESSION_ID;
-          const worktree = store.getWorktree(colleagueId, sessionId);
+          const list = worktreeList(colleagueId, sessionId);
           res.writeHead(200, { 'Content-Type': 'application/json' }).end(
             JSON.stringify({
               // The folder to branch from may also be named by the person.
               available: Boolean(workforce?.id),
-              worktree: worktree
-                ? { branch: worktree.branch, path: worktree.path, repoName: basename(worktree.repoPath || gitRoot(targetDir) || '') }
-                : null,
+              worktree: list[0] || null,
+              worktrees: list,
             })
           );
           return;
@@ -1448,14 +1454,15 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
         store,
         repos: githubRepos,
         isBusy: (colleagueId, sessionId) => Boolean(adapters.get(adapterKey(colleagueId, sessionId))?.busy),
-        onRemoved: ({ colleagueId, sessionId, branch, pr }) => {
+        onRemoved: ({ colleagueId, sessionId, branch, repo, pr }) => {
           const key = adapterKey(colleagueId, sessionId);
           adapters.get(key)?.close?.();
           adapters.delete(key);
-          const text = `Work done: pull request #${pr.number} is ${pr.state === 'MERGED' ? 'merged' : 'closed'}, so the worktree of branch ${branch} was removed. The next message runs in the workforce folder again.`;
+          const text = `Work done: pull request #${pr.number} in ${repo} is ${pr.state === 'MERGED' ? 'merged' : 'closed'}, so the worktree of branch ${branch} in that repository was removed.`;
           store.appendMessage(colleagueId, sessionId, 'system', text);
           broadcast({ colleagueId, sessionId, type: 'message', role: 'system', text });
-          broadcast({ type: 'worktree_changed', colleagueId, sessionId, branch: null, path: null, repoName: null });
+          const list = worktreeList(colleagueId, sessionId);
+          broadcast({ type: 'worktree_changed', colleagueId, sessionId, ...(list[0] || { branch: null, path: null, repoName: null }), worktrees: list });
         },
       }).catch((err) => console.error(`Worktree cleanup: ${err.message}`));
     setTimeout(checkFinishedWorktrees, 60 * 1000).unref?.();
@@ -1707,6 +1714,10 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
             // takes effect on the very next tool call.
             const via = permissions.decide(key, request.toolName);
             if (via) return Promise.resolve({ allow: true, via });
+            // Files inside the conversation's own worktrees: free to work on.
+            if (worktreeToolAllowed(conversationWorktrees(colleagueId, sessionId).map((w) => w.path), request.toolName, request.input)) {
+              return Promise.resolve({ allow: true, via: 'own worktree' });
+            }
             return new Promise((resolve) => {
               const requestId = randomUUID();
               pendingPermissions.set(requestId, { resolve });
@@ -1967,7 +1978,7 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
             // tab asks first and sends `discard` (see worktreeCleanup.js).
             const onClose = worktreeOnClose(store, colleagueId, sessionId, { discard: payload.discard === true });
             if (onClose.action === 'confirm') {
-              ws.send(JSON.stringify({ type: 'session_close_confirm', colleagueId, sessionId, dirty: onClose.dirty, unpushed: onClose.unpushed }));
+              ws.send(JSON.stringify({ type: 'session_close_confirm', colleagueId, sessionId, dirty: onClose.dirty, unpushed: onClose.unpushed, repos: onClose.repos.map((p) => basename(p)) }));
               return;
             }
             adapter?.close?.();
@@ -2301,42 +2312,48 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
               return;
             }
             const key = adapterKey(colleagueId, sessionId);
-            // From a GitHub repository (its clone, fetched first) or from a
-            // repo on this machine (the workforce folder or a given path).
-            const result = typeof payload.githubRepo === 'string' && payload.githubRepo.trim()
-              ? await activateGithubWorktree({
+            // From GitHub repositories (each one's clone, fetched first), or
+            // from a repo on this machine (the workforce folder or a path).
+            const wanted = [
+              ...(Array.isArray(payload.githubRepos) ? payload.githubRepos : []),
+              ...(typeof payload.githubRepo === 'string' ? [payload.githubRepo] : []),
+            ].filter((r) => typeof r === 'string' && r.trim()).slice(0, 10);
+            const results = [];
+            if (wanted.length) {
+              for (const githubRepo of wanted) {
+                results.push(await activateGithubWorktree({
                   store,
                   repos: githubRepos,
                   workforceId: workforce?.id,
-                  githubRepo: payload.githubRepo.trim(),
+                  githubRepo: githubRepo.trim(),
                   colleagueId,
                   sessionId,
                   busy: Boolean(adapters.get(key)?.busy),
                   onProgress: (message) => broadcast({ type: 'worktree_progress', colleagueId, sessionId, message }),
-                })
-              : activateWorktree({
-                  store,
-                  workforceId: workforce?.id,
-                  repoDir: targetDir,
-                  repoPath: typeof payload.repoPath === 'string' && payload.repoPath.trim() ? payload.repoPath.trim() : undefined,
-                  colleagueId,
-                  sessionId,
-                  busy: Boolean(adapters.get(key)?.busy),
-                });
-            if (!result.ok) {
-              fail(result.message);
-              return;
+                }));
+              }
+            } else {
+              results.push(activateWorktree({
+                store,
+                workforceId: workforce?.id,
+                repoDir: targetDir,
+                repoPath: typeof payload.repoPath === 'string' && payload.repoPath.trim() ? payload.repoPath.trim() : undefined,
+                colleagueId,
+                sessionId,
+                busy: Boolean(adapters.get(key)?.busy),
+              }));
             }
-            const { branch, path } = result;
-            const repoName = basename(result.repoPath || gitRoot(targetDir) || '');
-            if (result.created) {
-              // The running adapter still has the old working directory: drop
-              // it; the next message creates one in the worktree (adapterFor)
-              // and resumes the saved session.
+            if (results.some((r) => r.ok && r.created)) {
+              // The running adapter still has the old working directories:
+              // drop it; the next message creates one with all worktrees
+              // (adapterFor) and resumes the saved session.
               adapters.get(key)?.close?.();
               adapters.delete(key);
             }
-            broadcast({ type: 'worktree_changed', colleagueId, sessionId, branch, path, repoName });
+            const failed = results.filter((r) => !r.ok);
+            const list = worktreeList(colleagueId, sessionId);
+            broadcast({ type: 'worktree_changed', colleagueId, sessionId, ...(list[0] || { branch: null, path: null, repoName: null }), worktrees: list });
+            if (failed.length) fail(failed.map((r) => r.message).join(' '));
             return;
           }
 

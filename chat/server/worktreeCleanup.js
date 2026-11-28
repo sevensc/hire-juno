@@ -15,24 +15,36 @@ import { existsSync } from 'node:fs';
 import { repoSlugOf } from './githubRepos.js';
 import { discardWorktree, worktreeChanges } from './worktree.js';
 
-// Removes one conversation's worktree and forgets it.
+// Removes one of a conversation's worktrees and forgets it.
 export function removeConversationWorktree(store, worktree, colleagueId, sessionId) {
   if (worktree.repoPath && existsSync(worktree.repoPath)) discardWorktree(worktree.repoPath, worktree.path, worktree.branch);
-  store.clearWorktree(colleagueId, sessionId);
+  store.clearWorktree(colleagueId, sessionId, worktree.path);
 }
 
-// What closing a conversation does with its worktree: { action: 'none' }
-// (it has none), { action: 'removed' }, or { action: 'confirm', dirty,
-// unpushed } when work would be lost; `discard` removes it anyway.
+// What closing a conversation does with its worktrees: { action: 'none' }
+// (it has none), { action: 'removed', count }, or { action: 'confirm',
+// dirty, unpushed, repos } when work would be lost in any of them (dirty:
+// some have uncommitted changes, unpushed: commits not pushed in all,
+// repos: the folders concerned); `discard` removes them anyway. All or
+// none: the conversation is closed with all of them or not at all.
 export function worktreeOnClose(store, colleagueId, sessionId, { discard = false } = {}) {
-  const worktree = store.getWorktree(colleagueId, sessionId);
-  if (!worktree) return { action: 'none' };
-  if (existsSync(worktree.path) && !discard) {
-    const { dirty, unpushed } = worktreeChanges(worktree.path, worktree.branch);
-    if (dirty || unpushed) return { action: 'confirm', dirty, unpushed };
+  const worktrees = store.getWorktrees(colleagueId, sessionId);
+  if (!worktrees.length) return { action: 'none' };
+  if (!discard) {
+    let dirty = false;
+    let unpushed = 0;
+    const repos = [];
+    for (const w of worktrees) {
+      if (!existsSync(w.path)) continue;
+      const changes = worktreeChanges(w.path, w.branch);
+      if (changes.dirty || changes.unpushed) repos.push(w.path);
+      dirty = dirty || changes.dirty;
+      unpushed += changes.unpushed;
+    }
+    if (repos.length) return { action: 'confirm', dirty, unpushed, repos };
   }
-  removeConversationWorktree(store, worktree, colleagueId, sessionId);
-  return { action: 'removed', branch: worktree.branch };
+  for (const w of worktrees) removeConversationWorktree(store, w, colleagueId, sessionId);
+  return { action: 'removed', count: worktrees.length };
 }
 
 function originSlug(repoPath) {
@@ -63,7 +75,7 @@ export async function cleanUpFinishedWorktrees({ store, repos, isBusy = () => fa
     if (existsSync(w.path) && worktreeChanges(w.path, w.branch).dirty) continue;
     const pr = pulls.find((p) => p.state === 'MERGED') || pulls[0];
     removeConversationWorktree(store, w, w.colleagueId, w.sessionId);
-    const entry = { colleagueId: w.colleagueId, sessionId: w.sessionId, branch: w.branch, pr };
+    const entry = { colleagueId: w.colleagueId, sessionId: w.sessionId, branch: w.branch, path: w.path, repo: slug, pr };
     removed.push(entry);
     onRemoved(entry);
   }

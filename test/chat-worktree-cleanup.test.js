@@ -60,9 +60,9 @@ test('closing a conversation removes its worktree, unless work would be lost and
     createWorktree({ repoDir: clone, worktreeDir: wt, branch: 'chat/kim-1', start: 'origin/main' });
     store.setWorktree('kim', 's1', wt, 'chat/kim-1', clone);
     writeFileSync(join(wt, 'b.txt'), 'b\n');
-    assert.deepEqual(worktreeOnClose(store, 'kim', 's1'), { action: 'confirm', dirty: true, unpushed: 0 });
+    assert.deepEqual(worktreeOnClose(store, 'kim', 's1'), { action: 'confirm', dirty: true, unpushed: 0, repos: [wt] });
     assert.ok(existsSync(wt), 'kept');
-    assert.deepEqual(worktreeOnClose(store, 'kim', 's1', { discard: true }), { action: 'removed', branch: 'chat/kim-1' });
+    assert.deepEqual(worktreeOnClose(store, 'kim', 's1', { discard: true }), { action: 'removed', count: 1 });
     assert.equal(existsSync(wt), false);
     assert.equal(store.getWorktree('kim', 's1'), null);
     assert.equal(git(clone, 'branch', '--list', 'chat/kim-1').trim(), '', 'branch deleted');
@@ -132,5 +132,75 @@ test('GitHub repositories: slugs checked, list from gh repo list, one clone then
     assert.ok(calls.some((c) => c.startsWith('gh repo clone acme/new ')));
   } finally {
     rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('file tools are free inside the conversation\'s worktrees only', async () => {
+  const { worktreeToolAllowed } = await import('../chat/server/useWorktree.js');
+  const { mkdirSync, symlinkSync } = await import('node:fs');
+  const root = mkdtempSync(join(tmpdir(), 'wt-free-'));
+  try {
+    const a = join(root, 'a');
+    const b = join(root, 'b');
+    const outside = join(root, 'outside');
+    for (const d of [a, b, outside]) mkdirSync(d);
+    symlinkSync(outside, join(a, 'escape'));
+    const trees = [a, b];
+    assert.equal(worktreeToolAllowed(trees, 'Edit', { file_path: join(a, 'x.js') }), true);
+    assert.equal(worktreeToolAllowed(trees, 'Write', { file_path: join(b, 'new', 'deep', 'y.js') }), true, 'not yet existing');
+    assert.equal(worktreeToolAllowed(trees, 'Grep', { path: b }), true);
+    assert.equal(worktreeToolAllowed(trees, 'Edit', { file_path: join(outside, 'x.js') }), false);
+    assert.equal(worktreeToolAllowed(trees, 'Edit', { file_path: join(a, 'escape', 'x.js') }), false, 'symlink out');
+    assert.equal(worktreeToolAllowed(trees, 'Edit', { file_path: join(a, '..', 'outside', 'x.js') }), false);
+    assert.equal(worktreeToolAllowed(trees, 'Edit', { file_path: 'relative/x.js' }), false);
+    assert.equal(worktreeToolAllowed(trees, 'Bash', { command: `rm -rf ${a}` }), false, 'shell commands are not covered');
+    assert.equal(worktreeToolAllowed([], 'Edit', { file_path: join(a, 'x.js') }), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('several worktrees in one conversation: closing checks all, discarding removes all', () => {
+  const one = setup();
+  const two = setup();
+  try {
+    const store = openStore();
+    const w1 = join(one.root, 'w1');
+    const w2 = join(two.root, 'w2');
+    createWorktree({ repoDir: one.clone, worktreeDir: w1, branch: 'chat/kim-1', start: 'origin/main' });
+    createWorktree({ repoDir: two.clone, worktreeDir: w2, branch: 'chat/kim-1', start: 'origin/main' });
+    store.setWorktree('kim', 's1', w1, 'chat/kim-1', one.clone);
+    store.setWorktree('kim', 's1', w2, 'chat/kim-1', two.clone);
+    assert.equal(store.getWorktrees('kim', 's1').length, 2);
+    writeFileSync(join(w2, 'b.txt'), 'b\n');
+    assert.deepEqual(worktreeOnClose(store, 'kim', 's1'), { action: 'confirm', dirty: true, unpushed: 0, repos: [w2] });
+    assert.ok(existsSync(w1) && existsSync(w2), 'both kept');
+    assert.deepEqual(worktreeOnClose(store, 'kim', 's1', { discard: true }), { action: 'removed', count: 2 });
+    assert.ok(!existsSync(w1) && !existsSync(w2));
+    assert.deepEqual(store.getWorktrees('kim', 's1'), []);
+  } finally {
+    rmSync(one.root, { recursive: true, force: true });
+    rmSync(two.root, { recursive: true, force: true });
+  }
+});
+
+test('a database with one worktree per conversation is rebuilt for several, rows kept', async () => {
+  const { default: Database } = await import('better-sqlite3');
+  const { mkdirSync } = await import('node:fs');
+  const dir = mkdtempSync(join(tmpdir(), 'wt-old-db-'));
+  try {
+    mkdirSync(join(dir, 'acme', 'chat'), { recursive: true });
+    const old = new Database(join(dir, 'acme', 'chat', 'chat.db'));
+    old.exec(`CREATE TABLE conversation_worktrees (
+      colleague_id TEXT NOT NULL, session_id TEXT NOT NULL DEFAULT 'default', path TEXT NOT NULL, branch TEXT NOT NULL,
+      repo_path TEXT, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), PRIMARY KEY (colleague_id, session_id))`);
+    old.prepare('INSERT INTO conversation_worktrees (colleague_id, session_id, path, branch, repo_path) VALUES (?, ?, ?, ?, ?)').run('kim', 's1', '/w/a', 'chat/a', '/r/one');
+    old.close();
+    const store = openStore({ workforceId: 'acme', baseDir: dir });
+    assert.deepEqual(store.getWorktrees('kim', 's1'), [{ path: '/w/a', branch: 'chat/a', repoPath: '/r/one' }]);
+    store.setWorktree('kim', 's1', '/w/b', 'chat/a', '/r/two');
+    assert.equal(store.getWorktrees('kim', 's1').length, 2);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
