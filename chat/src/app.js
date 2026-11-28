@@ -4344,12 +4344,12 @@ function ProfileGithubAccount({ account }) {
   };
   githubAccountError = setError;
   const status = account.token ? html`Your own token, signed in as <strong>@${account.login}</strong>. What you do on GitHub from here shows as you.`
-    : account.login ? html`GitHub name <strong>@${account.login}</strong>${account.source === 'gh' ? ' (as GitHub is signed in on this server)' : ''}. Without your own token the chat acts on GitHub with this server's GitHub account.`
+    : account.login ? html`GitHub name <strong>@${account.login}</strong>${account.source === 'sign-in' ? ' (from your sign-in)' : account.source === 'gh' ? ' (as GitHub is signed in on this server)' : ''}. Without your own token the chat acts on GitHub with this server's GitHub account.`
     : html`No GitHub account yet. Enter your GitHub name to see what is assigned to you${account.canSetToken ? ', or add your own token' : ''}.`;
   return html`<section class="profile-github">
     <h3>GitHub</h3>
     <p class="profile-note">${status}</p>
-    ${!account.token && account.source !== 'gh'
+    ${!account.token && account.source !== 'gh' && account.source !== 'sign-in'
       ? html`<form class="profile-form" onSubmit=${(e) => submit(e, 'set_github_login', 'login')}>
           <input name="login" type="text" autocomplete="username" spellcheck="false" placeholder="GitHub name" aria-label="GitHub name" />
           <button type="submit">Save</button>

@@ -416,7 +416,10 @@ export async function listenOnSocket(server, socketPath) {
 // `room`: on a socket server, { socketPath, tokenFile } of the team room
 // (chat/room/server.js); it then shows as the channel ROOM_CHANNEL_ID.
 // `turn`: { url, secretFile } of a TURN server for video calls in that room.
-export function runChatServer({ targetDir = process.cwd(), openBrowser = true, onReady, lan = false, port: explicitPort = null, socketPath = null, person = '', contextFile = null, room = null, turn = null } = {}) {
+// `githubLoginHeader`: on a socket server behind a login proxy that signs
+// people in with GitHub, the request header that carries their GitHub name
+// (e.g. "X-Auth-Request-User"); the profile then knows it without a token.
+export function runChatServer({ targetDir = process.cwd(), openBrowser = true, onReady, lan = false, port: explicitPort = null, socketPath = null, person = '', contextFile = null, room = null, turn = null, githubLoginHeader = null } = {}) {
   const runningKey = resolvePath(targetDir);
   const running = runningServers.get(runningKey);
   if (running && !running.closing) {
@@ -716,6 +719,10 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
       return githubOwner;
     };
     const server = createServer(async (req, res) => {
+      if (githubLoginHeader && socketPath) {
+        const signedIn = req.headers[githubLoginHeader.toLowerCase()];
+        if (typeof signedIn === 'string' && githubAccount.noteSignIn(signedIn)) githubAssigned.clear();
+      }
       const url = new URL(req.url, 'http://127.0.0.1');
       const parts = routeParts(url.pathname);
 

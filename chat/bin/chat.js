@@ -112,7 +112,16 @@ if ((turnUrl || turnSecretFile) && !(turnUrl && turnSecretFile && room)) {
 }
 const turn = turnUrl ? { url: turnUrl, secretFile: resolve(turnSecretFile) } : null;
 
-runChatServer({ targetDir, lan, port, socketPath, person: person || '', contextFile, room, turn, openBrowser: !socketPath }).catch((err) => {
+// `--github-login-header <name>`: behind a login proxy that signs people in
+// with GitHub, the request header carrying their GitHub name. Socket
+// servers only; off unless given.
+const githubLoginHeader = flagValue('--github-login-header');
+if (githubLoginHeader && (!socketPath || !/^[A-Za-z0-9-]{1,64}$/.test(githubLoginHeader))) {
+  console.error('--github-login-header needs a header name and only applies together with --socket.');
+  process.exit(1);
+}
+
+runChatServer({ targetDir, lan, port, socketPath, person: person || '', contextFile, room, turn, githubLoginHeader, openBrowser: !socketPath }).catch((err) => {
   if (port) {
     console.error(err.message);
     process.exitCode = 1;

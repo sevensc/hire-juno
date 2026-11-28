@@ -9737,11 +9737,11 @@ ${source}`;
       event.currentTarget.reset();
     };
     githubAccountError = setError;
-    const status = account.token ? m2`Your own token, signed in as <strong>@${account.login}</strong>. What you do on GitHub from here shows as you.` : account.login ? m2`GitHub name <strong>@${account.login}</strong>${account.source === "gh" ? " (as GitHub is signed in on this server)" : ""}. Without your own token the chat acts on GitHub with this server's GitHub account.` : m2`No GitHub account yet. Enter your GitHub name to see what is assigned to you${account.canSetToken ? ", or add your own token" : ""}.`;
+    const status = account.token ? m2`Your own token, signed in as <strong>@${account.login}</strong>. What you do on GitHub from here shows as you.` : account.login ? m2`GitHub name <strong>@${account.login}</strong>${account.source === "sign-in" ? " (from your sign-in)" : account.source === "gh" ? " (as GitHub is signed in on this server)" : ""}. Without your own token the chat acts on GitHub with this server's GitHub account.` : m2`No GitHub account yet. Enter your GitHub name to see what is assigned to you${account.canSetToken ? ", or add your own token" : ""}.`;
     return m2`<section class="profile-github">
     <h3>GitHub</h3>
     <p class="profile-note">${status}</p>
-    ${!account.token && account.source !== "gh" ? m2`<form class="profile-form" onSubmit=${(e3) => submit(e3, "set_github_login", "login")}>
+    ${!account.token && account.source !== "gh" && account.source !== "sign-in" ? m2`<form class="profile-form" onSubmit=${(e3) => submit(e3, "set_github_login", "login")}>
           <input name="login" type="text" autocomplete="username" spellcheck="false" placeholder="GitHub name" aria-label="GitHub name" />
           <button type="submit">Save</button>
         </form>` : null}
