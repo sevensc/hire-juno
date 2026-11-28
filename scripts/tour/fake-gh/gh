@@ -1,0 +1,3 @@
+#!/bin/sh
+# Stand-in for the GitHub CLI in the feature tour, see gh.cjs.
+exec node "$(dirname "$0")/gh.cjs" "$@"

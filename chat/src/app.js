@@ -1822,7 +1822,8 @@ function isTyping(key) {
 // "Using Bash…" lines in a row.
 function toolInputSummary(input) {
   if (!input) return '';
-  const value = input.command ?? input.file_path ?? input.path ?? input.pattern ?? input.query;
+  // `description`: a sub-agent call (Task/Agent) is named by what it is for.
+  const value = input.command ?? input.file_path ?? input.path ?? input.pattern ?? input.query ?? input.description;
   const text = typeof value === 'string' ? value : JSON.stringify(input);
   return text.length > 80 ? text.slice(0, 80) + '…' : text;
 }

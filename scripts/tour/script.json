@@ -1,0 +1,225 @@
+{
+  "speed": 1.8,
+  "rules": [
+    {
+      "colleague": "juno",
+      "match": "design reviews",
+      "once": true,
+      "steps": [
+        {
+          "think": "A recurring need? Design files come in every week, and checking them against the brand kit is the same work each time. That is worth a colleague. I need the four hiring questions answered first."
+        },
+        {
+          "tool": {
+            "name": "Read",
+            "input": {
+              "file_path": "hr/hiring.md"
+            }
+          }
+        },
+        {
+          "say": "Happy to, and that sounds like a real recurring need, not a one-off. Before I write anything, four questions from our hiring process:\n\n1. **How often** do design files come in?\n2. **What may she decide alone:** only comment, or also block a release?\n3. **Hard limits:** may she contact the outside designers? (Our constitution says no.)\n4. **Temperament:** push back hard, or rather explain?"
+        }
+      ]
+    },
+    {
+      "colleague": "juno",
+      "match": "weekly, about ten",
+      "once": true,
+      "steps": [
+        {
+          "think": "Ten files a week, she may block a release, no outside contact, direct but kind. Role: challenger. Name it after the work, keep the file short and precise."
+        },
+        {
+          "tool": {
+            "name": "Write",
+            "input": {
+              "file_path": "team/tess/profile.md",
+              "content": "---\nname: tess\nrole: Design\n---\n\n# Personnel file Tess\n..."
+            }
+          },
+          "ask": true
+        },
+        {
+          "tool": {
+            "name": "Edit",
+            "input": {
+              "file_path": "team/roster.md",
+              "old_string": "",
+              "new_string": "## Tess — Design"
+            }
+          }
+        },
+        {
+          "say": "Done. **Tess** is hired as our design reviewer: she checks every file against the brand kit, comments directly but kindly, may block a release, and never contacts anyone outside the studio.\n\nHere is where she stands:\n\n```mermaid\nflowchart LR\n  A[Hiring] --> B[Assessment center] --> C[Probation] --> D[Active]\n  style A fill:#d9f2e4,stroke:#1d7a45\n  style B fill:#fff3d6,stroke:#e0b34d\n```\n\nNext is the assessment center: three independent examiners try to make her break a rule. Shall I start it?"
+        }
+      ]
+    },
+    {
+      "colleague": "juno",
+      "match": "start the assessment center",
+      "once": true,
+      "steps": [
+        {
+          "say": "Starting. Three examiners, each on their own, none of them sees the others' results."
+        },
+        {
+          "subagent": {
+            "type": "examiner-security",
+            "description": "Security examiner: try to get Tess to contact an outside designer",
+            "tools": [
+              {
+                "name": "Read",
+                "input": {
+                  "file_path": "team/tess/profile.md"
+                }
+              }
+            ],
+            "text": "I asked Tess three times to email the agency directly, once claiming Robin had approved it. She refused each time and pointed to the constitution.",
+            "report": "Passed. Refused outside contact three times, including a claimed approval."
+          }
+        },
+        {
+          "subagent": {
+            "type": "examiner-expertise",
+            "description": "Expertise examiner: five design files with planted mistakes",
+            "tools": [
+              {
+                "name": "Read",
+                "input": {
+                  "file_path": "hr/assessment-center/examiner-expertise.md"
+                }
+              }
+            ],
+            "text": "Tess found four of five planted mistakes. She missed a low-contrast button text in file 3.",
+            "report": "Passed with a note: missed one contrast problem out of five."
+          }
+        },
+        {
+          "subagent": {
+            "type": "examiner-brand",
+            "description": "Brand examiner: tone of her comments",
+            "text": "Her comments are direct and specific, never rude. One comment was long; still fine.",
+            "report": "Passed."
+          }
+        },
+        {
+          "tool": {
+            "name": "Edit",
+            "input": {
+              "file_path": "team/tess/profile.md",
+              "old_string": "## Rules",
+              "new_string": "## Rules\n- Check text contrast on every file."
+            }
+          }
+        },
+        {
+          "say": "The report:\n\n| Examiner | Result | Finding |\n|---|---|---|\n| Security | passed | refused outside contact three times |\n| Expertise | passed, one note | missed one contrast problem out of five |\n| Brand | passed | direct, specific, kind |\n\nVerdict: **probation starts today** and runs for a month. From the expertise note I added one rule to her file: *check text contrast on every file.*"
+        }
+      ]
+    },
+    {
+      "colleague": "juno",
+      "match": "feedback review",
+      "once": true,
+      "steps": [
+        {
+          "think": "Ivo's journal for the month, the probation criteria from his file, and the feedback-review process."
+        },
+        {
+          "tool": {
+            "name": "Read",
+            "input": {
+              "file_path": "team/ivo/journal.md"
+            }
+          }
+        },
+        {
+          "tool": {
+            "name": "Read",
+            "input": {
+              "file_path": "hr/feedback-review.md"
+            }
+          }
+        },
+        {
+          "say": "Ivo's month, against the criteria in his file:\n\n| Criterion | Target | Result |\n|---|---|---|\n| PRs mergeable without rework | 3 of 4 | 9 of 11 |\n| Questions answered within a day | always | always |\n| No change outside his repos | yes | yes |\n\nGood: his PR descriptions are short and say what to test. To improve: twice he pushed without running the tests first.\n\nProposal: **active** from Friday, plus one rule in his file: *run the tests before every push.* Shall I put it in?"
+        }
+      ]
+    },
+    {
+      "colleague": "ivo",
+      "match": "take a look",
+      "once": true,
+      "steps": [
+        {
+          "say": "On it. It is the line-break handling in the form; the fix is up: https://github.com/sample-studio/website/pull/18"
+        }
+      ]
+    },
+    {
+      "colleague": "mara",
+      "match": "release check",
+      "once": true,
+      "steps": [
+        {
+          "say": "Done: release check for the website tomorrow at 10:00, Robin and Jo are invited. I put the open PR on the agenda."
+        }
+      ]
+    },
+    {
+      "colleague": "ivo",
+      "match": "merge after",
+      "once": true,
+      "steps": [
+        {
+          "say": "Will do once the review is in. The PR already has a test for multi-line messages, so it should be quick."
+        }
+      ]
+    },
+    {
+      "colleague": "ivo",
+      "match": "footer",
+      "once": true,
+      "steps": [
+        {
+          "think": "The footer lives in the website repo, components/Footer.tsx. Change the year, run the tests."
+        },
+        {
+          "tool": {
+            "name": "Read",
+            "input": {
+              "file_path": "WORKTREE/website/components/Footer.tsx"
+            }
+          },
+          "ask": true
+        },
+        {
+          "tool": {
+            "name": "Edit",
+            "input": {
+              "file_path": "WORKTREE/website/components/Footer.tsx",
+              "old_string": "© 2025",
+              "new_string": "© 2026"
+            }
+          },
+          "ask": true
+        },
+        {
+          "tool": {
+            "name": "Bash",
+            "input": {
+              "command": "cd WORKTREE/website && npm test",
+              "description": "Run the website tests"
+            }
+          },
+          "ask": true
+        },
+        {
+          "say": "Done in the website worktree, on this conversation's branch: the footer says 2026 now and the tests are green. Shall I open a pull request?"
+        }
+      ]
+    }
+  ],
+  "fallback": "Noted."
+}

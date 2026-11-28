@@ -88,6 +88,7 @@ import { dirname, join as joinPath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { ClaudeAdapter } from './adapters/claude.js';
+import { ScriptedAdapter } from './adapters/scripted.js';
 import { CopilotAdapter } from './adapters/copilot.js';
 import { readProfileBody } from './roster.js';
 
@@ -180,6 +181,13 @@ export function createAdapter(colleague, { targetDir, cwd = targetDir, resume, m
       'reading and talking work. If you are asked to change something, say that the repositories need to be picked first.'
     : '';
   const worktreeNote = ownNote + othersNote + lockedNote;
+  // A scripted demo colleague instead of a model (recordings, trying it out):
+  // only when HIRE_JUNO_DEMO_SCRIPT names a script, see adapters/scripted.js.
+  if (process.env.HIRE_JUNO_DEMO_SCRIPT) {
+    const scripted = new ScriptedAdapter(colleague, { scriptFile: process.env.HIRE_JUNO_DEMO_SCRIPT, cwd, worktrees });
+    scripted.systemPrompt = buildSystemPrompt({ colleagueId: colleague.id, ownProfile, worktreeNote, offer: '', serverNote });
+    return scripted;
+  }
   const wantsCopilot = colleague.adapter.some((a) => a.toLowerCase().includes('copilot'));
   const offer = useWorktree && !wantsCopilot ? `\n\n${WORKTREE_OFFER}` : '';
   const systemPrompt = buildSystemPrompt({ colleagueId: colleague.id, ownProfile, worktreeNote, offer, serverNote });
