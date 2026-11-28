@@ -3571,3 +3571,28 @@ a.gh-card:active { filter: brightness(0.92); }
   color: var(--fg-muted);
   margin-bottom: 0.2rem;
 }
+
+/* Slash commands in the @mention dropdown (see CHAT_COMMANDS in app.js):
+   the command and its arguments on the first line, what it does below,
+   cut to one line. */
+#mention-autocomplete li.command-candidate {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 0.5rem;
+  row-gap: 0.05rem;
+  align-items: baseline;
+}
+.command-candidate__name { font-weight: 600; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9rem; }
+.command-candidate__args { font-size: 0.75rem; color: var(--fg-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.command-candidate__description {
+  grid-column: 1 / -1;
+  font-size: 0.78rem;
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+#mention-autocomplete li[aria-selected="true"] .command-candidate__args,
+#mention-autocomplete li[aria-selected="true"] .command-candidate__description { color: rgba(255, 255, 255, 0.8); }
+#mention-autocomplete li.command-candidate--note { display: block; cursor: default; color: var(--fg-muted); font-size: 0.8rem; }

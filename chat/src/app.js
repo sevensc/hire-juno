@@ -1339,20 +1339,22 @@ function videoButtonEl(channelId) {
   button.title = label;
   button.setAttribute('aria-label', label);
   button.innerHTML = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="M16 10l6-3v10l-6-3z"/></svg>';
-  button.addEventListener('click', async () => {
-    if (call.state().joined) return;
-    const starting = !call.state().runningWithout;
-    try {
-      await call.join();
-    } catch (err) {
-      window.alert(`Could not start the camera or microphone: ${err.message}`);
-      return;
-    }
-    if (starting) {
-      socket.send(JSON.stringify({ type: 'channel_message', channelId, text: 'Started a video call. Tap the camera in #team to join.', attachments: [] }));
-    }
-  });
+  button.addEventListener('click', () => startOrJoinRoomCall(channelId));
   return button;
+}
+
+async function startOrJoinRoomCall(channelId) {
+  if (call.state().joined) return;
+  const starting = !call.state().runningWithout;
+  try {
+    await call.join();
+  } catch (err) {
+    window.alert(`Could not start the camera or microphone: ${err.message}`);
+    return;
+  }
+  if (starting) {
+    socket.send(JSON.stringify({ type: 'channel_message', channelId, text: 'Started a video call. Tap the camera in #team to join.', attachments: [] }));
+  }
 }
 
 // Tabs for the open colleague's conversations: the main one, every extra
@@ -6237,6 +6239,111 @@ function currentMentionToken() {
   return match ? { start: caret - match[0].length, end: caret, query: match[1] } : null;
 }
 
+// Slash commands: "/" at the start of the composer opens a list of what can
+// be run. The chat's own commands run here in the page; in a conversation
+// with a colleague her commands and skills (from her session, see
+// api/commands) follow, and sending "/name …" runs them in her session.
+// The same dropdown as for @mentions, with `mentionState.kind` 'command'.
+const CHAT_COMMANDS = [
+  {
+    name: 'new',
+    description: 'Start a new conversation with her',
+    where: 'colleague',
+    run: () => {
+      const colleague = colleaguesById.get(activeColleagueId);
+      if (colleague) selectColleague(colleague, NEW_SESSION);
+    },
+  },
+  {
+    name: 'call',
+    description: 'Start or join the video call of the team room',
+    where: 'room',
+    run: () => startOrJoinRoomCall(activeChannelId),
+  },
+];
+
+function chatCommandsHere() {
+  const room = Boolean(activeChannelId && channelsById.get(activeChannelId)?.room);
+  const colleague = Boolean(!activeChannelId && activeColleagueId && !isSubagentThread(activeColleagueId));
+  return CHAT_COMMANDS.filter((c) => (c.where === 'room' ? room : c.where === 'colleague' ? colleague : true));
+}
+
+// Her commands, per colleague, fetched when "/" is first typed in her
+// conversation and kept for two minutes (a few seconds while none of her
+// sessions runs yet).
+const colleagueCommands = new Map(); // colleagueId -> { at, started, commands, loading }
+function colleagueCommandsFor(colleagueId) {
+  const known = colleagueCommands.get(colleagueId);
+  // Not started yet: asked again a few seconds later, she may be by then.
+  if (known && (known.loading || Date.now() - known.at < (known.started ? 120000 : 5000))) return known;
+  const entry = { at: Date.now(), started: true, commands: known?.commands || [], loading: true };
+  colleagueCommands.set(colleagueId, entry);
+  const sessionId = activeSessionId && activeSessionId !== NEW_SESSION ? activeSessionId : '';
+  fetch(`api/commands?colleagueId=${encodeURIComponent(colleagueId)}${sessionId ? `&sessionId=${encodeURIComponent(sessionId)}` : ''}`)
+    .then((r) => r.json())
+    .then((data) => {
+      entry.started = Boolean(data.started);
+      entry.commands = data.supported ? data.commands : [];
+    })
+    .catch(() => {})
+    .finally(() => {
+      entry.loading = false;
+      entry.at = Date.now();
+      // The list may be open and waiting for these.
+      if (mentionState?.kind === 'command') refreshSlashList();
+    });
+  return entry;
+}
+
+function currentSlashToken() {
+  const caret = input.selectionStart;
+  const before = input.value.slice(0, caret);
+  const match = before.match(/^\/([A-Za-z0-9:_-]*)$/);
+  return match ? { start: 0, end: caret, query: match[1] } : null;
+}
+
+function slashCandidates(query) {
+  const q = query.toLowerCase();
+  const fits = (name) => name.toLowerCase().startsWith(q);
+  const own = chatCommandsHere().filter((c) => fits(c.name)).map((c) => ({ name: c.name, description: c.description, argumentHint: c.argumentHint || '', chat: true }));
+  if (activeChannelId || !activeColleagueId || isSubagentThread(activeColleagueId)) return { matches: own, note: null };
+  const hers = colleagueCommandsFor(activeColleagueId);
+  const theirs = hers.commands
+    .filter((c) => fits(c.name) && !own.some((o) => o.name === c.name))
+    .map((c) => ({ name: c.name, description: c.description, argumentHint: c.argumentHint }));
+  const name = colleaguesById.get(activeColleagueId)?.name || 'her';
+  const note = hers.loading && !hers.commands.length ? `Loading ${name}'s commands…`
+    : !hers.started ? `${name}'s own commands show once this conversation has started.`
+    : null;
+  return { matches: [...own, ...theirs], note };
+}
+
+function refreshSlashList() {
+  const token = currentSlashToken();
+  if (!token) {
+    closeMentionAutocomplete();
+    return;
+  }
+  const { matches, note } = slashCandidates(token.query);
+  if (!matches.length && !note) {
+    closeMentionAutocomplete();
+    return;
+  }
+  const keep = mentionState?.kind === 'command' ? Math.min(mentionState.selectedIndex, Math.max(matches.length - 1, 0)) : 0;
+  mentionState = { kind: 'command', ...token, matches, note, selectedIndex: keep };
+  renderMentionAutocomplete();
+}
+
+// Runs one of the chat's own commands, if `text` is one ("/new").
+function runChatCommand(text) {
+  const match = String(text).trim().match(/^\/([A-Za-z0-9:_-]+)(?:\s+([\s\S]*))?$/);
+  if (!match) return false;
+  const command = chatCommandsHere().find((c) => c.name === match[1].toLowerCase());
+  if (!command) return false;
+  command.run(match[2] || '');
+  return true;
+}
+
 function closeMentionAutocomplete() {
   mentionState = null;
   mentionAutocompleteEl.hidden = true;
@@ -6246,6 +6353,41 @@ function closeMentionAutocomplete() {
 function renderMentionAutocomplete() {
   mentionAutocompleteEl.innerHTML = '';
   mentionAutocompleteEl.hidden = false;
+  mentionAutocompleteEl.classList.toggle('mention-autocomplete--commands', mentionState.kind === 'command');
+  if (mentionState.kind === 'command') {
+    mentionState.matches.forEach((candidate, index) => {
+      const li = document.createElement('li');
+      li.className = 'command-candidate';
+      li.setAttribute('aria-selected', String(index === mentionState.selectedIndex));
+      const name = document.createElement('span');
+      name.className = 'command-candidate__name';
+      name.textContent = `/${candidate.name}`;
+      li.appendChild(name);
+      if (candidate.argumentHint) {
+        const hint = document.createElement('span');
+        hint.className = 'command-candidate__args';
+        hint.textContent = candidate.argumentHint;
+        li.appendChild(hint);
+      }
+      const what = document.createElement('span');
+      what.className = 'command-candidate__description';
+      what.textContent = candidate.description || '';
+      li.appendChild(what);
+      li.addEventListener('mousedown', (event) => {
+        event.preventDefault();
+        acceptMention(candidate);
+      });
+      if (index === mentionState.selectedIndex) requestAnimationFrame(() => li.scrollIntoView({ block: 'nearest' }));
+      mentionAutocompleteEl.appendChild(li);
+    });
+    if (mentionState.note) {
+      const li = document.createElement('li');
+      li.className = 'command-candidate command-candidate--note';
+      li.textContent = mentionState.note;
+      mentionAutocompleteEl.appendChild(li);
+    }
+    return;
+  }
   mentionState.matches.forEach((candidate, index) => {
     const li = document.createElement('li');
     li.setAttribute('aria-selected', String(index === mentionState.selectedIndex));
@@ -6283,8 +6425,9 @@ function renderMentionAutocomplete() {
 }
 
 function acceptMention(candidate) {
+  if (!candidate) return;
   const { start, end } = mentionState;
-  const insertion = `@${candidate.id} `;
+  const insertion = mentionState.kind === 'command' ? `/${candidate.name} ` : `@${candidate.id} `;
   input.value = input.value.slice(0, start) + insertion + input.value.slice(end);
   const caret = start + insertion.length;
   input.focus();
@@ -6306,13 +6449,17 @@ function autoResizeComposer() {
 
 input.addEventListener('input', () => {
   autoResizeComposer();
+  if (currentSlashToken()) {
+    refreshSlashList();
+    return;
+  }
   const token = currentMentionToken();
   const matches = token ? mentionCandidates(token.query) : [];
   if (matches.length === 0) {
     closeMentionAutocomplete();
     return;
   }
-  mentionState = { ...token, matches, selectedIndex: 0 };
+  mentionState = { kind: 'mention', ...token, matches, selectedIndex: 0 };
   renderMentionAutocomplete();
 });
 
@@ -6322,7 +6469,7 @@ input.addEventListener('input', () => {
 // fighting the form. Falls through to the plain composer handling below
 // when the mention dropdown isn't open.
 input.addEventListener('keydown', (event) => {
-  if (mentionState) {
+  if (mentionState && mentionState.matches.length) {
     const { matches } = mentionState;
     if (event.key === 'ArrowDown') {
       event.preventDefault();
@@ -6593,6 +6740,13 @@ form.addEventListener('submit', (event) => {
   if (!sendMenuEl.hidden) { closeSendMenu(); input.focus(); }
   const typed = input.value.trim();
   if (!typed && !pendingAttachment) return;
+  // One of the chat's own commands runs here and is not sent.
+  if (!pendingAttachment && runChatCommand(typed)) {
+    input.value = '';
+    autoResizeComposer();
+    clearReply();
+    return;
+  }
   // A team room reply points to the message by its id there; elsewhere the
   // reply carries a quote of it.
   const roomReply = replyTarget?.roomId != null && Boolean(channelsById.get(activeChannelId)?.room);
