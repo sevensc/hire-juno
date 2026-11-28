@@ -6307,21 +6307,30 @@ function jumpToRoomMessage(roomId) {
       toggleReactionPicker(item.roomId, { held: true });
     }, HOLD_MS);
   }, { passive: true });
+  // The direction is settled by the first move: mostly to the right is a
+  // reply swipe, and from then on the page script keeps the gesture (the
+  // list does not scroll); anything else is left to the browser as a scroll.
+  // No touch-action on the messages for this: inside the scrolling list it
+  // made a phone move the whole page instead of the list.
   messagesEl.addEventListener('touchmove', (e) => {
     if (!start) return;
     const dx = e.touches[0].clientX - start.x;
     const dy = e.touches[0].clientY - start.y;
-    if (Math.abs(dx) > 8 || Math.abs(dy) > 8) clearTimeout(holdTimer);
-    if (!start.swiping && (dx < 12 || Math.abs(dy) > dx)) {
-      // A scroll, or a move to the left: not a reply.
-      if (Math.abs(dy) > 12 || dx < -12) reset();
-      return;
+    if (!start.swiping) {
+      // A finger held still wobbles a little: that is still a hold.
+      if (Math.abs(dx) < 6 && Math.abs(dy) < 6) return;
+      clearTimeout(holdTimer);
+      if (dx <= 0 || Math.abs(dy) >= dx) {
+        reset();
+        return;
+      }
+      start.swiping = true;
+      start.el.classList.add('message--swiping');
     }
-    start.swiping = true;
+    if (e.cancelable) e.preventDefault();
     start.dx = dx;
-    start.el.classList.add('message--swiping');
     start.el.style.transform = `translateX(${Math.min(Math.max(dx, 0), SWIPE_REPLY_PX + 24)}px)`;
-  }, { passive: true });
+  }, { passive: false });
   const end = () => {
     if (!start) return;
     const { swiping, item, dx } = start;

@@ -11017,16 +11017,20 @@
       if (!start) return;
       const dx = e3.touches[0].clientX - start.x;
       const dy = e3.touches[0].clientY - start.y;
-      if (Math.abs(dx) > 8 || Math.abs(dy) > 8) clearTimeout(holdTimer);
-      if (!start.swiping && (dx < 12 || Math.abs(dy) > dx)) {
-        if (Math.abs(dy) > 12 || dx < -12) reset();
-        return;
+      if (!start.swiping) {
+        if (Math.abs(dx) < 6 && Math.abs(dy) < 6) return;
+        clearTimeout(holdTimer);
+        if (dx <= 0 || Math.abs(dy) >= dx) {
+          reset();
+          return;
+        }
+        start.swiping = true;
+        start.el.classList.add("message--swiping");
       }
-      start.swiping = true;
+      if (e3.cancelable) e3.preventDefault();
       start.dx = dx;
-      start.el.classList.add("message--swiping");
       start.el.style.transform = `translateX(${Math.min(Math.max(dx, 0), SWIPE_REPLY_PX + 24)}px)`;
-    }, { passive: true });
+    }, { passive: false });
     const end = () => {
       if (!start) return;
       const { swiping, item, dx } = start;

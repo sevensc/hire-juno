@@ -3442,9 +3442,7 @@ html.keyboard-open #session-tabs .session-tab { min-height: 2rem; }
 /* Swipe to reply: the bubble follows the finger and springs back. On a
    touch screen a long press opens the picker instead of the system menu
    and the text selection; Copy still takes the whole message. */
-/* pan-y: a sideways move stays with the page script (the reply swipe)
-   instead of being taken by the browser and cancelled. */
-.message--room { transition: transform 0.18s ease-out; touch-action: pan-y; }
+.message--room { transition: transform 0.18s ease-out; }
 .message--room.message--swiping { transition: none; }
 @media (hover: none) {
   .message--room > span { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
