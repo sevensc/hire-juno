@@ -39,6 +39,7 @@ import { WebSocketServer } from 'ws';
 
 import { buildServerNote, createAdapter } from './agentAdapter.js';
 import { waitUntilIdle } from './drain.js';
+import { cleanRef as cleanGithubRef, createGithubPreviews } from './githubPreview.js';
 import { createPermissions, VIA_ALLOW_ALL, VIA_ALWAYS_ALLOW } from './permissions.js';
 import { validateModelChoice } from './modelChoice.js';
 import { writeLimitLog } from './limitLog.js';
@@ -682,6 +683,8 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
     const displayNameFor = (senderId) =>
       senderId === 'you' ? OPERATOR_NAME : readRoster(targetDir).find((c) => c.id === senderId)?.name || senderId;
 
+    // Issue and PR previews for GitHub links in a conversation (via `gh`).
+    const githubPreview = createGithubPreviews();
     const server = createServer(async (req, res) => {
       const url = new URL(req.url, 'http://127.0.0.1');
       const parts = routeParts(url.pathname);
@@ -977,6 +980,17 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
           res.writeHead(200, { 'Content-Type': 'application/json' }).end(
             JSON.stringify(roomState.enabled ? roomState.questions : null)
           );
+          return;
+        }
+
+        if (req.method === 'GET' && route === 'api/github-preview') {
+          const ref = cleanGithubRef(Object.fromEntries(url.searchParams));
+          if (!ref) {
+            res.writeHead(400, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: 'invalid' }));
+            return;
+          }
+          const preview = await githubPreview(ref);
+          res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end(JSON.stringify(preview));
           return;
         }
 
