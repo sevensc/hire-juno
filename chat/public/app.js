@@ -5748,6 +5748,13 @@
     const original = md.renderer.rules[rule];
     md.renderer.rules[rule] = (...args) => `<div class="code-block">${copyButton}${original(...args)}</div>`;
   }
+  var plainFence = md.renderer.rules.fence;
+  md.renderer.rules.fence = (tokens, idx, options, env, self) => {
+    const token = tokens[idx];
+    if (token.info.trim().split(/\s+/)[0].toLowerCase() !== "mermaid") return plainFence(tokens, idx, options, env, self);
+    const source = md.utils.escapeHtml(token.content);
+    return `<div class="diagram" data-diagram="mermaid"><div class="diagram__canvas"></div><button type="button" class="diagram__toggle" aria-expanded="false">Code</button><div class="code-block diagram__source">${copyButton}<pre><code>${source}</code></pre></div></div>`;
+  };
   md.renderer.rules.table_open = () => '<div class="table-scroll"><table>\n';
   md.renderer.rules.table_close = () => "</table></div>\n";
   function renderMarkdown(text2) {
@@ -6570,6 +6577,7 @@
     if (checked) checked.checked = true;
     themeChoiceEl.addEventListener("change", (event) => {
       applyTheme(writeThemePreference(event.target.value));
+      redrawDiagrams();
     });
   }
   var usageLimitsEl = document.getElementById("usage-limits");
@@ -9517,6 +9525,107 @@
   artifactViewerEl.id = "artifact-viewer";
   artifactViewerEl.hidden = true;
   document.body.appendChild(artifactViewerEl);
+  var mermaidLoading = null;
+  function loadMermaid() {
+    if (globalThis.hireJunoMermaid) return Promise.resolve(globalThis.hireJunoMermaid);
+    if (!mermaidLoading) {
+      mermaidLoading = new Promise((resolve, reject) => {
+        const script = document.createElement("script");
+        script.src = "mermaid.js";
+        script.onload = () => globalThis.hireJunoMermaid ? resolve(globalThis.hireJunoMermaid) : reject(new Error("mermaid missing"));
+        script.onerror = () => {
+          mermaidLoading = null;
+          script.remove();
+          reject(new Error("mermaid not loaded"));
+        };
+        document.head.appendChild(script);
+      });
+    }
+    return mermaidLoading;
+  }
+  var diagramSvgs = /* @__PURE__ */ new Map();
+  var diagramCount = 0;
+  var drawingDiagrams = false;
+  function diagramTheme() {
+    const set = document.documentElement.dataset.theme;
+    const dark = set ? set === "dark" : window.matchMedia("(prefers-color-scheme: dark)").matches;
+    return dark ? "dark" : "default";
+  }
+  async function drawDiagrams() {
+    if (drawingDiagrams) return;
+    const pending = () => [...document.querySelectorAll('.diagram[data-diagram="mermaid"]:not([data-drawn])')].filter((b2) => !b2.closest(".message--streaming"));
+    if (!pending().length) return;
+    drawingDiagrams = true;
+    try {
+      let mermaid;
+      try {
+        mermaid = await loadMermaid();
+      } catch {
+        return;
+      }
+      let blocks;
+      while ((blocks = pending()).length) {
+        for (const block2 of blocks) {
+          block2.dataset.drawn = "pending";
+          const source = block2.querySelector(".diagram__source code")?.textContent || "";
+          const theme = diagramTheme();
+          const key = `${theme}
+${source}`;
+          if (!diagramSvgs.has(key)) {
+            const id = `hj-diagram-${++diagramCount}`;
+            try {
+              mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme });
+              diagramSvgs.set(key, (await mermaid.render(id, source)).svg);
+            } catch {
+              diagramSvgs.set(key, null);
+            }
+            document.getElementById(id)?.remove();
+            document.getElementById(`d${id}`)?.remove();
+          }
+          const svg = diagramSvgs.get(key);
+          if (!block2.isConnected) continue;
+          if (svg) {
+            block2.querySelector(".diagram__canvas").innerHTML = svg;
+            block2.dataset.drawn = "done";
+          } else {
+            block2.dataset.drawn = "failed";
+          }
+        }
+      }
+    } finally {
+      drawingDiagrams = false;
+    }
+  }
+  function redrawDiagrams() {
+    for (const block2 of document.querySelectorAll(".diagram[data-drawn]")) {
+      delete block2.dataset.drawn;
+      block2.querySelector(".diagram__canvas").innerHTML = "";
+    }
+    drawDiagrams();
+  }
+  window.matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", redrawDiagrams);
+  {
+    let queued = false;
+    const queueDraw = () => {
+      if (queued) return;
+      queued = true;
+      requestAnimationFrame(() => {
+        queued = false;
+        drawDiagrams();
+      });
+    };
+    const watch = new MutationObserver(queueDraw);
+    watch.observe(messagesEl, { childList: true, subtree: true });
+    watch.observe(artifactViewerEl, { childList: true, subtree: true });
+  }
+  document.addEventListener("click", (event) => {
+    const toggle = event.target.closest?.(".diagram__toggle");
+    if (!toggle) return;
+    const block2 = toggle.closest(".diagram");
+    const open = block2.classList.toggle("diagram--show-code");
+    toggle.setAttribute("aria-expanded", open ? "true" : "false");
+    toggle.textContent = open ? "Hide code" : "Code";
+  });
   async function openArtifact(id) {
     artifactViewerEl.hidden = false;
     artifactViewerEl.innerHTML = '<div class="artifact-viewer__panel"><p>Loading\u2026</p></div>';

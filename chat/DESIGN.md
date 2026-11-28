@@ -204,7 +204,7 @@ Everything that scrolls is an element inside it.
   keeps the bounce that belongs to that list — the feedback that says
   "this is the end" — while stopping the leftover gesture from moving
   whatever sits behind it. Adding a new scroll container means adding
-  it to that rule. Eleven selectors share one grouped
+  it to that rule. Twelve selectors share one grouped
   rule near the top of `styles.css`, and `#sidebar`, `#messages` and
   `#conv-search-results` each carry it at their own rule, where their
   sizing already lives. Count against the file — the grouped rule is

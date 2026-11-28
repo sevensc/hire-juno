@@ -29,7 +29,7 @@
   },
   "scripts": {
     "test": "node --test",
-    "build:chat": "esbuild chat/src/app.js --bundle --outfile=chat/public/app.js --format=iife && esbuild chat/src/transcribe-worker.js --bundle --format=esm --platform=browser --outfile=chat/public/transcribe-worker.js",
+    "build:chat": "esbuild chat/src/app.js --bundle --outfile=chat/public/app.js --format=iife && esbuild chat/src/transcribe-worker.js --bundle --format=esm --platform=browser --outfile=chat/public/transcribe-worker.js && esbuild chat/src/mermaid-entry.js --bundle --minify --format=iife --platform=browser --legal-comments=eof --outfile=chat/public/mermaid.js",
     "prepublishOnly": "npm run build:chat"
   },
   "files": [
@@ -67,6 +67,7 @@
     "esbuild": "^0.28.2",
     "htm": "^3.1.1",
     "markdown-it": "^15.0.3",
+    "mermaid": "12.3.0",
     "pngjs": "^7.0.0",
     "preact": "^10.29.8"
   }
