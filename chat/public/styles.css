@@ -3477,8 +3477,10 @@ html.keyboard-open #session-tabs .session-tab { min-height: 2rem; }
   line-height: 1.35;
   touch-action: manipulation;
 }
-a.gh-card:active { filter: brightness(0.92); }
-@media (hover: hover) { .message a.gh-card:hover { border-color: var(--fg-muted); } }
+a.gh-card:active, .gh-card__link:active { filter: brightness(0.92); }
+@media (hover: hover) { .message a.gh-card:hover, .message .gh-card:has(.gh-card__link:hover) { border-color: var(--fg-muted); } }
+.gh-card__link { display: flex; flex-direction: column; gap: 0.2rem; color: inherit; text-decoration: none; }
+.message .gh-card__link { color: inherit; text-decoration: none; }
 .message .gh-card--open { border-left-color: var(--gh-open); }
 .message .gh-card--merged { border-left-color: var(--gh-merged); }
 .message .gh-card--closed { border-left-color: var(--gh-closed); }
@@ -3656,3 +3658,33 @@ a.gh-card:active { filter: brightness(0.92); }
 .profile-item__main { display: flex; flex-direction: column; min-width: 0; }
 .profile-item__title { font-weight: 600; overflow-wrap: anywhere; }
 .profile-item__meta { font-size: 0.78rem; color: var(--fg-muted); overflow-wrap: anywhere; }
+
+/* A card's actions (GithubCard in app.js) and the menu one of them opens. */
+.gh-card__actions { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.3rem; }
+.gh-card__action,
+.gh-menu__choice {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-height: 2.75rem;
+  padding: 0 0.7rem;
+  font: inherit;
+  font-size: 0.8rem;
+  color: var(--fg);
+  background: var(--bg-message);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.gh-card__action:active, .gh-menu__choice:active { filter: brightness(0.92); }
+.gh-card__action[aria-expanded="true"],
+.gh-menu__choice[aria-pressed="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, var(--bg)); }
+.gh-card__action:disabled, .gh-menu__choice:disabled { opacity: 0.6; cursor: default; }
+@media (hover: hover) { .gh-card__action:hover:not(:disabled), .gh-menu__choice:hover:not(:disabled):not([aria-pressed="true"]) { background: var(--bg-sidebar); } }
+.gh-menu { margin-top: 0.4rem; padding-top: 0.4rem; border-top: 1px solid var(--border); }
+.gh-menu__choices { display: flex; flex-wrap: wrap; gap: 0.3rem; }
+.gh-menu__board + .gh-menu__board { margin-top: 0.5rem; }
+.gh-menu__board-title { display: block; font-size: 0.75rem; font-weight: 600; color: var(--fg-muted); margin-bottom: 0.25rem; }
+.gh-menu__note { margin: 0.2rem 0; font-size: 0.78rem; color: var(--fg-muted); }
+.gh-menu__error { color: var(--danger, #d64545); }

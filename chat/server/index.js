@@ -41,6 +41,7 @@ import { buildServerNote, createAdapter } from './agentAdapter.js';
 import { waitUntilIdle } from './drain.js';
 import { cleanRef as cleanGithubRef, createGithubAssigned, createGithubPreviews, createGithubSearch, githubOwnerOf } from './githubPreview.js';
 import { createGithubAccount } from './githubAccount.js';
+import { createGithubActions } from './githubActions.js';
 import { createPermissions, VIA_ALLOW_ALL, VIA_ALWAYS_ALLOW } from './permissions.js';
 import { validateModelChoice } from './modelChoice.js';
 import { writeLimitLog } from './limitLog.js';
@@ -695,6 +696,8 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
     const githubSearch = createGithubSearch({ env: githubEnv });
     // The profile's "assigned to you" lists.
     const githubAssigned = createGithubAssigned({ env: githubEnv });
+    // What a preview card can do: close/reopen, labels, assignees, board column.
+    const githubActions = createGithubActions({ env: githubEnv });
     const githubAccountChanged = () => {
       githubPreview.clear();
       githubSearch.clear();
@@ -1048,6 +1051,24 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
           }
           const preview = await githubPreview(ref);
           res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end(JSON.stringify(preview));
+          return;
+        }
+
+        if (req.method === 'GET' && route === 'api/github-options') {
+          // The choices for a card's Labels, Assign and Board menus.
+          const ref = cleanGithubRef(Object.fromEntries(url.searchParams));
+          const what = url.searchParams.get('what');
+          if (!ref || !['labels', 'assignees', 'boards'].includes(what)) {
+            res.writeHead(400, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: 'invalid' }));
+            return;
+          }
+          let body;
+          try {
+            body = { options: what === 'labels' ? await githubActions.labelOptions(ref) : what === 'assignees' ? await githubActions.assigneeOptions(ref) : await githubActions.boards(ref) };
+          } catch (err) {
+            body = { error: err.message };
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end(JSON.stringify(body));
           return;
         }
 
@@ -1933,6 +1954,29 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
               pusher.unsubscribe(payload.endpoint);
             }
             return;
+          }
+
+          if (payload.type === 'github_action') {
+            // A change from a preview card; the answer goes to the tab that
+            // asked, with the card's fresh data.
+            const requestId = typeof payload.requestId === 'string' ? payload.requestId.slice(0, 80) : '';
+            const ref = cleanGithubRef(payload);
+            const reply = (body) => ws.send(JSON.stringify({ type: 'github_action_result', requestId, ...body }));
+            if (!ref) return reply({ error: 'Unknown issue or pull request.' });
+            try {
+              if (payload.action === 'state') await githubActions.setState(ref, payload.state, payload.reason);
+              else if (payload.action === 'labels') await githubActions.setLabels(ref, payload.labels);
+              else if (payload.action === 'assignees') {
+                const before = await githubPreview(ref);
+                await githubActions.setAssignees(ref, payload.assignees, before.assignees || []);
+              } else if (payload.action === 'move') await githubActions.move(payload);
+              else return reply({ error: 'Unknown action.' });
+            } catch (err) {
+              return reply({ error: err.message });
+            }
+            githubPreview.forget(ref);
+            githubAssigned.clear();
+            return reply({ preview: await githubPreview(ref) });
           }
 
           if (payload.type === 'set_github_token' || payload.type === 'remove_github_token' || payload.type === 'set_github_login') {

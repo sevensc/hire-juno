@@ -50,6 +50,7 @@ export function previewFrom(ref, issue, pull = null) {
     state,
     reason: issue.state_reason || null,
     author: issue.user?.login || null,
+    assignees: (issue.assignees || []).map((a) => a?.login).filter(Boolean).slice(0, 10),
     labels: (issue.labels || []).slice(0, 6).map((l) => ({ name: String(l.name || ''), color: /^[0-9a-f]{6}$/i.test(l.color || '') ? l.color : null })),
     comments: Number(issue.comments) || 0,
     updatedAt: issue.updated_at || null,
