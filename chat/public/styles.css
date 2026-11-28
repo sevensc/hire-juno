@@ -3598,3 +3598,61 @@ a.gh-card:active { filter: brightness(0.92); }
 #mention-autocomplete li.command-candidate--note { display: block; cursor: default; color: var(--fg-muted); font-size: 0.8rem; }
 .command-candidate--open:not([aria-selected="true"]) .command-candidate__args { color: var(--gh-open); }
 .command-candidate--merged:not([aria-selected="true"]) .command-candidate__args { color: var(--gh-merged); }
+
+/* Profile (sidebar "You", openProfileView in app.js). */
+.profile-entry .avatar { width: 1.6rem; height: 1.6rem; font-size: 0.8rem; flex-shrink: 0; }
+.profile-entry__label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.profile-body { display: flex; flex-direction: column; gap: 1rem; }
+.profile-body h3 { margin: 0 0 0.4rem; font-size: 0.95rem; }
+.profile-list__count { color: var(--fg-muted); font-weight: 400; font-variant-numeric: tabular-nums; }
+.profile-note { margin: 0.2rem 0; color: var(--fg-muted); font-size: 0.88rem; }
+.profile-note--small { font-size: 0.78rem; }
+.profile-error { margin: 0.2rem 0; color: var(--danger, #d64545); font-size: 0.88rem; }
+.profile-form { display: flex; gap: 0.5rem; margin: 0.4rem 0; }
+.profile-form input {
+  flex: 1;
+  min-width: 0;
+  min-height: 2.75rem;
+  padding: 0 0.7rem;
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+}
+.profile-form button,
+.profile-remove,
+.profile-refresh {
+  min-height: 2.75rem;
+  padding: 0 0.9rem;
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg-message);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.profile-refresh { align-self: flex-start; }
+.profile-form button:active, .profile-remove:active, .profile-refresh:active { filter: brightness(0.92); }
+.profile-list ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.35rem; }
+.profile-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+  min-height: 2.75rem;
+  padding: 0.45rem 0.6rem;
+  color: var(--fg);
+  text-decoration: none;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  touch-action: manipulation;
+}
+.profile-item:active { filter: brightness(0.92); }
+@media (hover: hover) { .profile-item:hover { background: var(--bg-message); } }
+.profile-item .gh-card__icon { margin-top: 0.15rem; color: var(--fg-muted); }
+.gh-tone--open .gh-card__icon { color: var(--gh-open); }
+.gh-tone--merged .gh-card__icon { color: var(--gh-merged); }
+.profile-item__main { display: flex; flex-direction: column; min-width: 0; }
+.profile-item__title { font-weight: 600; overflow-wrap: anywhere; }
+.profile-item__meta { font-size: 0.78rem; color: var(--fg-muted); overflow-wrap: anywhere; }
