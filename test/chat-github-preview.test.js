@@ -73,9 +73,10 @@ test('GitHub search: the account of the repo, the kind, and results shaped for t
   assert.equal(githubOwnerOf('git@github.com:acme/web.git'), 'acme');
   assert.equal(githubOwnerOf('https://github.com/acme/web\n'), 'acme');
   assert.equal(githubOwnerOf('https://gitlab.com/acme/web.git'), null);
-  assert.equal(searchQuery('  login   bug ', 'issue', 'acme'), 'login bug is:issue user:acme');
-  assert.equal(searchQuery('flaky repo:other/x', 'pull', 'acme'), 'flaky repo:other/x is:pr');
-  assert.equal(searchQuery('x', 'pull', null), 'x is:pr');
+  assert.equal(searchQuery('  login   bug ', 'issue', 'acme'), 'login bug is:issue is:open user:acme');
+  assert.equal(searchQuery('flaky repo:other/x', 'pull', 'acme'), 'flaky repo:other/x is:pr is:open');
+  assert.equal(searchQuery('x', 'pull', null, { all: true }), 'x is:pr');
+  assert.equal(searchQuery('x is:merged', 'pull', null), 'x is:merged is:pr');
   const calls = [];
   const run = (cmd, args, opts, done) => {
     calls.push(args);
@@ -87,7 +88,7 @@ test('GitHub search: the account of the repo, the kind, and results shaped for t
   const search = createGithubSearch({ run });
   const found = await search('fix', 'pull', 'acme');
   assert.deepEqual(found.results, [{ owner: 'acme', repo: 'web', number: 4, kind: 'pull', title: 'Fix', state: 'merged', url: 'https://github.com/acme/web/pull/4', updatedAt: 't' }]);
-  assert.ok(calls[0].includes('q=fix is:pr user:acme'));
+  assert.ok(calls[0].includes('q=fix is:pr is:open user:acme'));
   await search('fix', 'pull', 'acme');
   assert.equal(calls.length, 1, 'cached');
 });

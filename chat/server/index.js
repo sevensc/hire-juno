@@ -1090,7 +1090,8 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
           const kind = url.searchParams.get('kind') === 'pull' ? 'pull' : 'issue';
           const words = (url.searchParams.get('q') || '').trim();
           const owner = workforceGithubOwner();
-          const found = words ? await githubSearch(words, kind, owner) : { results: [] };
+          // all=1: closed and merged ones too (the dropdown's switch).
+          const found = words ? await githubSearch(words, kind, owner, { all: url.searchParams.get('all') === '1' }) : { results: [] };
           res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end(JSON.stringify({ ...found, owner }));
           return;
         }

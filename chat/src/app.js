@@ -6588,15 +6588,17 @@ function currentSlashToken() {
 // Results for "/issue …" / "/pr …", fetched a moment after typing stops.
 let githubSearchTimer = null;
 let githubSearchState = { key: '', loading: false, results: [], error: null, owner: null };
+// Open ones only, unless the switch at the end of the list says otherwise.
+let githubSearchAll = false;
 function githubSearchFor(kind, words) {
-  const key = `${kind}\n${words}`;
+  const key = `${kind}\n${githubSearchAll}\n${words}`;
   if (githubSearchState.key === key) return githubSearchState;
   clearTimeout(githubSearchTimer);
   githubSearchState = { key, loading: Boolean(words), results: [], error: null, owner: githubSearchState.owner };
   if (!words) return githubSearchState;
   const state = githubSearchState;
   githubSearchTimer = setTimeout(() => {
-    fetch(`api/github-search?kind=${kind}&q=${encodeURIComponent(words)}`)
+    fetch(`api/github-search?kind=${kind}&q=${encodeURIComponent(words)}${githubSearchAll ? '&all=1' : ''}`)
       .then((r) => r.json())
       .then((data) => {
         state.results = data.results || [];
@@ -6636,7 +6638,7 @@ function refreshSlashList() {
   }
   if (token.search) {
     const found = githubSearchFor(token.search, token.words);
-    const what = token.search === 'pull' ? 'pull requests' : 'issues';
+    const what = `${githubSearchAll ? '' : 'open '}${token.search === 'pull' ? 'pull requests' : 'issues'}`;
     const where = found.owner ? ` in ${found.owner}` : '';
     const note = !token.words ? `Type words to search ${what}${where}; repo:owner/name searches one repository.`
       : found.loading ? `Searching ${what}…`
@@ -6645,7 +6647,7 @@ function refreshSlashList() {
       : !found.results.length ? `No ${what} found${where}.`
       : null;
     const keep = mentionState?.kind === 'command' && mentionState.search ? Math.min(mentionState.selectedIndex, Math.max(found.results.length - 1, 0)) : 0;
-    mentionState = { kind: 'command', ...token, matches: found.loading ? [] : found.results.map((r) => ({ ...r, result: true })), note, selectedIndex: keep };
+    mentionState = { kind: 'command', ...token, matches: found.loading ? [] : found.results.map((r) => ({ ...r, result: true })), note, selectedIndex: keep, searchSwitch: Boolean(token.words) };
     renderMentionAutocomplete();
     return;
   }
@@ -6729,6 +6731,20 @@ function renderMentionAutocomplete() {
       const li = document.createElement('li');
       li.className = 'command-candidate command-candidate--note';
       li.textContent = mentionState.note;
+      mentionAutocompleteEl.appendChild(li);
+    }
+    // The search's switch: open ones only, or closed and merged ones too.
+    if (mentionState.searchSwitch) {
+      const li = document.createElement('li');
+      li.className = 'command-candidate command-candidate--switch';
+      li.setAttribute('role', 'switch');
+      li.setAttribute('aria-checked', String(githubSearchAll));
+      li.textContent = githubSearchAll ? 'Showing closed and merged too · show only open ones' : 'Only open ones · show closed and merged too';
+      li.addEventListener('mousedown', (event) => {
+        event.preventDefault();
+        githubSearchAll = !githubSearchAll;
+        refreshSlashList();
+      });
       mentionAutocompleteEl.appendChild(li);
     }
     return;
