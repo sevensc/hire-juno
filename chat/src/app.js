@@ -3197,6 +3197,12 @@ const handleSocketMessage = (event) => {
     return;
   }
 
+  if (update.type === 'github_action_result') {
+    githubActionWaiting.get(update.requestId)?.(update);
+    githubActionWaiting.delete(update.requestId);
+    return;
+  }
+
   if (update.type === 'github_account') {
     githubProfile.account = update;
     githubProfile.lists = null;
@@ -4750,12 +4756,97 @@ function GithubKindIcon({ kind }) {
     : html`<svg class="gh-card__icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="8.5" /><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none" /></svg>`;
 }
 
+// Changes from a card go over the socket; the answer carries the fresh data.
+const githubActionWaiting = new Map(); // requestId -> resolve
+function githubAction(ref, body) {
+  const requestId = newMessageId();
+  socket.send(JSON.stringify({ type: 'github_action', requestId, owner: ref.owner, repo: ref.repo, kind: ref.kind, number: ref.number, ...body }));
+  return new Promise((resolve) => {
+    githubActionWaiting.set(requestId, resolve);
+    setTimeout(() => { if (githubActionWaiting.delete(requestId)) resolve({ error: 'No answer from the server.' }); }, 30000);
+  });
+}
+// Every card of the same issue shows the new state, not only the one used.
+function githubPreviewChanged(ref, preview) {
+  const key = `${ref.owner}/${ref.repo}#${ref.number}`.toLowerCase();
+  githubPreviewCache.set(key, Promise.resolve(preview));
+  window.dispatchEvent(new CustomEvent('github-preview', { detail: { key, preview } }));
+}
+
+function GithubCardMenu({ gref, preview, menu, onDone }) {
+  const [options, setOptions] = useState(null);
+  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let live = true;
+    setOptions(null);
+    setError(null);
+    const q = new URLSearchParams({ owner: gref.owner, repo: gref.repo, kind: gref.kind, number: String(gref.number), what: menu });
+    fetch(`api/github-options?${q}`)
+      .then((r) => r.json())
+      .then((data) => { if (!live) return; if (data.error) setError(data.error); else setOptions(data.options); })
+      .catch(() => live && setError('Could not reach the server.'));
+    return () => { live = false; };
+  }, [menu, gref.url]);
+  const run = async (body) => {
+    setBusy(true);
+    setError(null);
+    const result = await githubAction(gref, body);
+    setBusy(false);
+    if (result.error) setError(result.error);
+    else githubPreviewChanged(gref, result.preview);
+    if (menu === 'boards' && !result.error) onDone();
+  };
+  const title = menu === 'labels' ? 'Labels' : menu === 'assignees' ? 'Assignees' : 'Board column';
+  let body;
+  if (error && !options) body = html`<p class="gh-menu__note gh-menu__error" role="alert">${error}</p>`;
+  else if (!options) body = html`<p class="gh-menu__note">Loading…</p>`;
+  else if (menu === 'labels') {
+    const set = new Set((preview.labels || []).map((l) => l.name));
+    body = options.length
+      ? html`<div class="gh-menu__choices">${options.map((l) => {
+          const on = set.has(l.name);
+          return html`<button type="button" class="gh-menu__choice" aria-pressed=${on ? 'true' : 'false'} disabled=${busy} title=${l.description || l.name}
+            onClick=${() => run({ action: 'labels', labels: on ? [...set].filter((n) => n !== l.name) : [...set, l.name] })}>
+            <span class="gh-card__dot" style=${l.color ? `background: #${l.color}` : null}></span>${l.name}</button>`;
+        })}</div>`
+      : html`<p class="gh-menu__note">This repository has no labels.</p>`;
+  } else if (menu === 'assignees') {
+    const set = new Set(preview.assignees || []);
+    body = options.length
+      ? html`<div class="gh-menu__choices">${options.map((login) => {
+          const on = set.has(login);
+          return html`<button type="button" class="gh-menu__choice" aria-pressed=${on ? 'true' : 'false'} disabled=${busy}
+            onClick=${() => run({ action: 'assignees', assignees: on ? [...set].filter((n) => n !== login) : [...set, login] })}>@${login}</button>`;
+        })}</div>`
+      : html`<p class="gh-menu__note">Nobody can be assigned here.</p>`;
+  } else {
+    body = options.length
+      ? options.map((board) => html`<div class="gh-menu__board">
+          <span class="gh-menu__board-title">${board.title}</span>
+          <div class="gh-menu__choices">${board.options.map((o) => html`<button type="button" class="gh-menu__choice" aria-pressed=${board.current === o.id ? 'true' : 'false'} disabled=${busy || board.current === o.id}
+            onClick=${() => run({ action: 'move', projectId: board.projectId, itemId: board.itemId, fieldId: board.fieldId, optionId: o.id })}>${o.name}</button>`)}</div>
+        </div>`)
+      : html`<p class="gh-menu__note">Not on a project board with a Status column.</p>`;
+  }
+  return html`<div class="gh-menu" role="group" aria-label=${title}>
+    ${body}
+    ${error && options ? html`<p class="gh-menu__note gh-menu__error" role="alert">${error}</p>` : null}
+  </div>`;
+}
+
 function GithubCard({ gref }) {
   const [preview, setPreview] = useState(null);
+  const [menu, setMenu] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
   useEffect(() => {
     let live = true;
     loadGithubPreview(gref).then((p) => { if (live) setPreview(p); });
-    return () => { live = false; };
+    const key = `${gref.owner}/${gref.repo}#${gref.number}`.toLowerCase();
+    const changed = (event) => { if (event.detail.key === key) setPreview(event.detail.preview); };
+    window.addEventListener('github-preview', changed);
+    return () => { live = false; window.removeEventListener('github-preview', changed); };
   }, [gref.url]);
   const where = `${gref.owner}/${gref.repo}`;
   if (!preview) {
@@ -4774,6 +4865,7 @@ function GithubCard({ gref }) {
   }
   const facts = [
     preview.author ? `by ${preview.author}` : '',
+    preview.assignees?.length ? `assigned to ${preview.assignees.map((a) => `@${a}`).join(', ')}` : '',
     preview.updatedAt ? `updated ${relativeTime(preview.updatedAt)}` : '',
     preview.comments ? `${preview.comments} ${preview.comments === 1 ? 'comment' : 'comments'}` : '',
     preview.kind === 'pull' && preview.changedFiles ? `${preview.changedFiles} ${preview.changedFiles === 1 ? 'file' : 'files'}` : '',
@@ -4785,23 +4877,45 @@ function GithubCard({ gref }) {
     : preview.state === 'merged' ? 'merged'
     : preview.state === 'draft' || preview.reason === 'not_planned' ? 'muted'
     : preview.kind === 'issue' ? 'merged' : 'closed';
-  return html`<a class=${`gh-card gh-card--${tone}`} href=${gref.url} target="_blank" rel="noopener noreferrer" aria-label=${`${preview.kind === 'pull' ? 'Pull request' : 'Issue'} ${where} #${preview.number}: ${preview.title}, ${stateName}. Opens on GitHub.`}>
-    <span class="gh-card__head">
-      <${GithubKindIcon} kind=${preview.kind} />
-      <span class="gh-card__repo">${where}</span><span>#${preview.number}</span>
-      <span class="gh-card__state">${stateName}</span>
-    </span>
-    <span class="gh-card__title">${preview.title}</span>
-    ${preview.body ? html`<span class="gh-card__body">${preview.body}</span>` : null}
-    ${preview.labels?.length
-      ? html`<span class="gh-card__labels">${preview.labels.map((l) => html`<span class="gh-card__label"><span class="gh-card__dot" style=${l.color ? `background: #${l.color}` : null}></span>${l.name}</span>`)}</span>`
-      : null}
-    <span class="gh-card__meta">
-      ${facts.join(' · ')}
-      ${preview.kind === 'pull' ? html`${facts.length ? ' · ' : ''}<span class="gh-card__add">+${preview.additions}</span> <span class="gh-card__del">−${preview.deletions}</span>` : null}
-      ${preview.kind === 'pull' && preview.head && preview.base ? html`<span class="gh-card__branches">${preview.head} → ${preview.base}</span>` : null}
-    </span>
-  </a>`;
+  const isOpen = preview.state === 'open' || preview.state === 'draft';
+  const toggleState = async () => {
+    setBusy(true);
+    setError(null);
+    const result = await githubAction(gref, { action: 'state', state: isOpen ? 'closed' : 'open', reason: isOpen ? 'completed' : null });
+    setBusy(false);
+    if (result.error) setError(result.error);
+    else githubPreviewChanged(gref, result.preview);
+  };
+  const menuButton = (name, label) => html`<button type="button" class="gh-card__action" aria-expanded=${menu === name ? 'true' : 'false'} onClick=${() => setMenu(menu === name ? null : name)}>${label}</button>`;
+  return html`<div class=${`gh-card gh-card--${tone}`}>
+    <a class="gh-card__link" href=${gref.url} target="_blank" rel="noopener noreferrer" aria-label=${`${preview.kind === 'pull' ? 'Pull request' : 'Issue'} ${where} #${preview.number}: ${preview.title}, ${stateName}. Opens on GitHub.`}>
+      <span class="gh-card__head">
+        <${GithubKindIcon} kind=${preview.kind} />
+        <span class="gh-card__repo">${where}</span><span>#${preview.number}</span>
+        <span class="gh-card__state">${stateName}</span>
+      </span>
+      <span class="gh-card__title">${preview.title}</span>
+      ${preview.body ? html`<span class="gh-card__body">${preview.body}</span>` : null}
+      ${preview.labels?.length
+        ? html`<span class="gh-card__labels">${preview.labels.map((l) => html`<span class="gh-card__label"><span class="gh-card__dot" style=${l.color ? `background: #${l.color}` : null}></span>${l.name}</span>`)}</span>`
+        : null}
+      <span class="gh-card__meta">
+        ${facts.join(' · ')}
+        ${preview.kind === 'pull' ? html`${facts.length ? ' · ' : ''}<span class="gh-card__add">+${preview.additions}</span> <span class="gh-card__del">−${preview.deletions}</span>` : null}
+        ${preview.kind === 'pull' && preview.head && preview.base ? html`<span class="gh-card__branches">${preview.head} → ${preview.base}</span>` : null}
+      </span>
+    </a>
+    <div class="gh-card__actions">
+      ${preview.state !== 'merged'
+        ? html`<button type="button" class="gh-card__action" disabled=${busy} onClick=${toggleState}>${busy ? '…' : isOpen ? 'Close' : 'Reopen'}</button>`
+        : null}
+      ${menuButton('labels', 'Labels')}
+      ${menuButton('assignees', 'Assign')}
+      ${menuButton('boards', 'Board')}
+    </div>
+    ${error ? html`<p class="gh-menu__note gh-menu__error" role="alert">${error}</p>` : null}
+    ${menu ? html`<${GithubCardMenu} key=${menu} gref=${gref} preview=${preview} menu=${menu} onDone=${() => setMenu(null)} />` : null}
+  </div>`;
 }
 
 function MessageRow({ role, avatarColleague, nameTag, item, toolText, onToggle, onToggleTrailEntry, onWithdraw, variant = null, onReply = null, onReact = null, accent = null, onEmoji = null, roomYouId = null }) {
