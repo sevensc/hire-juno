@@ -91,6 +91,7 @@ body { overscroll-behavior: none; }
 #composer-input,
 .message > span pre,
 .tool-detail,
+.diagram__canvas,
 .trail-box { overscroll-behavior: contain; }
 
 /* One focus indicator for the whole app. Before this the stylesheet
@@ -3530,3 +3531,43 @@ a.gh-card:active { filter: brightness(0.92); }
 .gh-card__branches { display: block; overflow-wrap: anywhere; }
 .gh-card--loading .gh-card__meta { animation: typing-pulse 1.4s ease-in-out infinite; }
 @media (prefers-reduced-motion: reduce) { .gh-card--loading .gh-card__meta { animation: none; } }
+
+/* Mermaid diagrams (markdown.js, drawDiagrams in app.js). Until drawn, and
+   when a diagram cannot be drawn, the source shows as a code block; once
+   drawn, the picture shows and "Code" opens the source below it. A wide
+   diagram scrolls inside the bubble instead of widening it. */
+.diagram { margin: 0.4rem 0; white-space: normal; }
+.diagram__canvas:empty { display: none; }
+.diagram__canvas {
+  overflow-x: auto;
+  padding: 0.5rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+}
+.diagram__canvas svg { display: block; max-width: none; height: auto; margin: 0 auto; }
+.diagram__toggle { display: none; }
+.diagram[data-drawn="done"] .diagram__toggle {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem;
+  margin-top: 0.2rem;
+  padding: 0 0.6rem;
+  font: inherit;
+  font-size: 0.75rem;
+  color: var(--fg-muted);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.diagram[data-drawn="done"] .diagram__toggle:active { filter: brightness(0.92); }
+@media (hover: hover) { .diagram[data-drawn="done"] .diagram__toggle:hover { color: var(--fg); } }
+.diagram[data-drawn="done"]:not(.diagram--show-code) .diagram__source { display: none; }
+.diagram[data-drawn="failed"]::before {
+  content: "Diagram could not be drawn; its source:";
+  display: block;
+  font-size: 0.75rem;
+  color: var(--fg-muted);
+  margin-bottom: 0.2rem;
+}

@@ -86,3 +86,13 @@ test('a fenced code block gets a Copy button outside the <pre>, an indented one 
   assert.match(indented, /<div class="code-block"><button[^>]*>Copy<\/button><pre><code>indented code\n<\/code><\/pre><\/div>/);
   assert.equal(renderMarkdown('plain `inline` text').includes('code-copy'), false);
 });
+
+test('a mermaid block becomes a diagram placeholder that keeps its source as escaped code', () => {
+  const html = renderMarkdown('```mermaid\nflowchart LR\n  A --> B<script>alert(1)</script>\n```');
+  assert.match(html, /^<div class="diagram" data-diagram="mermaid"><div class="diagram__canvas"><\/div><button type="button" class="diagram__toggle"/);
+  assert.match(html, /<pre><code>flowchart LR\n  A --&gt; B&lt;script&gt;alert\(1\)&lt;\/script&gt;\n<\/code><\/pre>/);
+  assert.doesNotMatch(html, /<script/);
+  // Other languages, and "mermaid" only as the first word of the info string.
+  assert.doesNotMatch(renderMarkdown('```js\nmermaid\n```'), /diagram/);
+  assert.match(renderMarkdown('```Mermaid title\ngraph TD\n```'), /data-diagram="mermaid"/);
+});
