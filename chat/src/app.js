@@ -60,6 +60,7 @@ const settingsNotifyRowEl = document.getElementById('settings-notify-row');
   if (checked) checked.checked = true;
   themeChoiceEl.addEventListener('change', (event) => {
     applyTheme(writeThemePreference(event.target.value));
+    redrawDiagrams();
   });
 }
 const usageLimitsEl = document.getElementById('usage-limits');
@@ -4110,6 +4111,114 @@ const artifactViewerEl = document.createElement('div');
 artifactViewerEl.id = 'artifact-viewer';
 artifactViewerEl.hidden = true;
 document.body.appendChild(artifactViewerEl);
+
+// Mermaid diagrams (```mermaid blocks, see markdown.js). The library is a
+// file of its own (public/mermaid.js) and only loads once a finished
+// message or document holds a diagram; a reply still being written keeps
+// showing the source. Drawn in the colours of the current theme, and drawn
+// again when the theme changes. A diagram that cannot be drawn stays code.
+let mermaidLoading = null;
+function loadMermaid() {
+  if (globalThis.hireJunoMermaid) return Promise.resolve(globalThis.hireJunoMermaid);
+  if (!mermaidLoading) {
+    mermaidLoading = new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = 'mermaid.js';
+      script.onload = () => (globalThis.hireJunoMermaid ? resolve(globalThis.hireJunoMermaid) : reject(new Error('mermaid missing')));
+      script.onerror = () => {
+        mermaidLoading = null;
+        script.remove();
+        reject(new Error('mermaid not loaded'));
+      };
+      document.head.appendChild(script);
+    });
+  }
+  return mermaidLoading;
+}
+const diagramSvgs = new Map(); // theme + source -> svg text, or null when it cannot be drawn
+let diagramCount = 0;
+let drawingDiagrams = false;
+function diagramTheme() {
+  const set = document.documentElement.dataset.theme;
+  const dark = set ? set === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches;
+  return dark ? 'dark' : 'default';
+}
+async function drawDiagrams() {
+  if (drawingDiagrams) return;
+  const pending = () => [...document.querySelectorAll('.diagram[data-diagram="mermaid"]:not([data-drawn])')].filter((b) => !b.closest('.message--streaming'));
+  if (!pending().length) return;
+  drawingDiagrams = true;
+  try {
+    let mermaid;
+    try {
+      mermaid = await loadMermaid();
+    } catch {
+      return; // offline or missing: the source stays, the next render tries again
+    }
+    let blocks;
+    while ((blocks = pending()).length) {
+      for (const block of blocks) {
+        block.dataset.drawn = 'pending';
+        const source = block.querySelector('.diagram__source code')?.textContent || '';
+        const theme = diagramTheme();
+        const key = `${theme}\n${source}`;
+        if (!diagramSvgs.has(key)) {
+          const id = `hj-diagram-${++diagramCount}`;
+          try {
+            mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme });
+            diagramSvgs.set(key, (await mermaid.render(id, source)).svg);
+          } catch {
+            diagramSvgs.set(key, null);
+          }
+          // A failed render can leave its scratch element behind.
+          document.getElementById(id)?.remove();
+          document.getElementById(`d${id}`)?.remove();
+        }
+        const svg = diagramSvgs.get(key);
+        if (!block.isConnected) continue;
+        if (svg) {
+          block.querySelector('.diagram__canvas').innerHTML = svg;
+          block.dataset.drawn = 'done';
+        } else {
+          block.dataset.drawn = 'failed';
+        }
+      }
+    }
+  } finally {
+    drawingDiagrams = false;
+  }
+}
+function redrawDiagrams() {
+  for (const block of document.querySelectorAll('.diagram[data-drawn]')) {
+    delete block.dataset.drawn;
+    block.querySelector('.diagram__canvas').innerHTML = '';
+  }
+  drawDiagrams();
+}
+window.matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', redrawDiagrams);
+{
+  let queued = false;
+  const queueDraw = () => {
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(() => {
+      queued = false;
+      drawDiagrams();
+    });
+  };
+  const watch = new MutationObserver(queueDraw);
+  watch.observe(messagesEl, { childList: true, subtree: true });
+  watch.observe(artifactViewerEl, { childList: true, subtree: true });
+}
+// "Code" under a diagram shows its source (to read or copy), again hides it.
+document.addEventListener('click', (event) => {
+  const toggle = event.target.closest?.('.diagram__toggle');
+  if (!toggle) return;
+  const block = toggle.closest('.diagram');
+  const open = block.classList.toggle('diagram--show-code');
+  toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+  toggle.textContent = open ? 'Hide code' : 'Code';
+});
 
 async function openArtifact(id) {
   artifactViewerEl.hidden = false;

@@ -53,6 +53,17 @@ for (const rule of ['fence', 'code_block']) {
   md.renderer.rules[rule] = (...args) => `<div class="code-block">${copyButton}${original(...args)}</div>`;
 }
 
+// A ```mermaid block becomes a diagram: here only a placeholder that keeps
+// the source as text; app.js draws it once the message is finished. Until
+// then, and if the diagram cannot be drawn, the source shows as code.
+const plainFence = md.renderer.rules.fence;
+md.renderer.rules.fence = (tokens, idx, options, env, self) => {
+  const token = tokens[idx];
+  if (token.info.trim().split(/\s+/)[0].toLowerCase() !== 'mermaid') return plainFence(tokens, idx, options, env, self);
+  const source = md.utils.escapeHtml(token.content);
+  return `<div class="diagram" data-diagram="mermaid"><div class="diagram__canvas"></div><button type="button" class="diagram__toggle" aria-expanded="false">Code</button><div class="code-block diagram__source">${copyButton}<pre><code>${source}</code></pre></div></div>`;
+};
+
 // A wide table scrolls inside the bubble instead of widening it.
 md.renderer.rules.table_open = () => '<div class="table-scroll"><table>\n';
 md.renderer.rules.table_close = () => '</table></div>\n';
