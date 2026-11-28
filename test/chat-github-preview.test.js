@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { bodyExcerpt, cleanRef, createGithubPreviews, previewFrom } from '../chat/server/githubPreview.js';
+import { bodyExcerpt, cleanRef, createGithubPreviews, createGithubSearch, githubOwnerOf, previewFrom, searchQuery } from '../chat/server/githubPreview.js';
 import { githubRef, githubRefs, relativeTime } from '../chat/src/github-links.js';
 
 test('GitHub links: only issues and pull requests, each once, a few at most', () => {
@@ -67,4 +67,27 @@ test('relative times for the card', () => {
   assert.equal(relativeTime('2026-01-10T11:00:00Z', now), '1 h ago');
   assert.equal(relativeTime('2026-01-09T12:00:00Z', now), '1 day ago');
   assert.equal(relativeTime('nonsense', now), '');
+});
+
+test('GitHub search: the account of the repo, the kind, and results shaped for the list', async () => {
+  assert.equal(githubOwnerOf('git@github.com:acme/web.git'), 'acme');
+  assert.equal(githubOwnerOf('https://github.com/acme/web\n'), 'acme');
+  assert.equal(githubOwnerOf('https://gitlab.com/acme/web.git'), null);
+  assert.equal(searchQuery('  login   bug ', 'issue', 'acme'), 'login bug is:issue user:acme');
+  assert.equal(searchQuery('flaky repo:other/x', 'pull', 'acme'), 'flaky repo:other/x is:pr');
+  assert.equal(searchQuery('x', 'pull', null), 'x is:pr');
+  const calls = [];
+  const run = (cmd, args, opts, done) => {
+    calls.push(args);
+    done(null, JSON.stringify({ items: [
+      { repository_url: 'https://api.github.com/repos/acme/web', number: 4, title: 'Fix', state: 'closed', html_url: 'https://github.com/acme/web/pull/4', pull_request: { merged_at: 'x' }, updated_at: 't' },
+      { repository_url: 'https://api.github.com/repos/acme/web', number: 5, title: 'Bad', state: 'open', html_url: 'javascript:x' },
+    ] }));
+  };
+  const search = createGithubSearch({ run });
+  const found = await search('fix', 'pull', 'acme');
+  assert.deepEqual(found.results, [{ owner: 'acme', repo: 'web', number: 4, kind: 'pull', title: 'Fix', state: 'merged', url: 'https://github.com/acme/web/pull/4', updatedAt: 't' }]);
+  assert.ok(calls[0].includes('q=fix is:pr user:acme'));
+  await search('fix', 'pull', 'acme');
+  assert.equal(calls.length, 1, 'cached');
 });
