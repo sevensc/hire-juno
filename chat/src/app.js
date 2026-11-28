@@ -3172,6 +3172,15 @@ const handleSocketMessage = (event) => {
     return;
   }
 
+  if (update.type === 'room_reactions') {
+    const item = (channelMessages.get(update.channelId) || []).find((m) => m.roomId === update.roomId);
+    if (item) {
+      item.reactions = update.reactions || [];
+      if (activeChannelId === update.channelId) renderChannelMessages();
+    }
+    return;
+  }
+
   if (update.type === 'room_state') {
     for (const channel of channelsById.values()) {
       if (channel.room) channel.room = { connected: update.connected, members: update.members || channel.room.members, you: update.you || channel.room.you };
@@ -3301,6 +3310,10 @@ const handleSocketMessage = (event) => {
       senderId: update.senderId,
       senderName: update.senderName || null,
       artifact: update.artifact || null,
+      // Team room only: its id there, what it answers, its reactions.
+      roomId: update.roomId ?? null,
+      replyTo: update.replyTo || null,
+      reactions: update.reactions || [],
       text,
       attachments,
       createdAt: new Date().toISOString(),
@@ -4465,13 +4478,15 @@ function YouTubeCard({ video }) {
   </button>`;
 }
 
-function MessageRow({ role, avatarColleague, nameTag, item, toolText, onToggle, onToggleTrailEntry, onWithdraw, variant = null, onReply = null, onReact = null, accent = null }) {
+function MessageRow({ role, avatarColleague, nameTag, item, toolText, onToggle, onToggleTrailEntry, onWithdraw, variant = null, onReply = null, onReact = null, accent = null, onEmoji = null, roomYouId = null }) {
   const isToolUse = item.toolInput !== undefined;
   const time = formatMessageTime(item.createdAt);
+  const reactions = item.reactions || [];
+  const picking = onEmoji && reactionPickerFor === item.roomId;
   return html`
     <${Fragment}>
       ${item.trail?.length ? html`<${TrailBox} trail=${item.trail} onToggleEntry=${onToggleTrailEntry} />` : null}
-      <div class="message message--${role}${variant ? ` message--${variant}` : ''}${item.pending ? ' message--pending' : ''}" style=${accent ? `--person: ${accent}` : null}>
+      <div class="message message--${role}${variant ? ` message--${variant}` : ''}${item.pending ? ' message--pending' : ''}${onEmoji ? ' message--room' : ''}" style=${accent ? `--person: ${accent}` : null} data-room-id=${onEmoji ? item.roomId : null}>
         ${avatarColleague ? html`<${Avatar} colleague=${avatarColleague} />` : null}
         ${isToolUse
           ? html`
@@ -4481,6 +4496,12 @@ function MessageRow({ role, avatarColleague, nameTag, item, toolText, onToggle, 
           : html`
               <span>
                 ${nameTag ? html`<strong class="message__sender">${nameTag}</strong><br />` : null}
+                ${item.replyTo
+                  ? html`<button type="button" class="reply-quote" aria-label=${`Show the message from ${item.replyTo.name} this answers`} onClick=${() => jumpToRoomMessage(item.replyTo.id)}>
+                      <span class="reply-quote__name">${item.replyTo.name}</span>
+                      <span class="reply-quote__text">${item.replyTo.excerpt || '…'}</span>
+                    </button>`
+                  : null}
                 ${item.artifact
                   ? html`<button type="button" class="artifact-card" onClick=${() => openArtifact(item.artifact.id)}>
                       <span class="artifact-card__kind">${item.artifact.kind === 'transcript' ? 'Transcript' : 'Document'}</span>
@@ -4494,9 +4515,35 @@ function MessageRow({ role, avatarColleague, nameTag, item, toolText, onToggle, 
                 ${(item.attachments || []).map(
                   (attachment, i) => html`<img key=${i} class="attachment-thumb" src=${attachment.dataUrl} alt=${attachment.name} role="button" tabindex="0" />`
                 )}
+                ${reactions.length
+                  ? html`<span class="reaction-chips">
+                      ${reactions.map((r) => {
+                        const mine = r.members.some((m) => m.id === roomYouId);
+                        const names = r.members.map((m) => (m.id === roomYouId ? 'You' : m.name)).join(', ');
+                        return html`<button
+                          type="button"
+                          class="reaction-chip${mine ? ' is-mine' : ''}"
+                          title=${names}
+                          aria-label=${`${r.emoji} from ${names}${mine ? ', tap to take yours back' : ''}`}
+                          aria-pressed=${mine ? 'true' : 'false'}
+                          onClick=${() => onEmoji?.(r.emoji)}
+                        >${r.emoji}${r.members.length > 1 ? html`<span class="reaction-chip__count">${r.members.length}</span>` : null}</button>`;
+                      })}
+                    </span>`
+                  : null}
+                ${picking
+                  ? html`<span class=${`reaction-picker${reactionPickerBelow ? ' reaction-picker--below' : ''}`} role="group" aria-label="React with">
+                      ${ROOM_EMOJI.map(
+                        (emoji) => html`<button type="button" class="reaction-picker__emoji" aria-label=${`React with ${emoji}`} onClick=${(e) => { e.stopPropagation(); closeReactionPicker(); onEmoji(emoji); }}>${emoji}</button>`
+                      )}
+                    </span>`
+                  : null}
                 <span class="message__footer">
-                  ${onReply && item.text && !item.pending
+                  ${onReply && (item.text || item.attachments?.length) && !item.pending
                     ? html`<button type="button" class="copy-button" aria-label="Reply to this message" onClick=${onReply}>Reply</button>`
+                    : null}
+                  ${onEmoji
+                    ? html`<button type="button" class="copy-button" aria-label="React to this message" aria-expanded=${picking ? 'true' : 'false'} onClick=${(e) => { e.stopPropagation(); toggleReactionPicker(item.roomId); }}>React</button>`
                     : null}
                   ${onReact && item.text && !item.pending
                     ? reactionsFor(item).map(
@@ -4794,6 +4841,7 @@ function renderChannelMessages({ forceScrollToBottom = false } = {}) {
     if (isAgentItem(item)) return false;
     const text = String(item.text || '');
     if ([...text.matchAll(/@([a-z][a-z0-9_-]*)/gi)].some((m) => colleaguesById.has(m[1].toLowerCase()))) return true;
+    if (item.replyTo?.agent) return true;
     const quoted = text.match(/^> \*\*(.+?):\*\*/);
     return Boolean(quoted && colleagueNames.has(quoted[1].toLowerCase()));
   };
@@ -4843,7 +4891,7 @@ function renderChannelMessages({ forceScrollToBottom = false } = {}) {
       key=${i}
       role=${role}
       avatarColleague=${sender}
-      variant=${!isRoom || isYou || isSystem ? null : isAgentItem(item) ? 'agent' : mentionsMe(item.text) ? 'mention' : 'person'}
+      variant=${!isRoom || isYou || isSystem ? null : isAgentItem(item) ? 'agent' : mentionsMe(item.text) || item.replyTo?.mine ? 'mention' : 'person'}
       accent=${isRoom && item.senderId.startsWith('human:') ? personColor(item.senderId) : null}
       nameTag=${item.senderName || sender?.name || null}
       item=${item}
@@ -4856,10 +4904,12 @@ function renderChannelMessages({ forceScrollToBottom = false } = {}) {
         item.trail[entryIndex].expanded = !item.trail[entryIndex].expanded;
         renderChannelMessages();
       }}
-      onReply=${!isSystem && !item.artifact ? () => startReply(isYou ? null : item.senderId, isYou ? 'You' : item.senderName || sender?.name || '', item.text) : null}
+      onReply=${!isSystem && !item.artifact ? () => replyToChannelItem(item) : null}
       onReact=${isRoom && isAgentItem(item) && colleaguesById.has(item.senderId)
-        ? (key) => sendReaction(key, item.senderId, sender?.name || '', item.text)
+        ? (key) => sendReaction(key, item.senderId, sender?.name || '', item.text, item.roomId)
         : null}
+      roomYouId=${isRoom ? channelsById.get(activeChannelId)?.room?.you?.id || null : null}
+      onEmoji=${isRoom && item.roomId != null && !item.pending ? (emoji) => toggleRoomReaction(item.roomId, emoji) : null}
     />`;
   };
 
@@ -4959,6 +5009,9 @@ async function loadChannelHistory(channelId, { force = false } = {}) {
       // team room (see server/room.js); a plain channel has none.
       senderName: row.sender_name || null,
       artifact: row.artifact || null,
+      roomId: row.room_id ?? null,
+      replyTo: row.reply_to || null,
+      reactions: row.reactions || [],
       text: row.text,
       createdAt: row.created_at,
       attachments: storedAttachments(row.attachments),
@@ -6120,7 +6173,7 @@ function newMessageId() {
 // Replying to one message: the reply carries a short quote of it, so the
 // colleague (and everyone in a channel) sees what it answers. In the team
 // room a reply to a colleague's message brings her in without an @.
-let replyTarget = null; // { senderId, name, excerpt }
+let replyTarget = null; // { senderId, name, excerpt, roomId }
 const replyBarEl = document.createElement('div');
 replyBarEl.id = 'reply-bar';
 replyBarEl.hidden = true;
@@ -6140,8 +6193,8 @@ function quoteOf(target) {
   return `> **${target.name}:** ${target.excerpt}${target.excerpt.length >= 160 ? '…' : ''}\n\n`;
 }
 
-function startReply(senderId, name, text) {
-  replyTarget = { senderId, name, excerpt: excerptOf(text) };
+function startReply(senderId, name, text, roomId = null) {
+  replyTarget = { senderId, name, excerpt: excerptOf(text) || 'Picture', roomId };
   replyBarEl.hidden = false;
   replyBarEl.innerHTML = '';
   const label = document.createElement('span');
@@ -6155,6 +6208,142 @@ function startReply(senderId, name, text) {
   replyBarEl.append(label, cancel);
   input.focus();
 }
+
+// Reply to a message in the open channel: in the team room it points to the
+// message by its id there (the room keeps the quote), elsewhere it is quoted.
+function replyToChannelItem(item) {
+  const isYou = item.senderId === 'you';
+  const sender = colleaguesById.get(item.senderId);
+  const name = isYou ? 'You' : item.senderName || sender?.name || '';
+  const isRoom = Boolean(channelsById.get(activeChannelId)?.room);
+  startReply(isYou ? null : item.senderId, name, item.text, isRoom ? item.roomId : null);
+}
+
+// Team room reactions, as in a messenger: a few emoji to pick from; one per
+// person and message, the same one again takes it back.
+const ROOM_EMOJI = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
+let reactionPickerFor = null; // the room message id whose picker is open
+let reactionPickerHeldAt = 0; // when a long press opened it
+let reactionPickerBelow = false; // no room above the message for it
+
+function toggleRoomReaction(roomId, emoji) {
+  socket.send(JSON.stringify({ type: 'room_react', roomId, emoji }));
+}
+
+function toggleReactionPicker(roomId, { held = false } = {}) {
+  reactionPickerFor = reactionPickerFor === roomId ? null : roomId;
+  reactionPickerHeldAt = held ? Date.now() : 0;
+  const bubble = messagesEl.querySelector(`.message[data-room-id="${Number(roomId)}"] > span`);
+  reactionPickerBelow = Boolean(bubble) && bubble.getBoundingClientRect().top - messagesEl.getBoundingClientRect().top < 64;
+  renderChannelMessages();
+  // Kept on screen on a narrow phone: moved in by what would stick out.
+  const picker = messagesEl.querySelector('.reaction-picker');
+  if (picker) {
+    const rect = picker.getBoundingClientRect();
+    const margin = 8;
+    const shift = rect.right > window.innerWidth - margin ? window.innerWidth - margin - rect.right : rect.left < margin ? margin - rect.left : 0;
+    if (shift) picker.style.transform = `translateX(${Math.round(shift)}px)`;
+  }
+}
+
+function closeReactionPicker() {
+  if (reactionPickerFor === null) return;
+  reactionPickerFor = null;
+  if (activeChannelId) renderChannelMessages();
+}
+
+document.addEventListener('click', (event) => {
+  // The click a touch browser may send when the long press that opened it ends.
+  if (Date.now() - reactionPickerHeldAt < 800) return;
+  if (reactionPickerFor !== null && !event.target.closest?.('.reaction-picker')) closeReactionPicker();
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') closeReactionPicker();
+});
+
+// Shows the message a reply answers, if it is loaded: scrolled into view
+// and lit up for a moment.
+function jumpToRoomMessage(roomId) {
+  const el = messagesEl.querySelector(`.message[data-room-id="${Number(roomId)}"]`);
+  if (!el) return;
+  el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  el.classList.remove('message--highlight');
+  void el.offsetWidth; // restarts the animation on a second tap
+  el.classList.add('message--highlight');
+  setTimeout(() => el.classList.remove('message--highlight'), 1600);
+}
+
+// On a touch screen, in the team room: swipe a message to the right to
+// reply to it, hold it to react.
+(function installRoomGestures() {
+  const SWIPE_REPLY_PX = 56;
+  const HOLD_MS = 450;
+  let start = null; // { x, y, dx, el, item, swiping }
+  let holdTimer = null;
+  const itemFor = (el) => (channelMessages.get(activeChannelId) || []).find((m) => m.roomId === Number(el.dataset.roomId));
+  const reset = () => {
+    clearTimeout(holdTimer);
+    if (start?.el) {
+      start.el.style.transform = '';
+      start.el.classList.remove('message--swiping');
+    }
+    start = null;
+  };
+  messagesEl.addEventListener('touchstart', (e) => {
+    if (e.touches.length !== 1 || !activeChannelId) return;
+    // A swipe may start anywhere on the message, even on a button (a touch
+    // browser moves a touch to the nearest one); holding a button or link
+    // stays that control's own.
+    if (e.target.closest('iframe, input, textarea, .reaction-picker')) return;
+    const onControl = Boolean(e.target.closest('button, a, img'));
+    const el = e.target.closest('.message--room');
+    if (!el) return;
+    const item = itemFor(el);
+    if (!item) return;
+    start = { x: e.touches[0].clientX, y: e.touches[0].clientY, dx: 0, el, item, swiping: false };
+    holdTimer = onControl ? null : setTimeout(() => {
+      if (!start || start.swiping) return;
+      navigator.vibrate?.(10);
+      toggleReactionPicker(item.roomId, { held: true });
+    }, HOLD_MS);
+  }, { passive: true });
+  // The direction is settled by the first move: mostly to the right is a
+  // reply swipe, and from then on the page script keeps the gesture (the
+  // list does not scroll); anything else is left to the browser as a scroll.
+  // No touch-action on the messages for this: inside the scrolling list it
+  // made a phone move the whole page instead of the list.
+  messagesEl.addEventListener('touchmove', (e) => {
+    if (!start) return;
+    const dx = e.touches[0].clientX - start.x;
+    const dy = e.touches[0].clientY - start.y;
+    if (!start.swiping) {
+      // A finger held still wobbles a little: that is still a hold.
+      if (Math.abs(dx) < 6 && Math.abs(dy) < 6) return;
+      clearTimeout(holdTimer);
+      if (dx <= 0 || Math.abs(dy) >= dx) {
+        reset();
+        return;
+      }
+      start.swiping = true;
+      start.el.classList.add('message--swiping');
+    }
+    if (e.cancelable) e.preventDefault();
+    start.dx = dx;
+    start.el.style.transform = `translateX(${Math.min(Math.max(dx, 0), SWIPE_REPLY_PX + 24)}px)`;
+  }, { passive: false });
+  const end = () => {
+    if (!start) return;
+    const { swiping, item, dx } = start;
+    reset();
+    if (swiping && dx >= SWIPE_REPLY_PX) replyToChannelItem(item);
+  };
+  messagesEl.addEventListener('touchend', end);
+  messagesEl.addEventListener('touchcancel', reset);
+  // The long press opened the picker; the system menu stays shut.
+  messagesEl.addEventListener('contextmenu', (e) => {
+    if (e.target.closest('.message--room') && window.matchMedia('(hover: none)').matches) e.preventDefault();
+  });
+})();
 
 function clearReply() {
   replyTarget = null;
@@ -6178,17 +6367,19 @@ function reactionsFor(item) {
 
 // Sends a reaction at once, as a reply made of the emoji (its meaning goes
 // to the colleague with it, see server/reactions.js).
-function sendReaction(key, colleagueId, name, text) {
+function sendReaction(key, colleagueId, name, text, roomId = null) {
   const reaction = REACTION_SET.find((r) => r.key === key);
   if (!reaction) return;
-  const body = quoteOf({ name, excerpt: excerptOf(text) }) + reaction.emoji;
+  // In the team room the reply points to her message; elsewhere it quotes it.
+  const inRoom = activeChannelId && roomId != null;
+  const body = inRoom ? reaction.emoji : quoteOf({ name, excerpt: excerptOf(text) }) + reaction.emoji;
   // ❓ also puts the question on the team's list of open questions.
   if (key === 'question' && openQuestions) {
     const full = String(text || '').split('\n').filter((l) => !l.startsWith('>')).join(' ').replace(/\s+/g, ' ').trim().slice(0, 600);
     socket.send(JSON.stringify({ type: 'question_add', text: full, source: name }));
   }
   if (activeChannelId) {
-    socket.send(JSON.stringify({ type: 'channel_message', channelId: activeChannelId, text: body, attachments: [], replyTo: colleagueId, reaction: key }));
+    socket.send(JSON.stringify({ type: 'channel_message', channelId: activeChannelId, text: body, attachments: [], replyTo: inRoom ? roomId : colleagueId, reaction: key }));
     return;
   }
   const convK = activeConvKey();
@@ -6207,8 +6398,11 @@ form.addEventListener('submit', (event) => {
   if (!sendMenuEl.hidden) { closeSendMenu(); input.focus(); }
   const typed = input.value.trim();
   if (!typed && !pendingAttachment) return;
-  const replyTo = replyTarget?.senderId || null;
-  const text = replyTarget && typed ? quoteOf(replyTarget) + typed : typed;
+  // A team room reply points to the message by its id there; elsewhere the
+  // reply carries a quote of it.
+  const roomReply = replyTarget?.roomId != null && Boolean(channelsById.get(activeChannelId)?.room);
+  const replyTo = roomReply ? replyTarget.roomId : replyTarget?.senderId || null;
+  const text = replyTarget && typed && !roomReply ? quoteOf(replyTarget) + typed : typed;
   clearReply();
 
   if (activeChannelId) {

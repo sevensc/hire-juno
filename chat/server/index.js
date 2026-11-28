@@ -68,7 +68,7 @@ import { connectRoom } from './roomClient.js';
 import { reactionHint } from './reactions.js';
 import { createPusher } from './pushNotify.js';
 import { turnIceServers } from './turn.js';
-import { ROOM_CHANNEL_ID, TEAM_NOTIFY_MODES, mentionsPerson, roomContextLines, roomMentions, roomRow, shouldNotify } from './room.js';
+import { ROOM_CHANNEL_ID, TEAM_NOTIFY_MODES, excerptOf, mentionsPerson, replyNote, roomContextLines, roomMentions, roomRow, shouldNotify } from './room.js';
 
 // One colleague can now have several independent, parallel
 // conversations running at once (e.g. one session per topic) — each is its own adapter
@@ -1212,7 +1212,11 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
       const row = roomRow(message, roomState.you?.id, known);
       // `notify`: whether this message notifies this person (their setting).
       const notify = shouldNotify(teamNotify, message, roomState.you);
-      broadcast({ channelId: ROOM_CHANNEL_ID, type: 'channel_message', senderId: row.sender_id, senderName: row.sender_name, text: row.text, artifact: row.artifact, ...(row.attachments ? { attachments: row.attachments } : {}), notify });
+      broadcast({
+        channelId: ROOM_CHANNEL_ID, type: 'channel_message', senderId: row.sender_id, senderName: row.sender_name, text: row.text, artifact: row.artifact,
+        roomId: row.room_id, replyTo: row.reply_to, reactions: row.reactions,
+        ...(row.attachments ? { attachments: row.attachments } : {}), notify,
+      });
     };
     const roomConnection = roomState.enabled
       ? connectRoom({
@@ -1233,6 +1237,11 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
             broadcastRoomMessage(message);
           },
           onSignal: (from, data) => broadcast({ type: 'call_signal', from, data }),
+          onReactions: (messageId, reactions) => {
+            const message = roomState.messages.find((m) => m.id === messageId);
+            if (message) message.reactions = reactions;
+            broadcast({ type: 'room_reactions', channelId: ROOM_CHANNEL_ID, roomId: messageId, reactions });
+          },
           onQuestions: (questions) => {
             roomState.questions = questions;
             broadcast({ type: 'open_questions', questions });
@@ -1251,21 +1260,24 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
     // The person's own message in the room: posted there (it comes back as
     // the room's echo, which is what the tabs show), then every colleague it
     // @mentions answers from this instance.
-    // `replyTo`: the colleague whose message this answers (she answers then,
-    // no @ needed); `reaction`: a quick reaction key (see reactions.js).
+    // `replyTo`: the id of the room message this answers; when it is a
+    // colleague's, she answers (no @ needed). An older tab sends her id
+    // instead. `reaction`: a quick reaction key (see reactions.js).
     // `attachments`: pictures as the browser sends them ({ name, mimeType,
     // data }); the room keeps them, mentioned colleagues get them too.
     const postToRoom = async (text, { replyTo = null, reaction = null, attachments = [] } = {}) => {
       // Waits for the room's echo: the person's message reaches the tabs
       // before a colleague starts typing, else it would look like it was
       // written during her answer (and be shown below it, as waiting).
-      if (!roomConnection || !(await roomConnection.postAndWait(text, null, attachments))) {
+      const answered = Number.isInteger(replyTo) ? roomState.messages.find((m) => m.id === replyTo) || null : null;
+      if (!roomConnection || !(await roomConnection.postAndWait(text, null, attachments, answered ? replyTo : null))) {
         broadcast({ channelId: ROOM_CHANNEL_ID, type: 'channel_message', senderId: 'system', text: 'The team room is not reachable right now; the message was not sent.' });
         return;
       }
       const roster = readRoster(targetDir);
       const targets = roomMentions(text, roster);
-      if (replyTo && roster.some((c) => c.id === replyTo) && !targets.includes(replyTo)) targets.push(replyTo);
+      const replyColleague = answered ? answered.agent?.id : typeof replyTo === 'string' ? replyTo : null;
+      if (replyColleague && roster.some((c) => c.id === replyColleague) && !targets.includes(replyColleague)) targets.push(replyColleague);
       const hint = reactionHint(reaction);
       for (const colleagueId of targets) {
         if (handovers.has(adapterKey(colleagueId, DEFAULT_SESSION_ID))) continue;
@@ -1303,7 +1315,7 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
           `${OPERATOR_NAME} mentioned you; your reply is posted to the room for everyone. ` +
           `Only answer what you were asked.]\n` +
           (context ? `${context}\n` : '') +
-          `[Team room] ${OPERATOR_NAME}: ${text}` +
+          `[Team room] ${OPERATOR_NAME}${answered ? replyNote({ ...answered, excerpt: excerptOf(answered.text) }) : ''}: ${text}` +
           (hint ? `\n[${hint}]` : '');
         broadcast({ channelId: ROOM_CHANNEL_ID, colleagueId, type: 'channel_typing', active: true });
         try {
@@ -2273,9 +2285,14 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
             return;
           }
 
+          if (payload.type === 'room_react') {
+            if (roomConnection && Number.isInteger(payload.roomId) && typeof payload.emoji === 'string') roomConnection.react(payload.roomId, payload.emoji);
+            return;
+          }
+
           if (payload.type === 'channel_message' && payload.channelId === ROOM_CHANNEL_ID && roomState.enabled) {
             const text = typeof payload.text === 'string' ? payload.text.trim() : '';
-            const replyTo = typeof payload.replyTo === 'string' ? payload.replyTo : null;
+            const replyTo = Number.isInteger(payload.replyTo) || typeof payload.replyTo === 'string' ? payload.replyTo : null;
             const attachments = (Array.isArray(payload.attachments) ? payload.attachments : [])
               .filter((a) => a && ATTACHMENT_MIME_TYPES.includes(a.mimeType) && typeof a.data === 'string')
               .map((a) => ({ name: typeof a.name === 'string' ? a.name : 'image', mimeType: a.mimeType, data: a.data }));

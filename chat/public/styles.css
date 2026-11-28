@@ -3333,3 +3333,120 @@ html.keyboard-open #session-tabs .session-tab { min-height: 2rem; }
 .profile-card__takeover { margin-top: 0.6rem; text-align: left; }
 .profile-card__takeover .cli-takeover { text-align: center; }
 .profile-card__takeover .cli-takeover__list { text-align: left; }
+
+/* Team room replies and reactions, as in a messenger. The quote of the
+   message a reply answers sits at the top of the bubble; a tap shows that
+   message. */
+.reply-quote {
+  display: block;
+  width: 100%;
+  min-height: 2.75rem;
+  margin: 0.15rem 0 0.35rem;
+  padding: 0.3rem 0.6rem;
+  font: inherit;
+  font-size: 0.82em;
+  text-align: left;
+  color: var(--fg-muted);
+  background: light-dark(rgba(0, 0, 0, 0.05), rgba(255, 255, 255, 0.06));
+  border: none;
+  border-left: 3px solid var(--accent);
+  border-radius: 0.4rem;
+  cursor: pointer;
+  white-space: normal;
+  touch-action: manipulation;
+}
+.reply-quote:active { filter: brightness(0.92); }
+@media (hover: hover) { .reply-quote:hover { background: light-dark(rgba(0, 0, 0, 0.08), rgba(255, 255, 255, 0.1)); } }
+.reply-quote__name { display: block; font-weight: 600; color: var(--accent); }
+.reply-quote__text {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Reactions under a message: one chip per emoji, own reaction marked. The
+   chip stays small; its tap area reaches the 44px floor through ::after. */
+.reaction-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.4rem;
+  white-space: normal;
+}
+.reaction-chip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  min-width: 2.75rem;
+  justify-content: center;
+  padding: 0.15rem 0.5rem;
+  font: inherit;
+  font-size: 0.85rem;
+  line-height: 1.2;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.reaction-chip::after { content: ''; position: absolute; inset: -0.5rem 0; }
+.reaction-chip.is-mine {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg));
+}
+.reaction-chip:active { filter: brightness(0.92); }
+@media (hover: hover) { .reaction-chip:hover:not(.is-mine) { background: var(--bg-message); } }
+.reaction-chip__count { font-size: 0.75rem; color: var(--fg-muted); font-variant-numeric: tabular-nums; }
+
+/* The emoji to pick from, opened with React or by holding the message:
+   floating over the bubble's top edge (below it for a message at the top
+   of the list), so the six fit in one row on a phone. */
+.message--room > span { position: relative; }
+.reaction-picker {
+  position: absolute;
+  z-index: 5;
+  bottom: calc(100% - 0.4rem);
+  left: 0.4rem;
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 0.15rem;
+  padding: 0.2rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  box-shadow: 0 4px 14px light-dark(rgba(0, 0, 0, 0.12), rgba(0, 0, 0, 0.45));
+  white-space: nowrap;
+}
+.reaction-picker--below { bottom: auto; top: calc(100% - 0.4rem); }
+.message--you .reaction-picker { left: auto; right: 0.4rem; }
+.reaction-picker__emoji {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+  font-size: 1.35rem;
+  line-height: 1;
+  background: transparent;
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.reaction-picker__emoji:active { background: var(--bg-message); }
+@media (hover: hover) { .reaction-picker__emoji:hover { background: var(--bg-message); } }
+
+/* Swipe to reply: the bubble follows the finger and springs back. On a
+   touch screen a long press opens the picker instead of the system menu
+   and the text selection; Copy still takes the whole message. */
+.message--room { transition: transform 0.18s ease-out; }
+.message--room.message--swiping { transition: none; }
+@media (hover: none) {
+  .message--room > span { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .message--room { transition: none; }
+}
