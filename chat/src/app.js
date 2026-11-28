@@ -3197,6 +3197,18 @@ const handleSocketMessage = (event) => {
     return;
   }
 
+  if (update.type === 'github_account') {
+    githubProfile.account = update;
+    githubProfile.lists = null;
+    loadGithubProfile();
+    return;
+  }
+
+  if (update.type === 'github_account_failed') {
+    githubAccountError?.(update.message);
+    return;
+  }
+
   if (update.type === 'claude_token_status') {
     renderClaudeToken(update.claudeToken);
     return;
@@ -4255,6 +4267,126 @@ async function openArtifact(id) {
   panel.append(header, body);
   artifactViewerEl.replaceChildren(panel);
   close.focus();
+}
+
+// The person's profile (sidebar "You"): their GitHub account, and the open
+// issues and pull requests assigned to them or waiting for their review.
+let personName = '';
+let githubProfile = { account: null, lists: null, loading: false, error: null };
+function profileDisplayName() {
+  const room = [...channelsById.values()].find((c) => c.room)?.room;
+  return (personName || room?.you?.name || roomSelfName || 'You').replace(/\s*\(.*\)\s*$/, '') || 'You';
+}
+async function loadGithubProfile() {
+  githubProfile.loading = true;
+  try {
+    githubProfile.account = await fetch('api/github-account').then((r) => r.json());
+    githubProfile.lists = githubProfile.account.login ? await fetch('api/github-assigned').then((r) => r.json()) : null;
+    githubProfile.error = githubProfile.lists?.error || null;
+  } catch {
+    githubProfile.error = 'failed';
+  } finally {
+    githubProfile.loading = false;
+    renderSidebar();
+    if (artifactViewerEl.dataset.view === 'profile') renderProfileView();
+  }
+}
+// Asked again every five minutes while the chat is open.
+setInterval(() => { if (document.visibilityState === 'visible') loadGithubProfile(); }, 5 * 60 * 1000);
+
+function openProfileView() {
+  artifactViewerEl.hidden = false;
+  artifactViewerEl.dataset.view = 'profile';
+  renderProfileView();
+  artifactViewerEl.querySelector('.artifact-viewer__header button')?.focus();
+  loadGithubProfile();
+}
+
+function GithubItemRow({ item }) {
+  return html`<li><a class=${`profile-item gh-tone--${item.state === 'open' ? 'open' : item.state === 'draft' ? 'muted' : item.state}`} href=${item.url} target="_blank" rel="noopener noreferrer">
+    <${GithubKindIcon} kind=${item.kind} />
+    <span class="profile-item__main">
+      <span class="profile-item__title">${item.title}</span>
+      <span class="profile-item__meta">${item.owner}/${item.repo} #${item.number}${item.state === 'draft' ? ' · Draft' : ''}${item.updatedAt ? ` · updated ${relativeTime(item.updatedAt)}` : ''}</span>
+    </span>
+  </a></li>`;
+}
+
+function GithubList({ title, items, empty }) {
+  return html`<section class="profile-list">
+    <h3>${title} <span class="profile-list__count">${items ? items.length : ''}</span></h3>
+    ${!items ? html`<p class="profile-note">Loading…</p>`
+      : items.length ? html`<ul>${items.map((item) => html`<${GithubItemRow} key=${item.url} item=${item} />`)}</ul>`
+      : html`<p class="profile-note">${empty}</p>`}
+  </section>`;
+}
+
+function ProfileGithubAccount({ account }) {
+  const [error, setError] = useState(null);
+  if (!account) return html`<p class="profile-note">Loading…</p>`;
+  const submit = (event, type, field) => {
+    event.preventDefault();
+    const value = event.currentTarget.elements[field].value.trim();
+    if (!value) return;
+    setError(null);
+    socket.send(JSON.stringify({ type, [field]: value }));
+    event.currentTarget.reset();
+  };
+  githubAccountError = setError;
+  const status = account.token ? html`Your own token, signed in as <strong>@${account.login}</strong>. What you do on GitHub from here shows as you.`
+    : account.login ? html`GitHub name <strong>@${account.login}</strong>${account.source === 'gh' ? ' (as GitHub is signed in on this server)' : ''}. Without your own token the chat acts on GitHub with this server's GitHub account.`
+    : html`No GitHub account yet. Enter your GitHub name to see what is assigned to you${account.canSetToken ? ', or add your own token' : ''}.`;
+  return html`<section class="profile-github">
+    <h3>GitHub</h3>
+    <p class="profile-note">${status}</p>
+    ${!account.token && account.source !== 'gh'
+      ? html`<form class="profile-form" onSubmit=${(e) => submit(e, 'set_github_login', 'login')}>
+          <input name="login" type="text" autocomplete="username" spellcheck="false" placeholder="GitHub name" aria-label="GitHub name" />
+          <button type="submit">Save</button>
+        </form>`
+      : null}
+    ${account.canSetToken
+      ? html`<form class="profile-form" autocomplete="off" onSubmit=${(e) => submit(e, 'set_github_token', 'token')}>
+          <input name="token" type="password" autocomplete="off" spellcheck="false" placeholder=${account.token ? 'Replace your token' : 'Paste your GitHub token'} aria-label="GitHub token" />
+          <button type="submit">${account.token ? 'Replace' : 'Save'}</button>
+        </form>
+        ${account.token ? html`<button type="button" class="profile-remove" onClick=${() => socket.send(JSON.stringify({ type: 'remove_github_token' }))}>Remove token</button>` : null}
+        <p class="profile-note profile-note--small">A fine-grained token from GitHub (Settings → Developer settings → Fine-grained tokens), limited to the repositories you work in, with read and write access to Issues and Pull requests (and Projects, to move cards on a board). It is kept in your account on this server only and used only for what you do in this chat.</p>`
+      : null}
+    ${error ? html`<p class="profile-error" role="alert">${error}</p>` : null}
+  </section>`;
+}
+let githubAccountError = null;
+
+function renderProfileView() {
+  let panel = artifactViewerEl.querySelector('.artifact-viewer__panel--profile');
+  if (!panel) {
+    panel = document.createElement('div');
+    panel.className = 'artifact-viewer__panel artifact-viewer__panel--profile';
+    panel.setAttribute('role', 'dialog');
+    panel.setAttribute('aria-modal', 'true');
+    panel.setAttribute('aria-label', 'Profile');
+    artifactViewerEl.replaceChildren(panel);
+  }
+  const { account, lists, error } = githubProfile;
+  render(html`
+    <div class="artifact-viewer__header">
+      <h2>${profileDisplayName()}</h2>
+      <button type="button" onClick=${closeArtifact}>Close</button>
+    </div>
+    <div class="artifact-viewer__body profile-body">
+      <${ProfileGithubAccount} account=${account} />
+      ${account?.login
+        ? html`
+            ${error ? html`<p class="profile-error" role="alert">${error === 'unavailable' ? 'GitHub needs the GitHub CLI (gh) on this server.' : 'Could not load from GitHub just now.'}</p>` : null}
+            <${GithubList} title="Issues assigned to you" items=${lists?.issues} empty="No open issues assigned to you." />
+            <${GithubList} title="Pull requests assigned to you" items=${lists?.pulls} empty="No open pull requests assigned to you." />
+            <${GithubList} title="Waiting for your review" items=${lists?.reviews} empty="No pull requests waiting for your review." />
+            <button type="button" class="profile-refresh" onClick=${() => { githubProfile.lists = null; renderProfileView(); loadGithubProfile(); }}>Refresh</button>
+          `
+        : null}
+    </div>
+  `, panel);
 }
 
 function closeArtifact() {
@@ -5795,6 +5927,35 @@ function renderChannelsSection() {
 
   if (showChannelForm) sidebarEl.appendChild(channelFormEl());
 
+  // The person's profile: their GitHub account and what is assigned to them.
+  {
+    const header = document.createElement('div');
+    header.className = 'sidebar-section-header';
+    header.textContent = 'You';
+    sidebarEl.appendChild(header);
+    const entry = document.createElement('button');
+    entry.type = 'button';
+    entry.className = 'open-questions-entry profile-entry';
+    const name = profileDisplayName();
+    entry.appendChild(avatarEl({ id: 'human:you', name, hasAvatar: false }));
+    const label = document.createElement('span');
+    label.className = 'profile-entry__label';
+    const login = githubProfile.account?.login;
+    label.textContent = login ? `${name} · @${login}` : name;
+    entry.appendChild(label);
+    const waiting = githubProfile.lists ? githubProfile.lists.issues.length + githubProfile.lists.pulls.length + githubProfile.lists.reviews.length : 0;
+    if (waiting) {
+      const badge = document.createElement('span');
+      badge.className = 'open-questions-entry__count';
+      badge.textContent = String(waiting);
+      badge.title = 'Open issues and pull requests assigned to you or waiting for your review';
+      entry.appendChild(badge);
+    }
+    entry.setAttribute('aria-label', `Profile${waiting ? `, ${waiting} waiting for you on GitHub` : ''}`);
+    entry.addEventListener('click', openProfileView);
+    sidebarEl.appendChild(entry);
+  }
+
   // The team's open questions (team room only): one entry with a count.
   if (openQuestions) {
     const header = document.createElement('div');
@@ -5953,7 +6114,9 @@ function channelFormEl() {
 // which belongs to first load, not to every refresh.
 async function loadRoster({ preserveSelection = false } = {}) {
   const statusRes = await fetch('api/status');
-  const { persisted, teamName, version, claudeToken, pushKey: serverPushKey } = await statusRes.json();
+  const { persisted, teamName, version, claudeToken, pushKey: serverPushKey, person } = await statusRes.json();
+  personName = person || '';
+  loadGithubProfile();
   fetch('api/open-questions')
     .then((r) => r.json())
     .then((list) => {
