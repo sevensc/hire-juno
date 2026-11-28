@@ -300,6 +300,10 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
   const getWorktreeStmt = db.prepare(
     'SELECT path, branch, repo_path AS repoPath FROM conversation_worktrees WHERE colleague_id = ? AND session_id = ?'
   );
+  const allWorktreesStmt = db.prepare(
+    'SELECT colleague_id AS colleagueId, session_id AS sessionId, path, branch, repo_path AS repoPath FROM conversation_worktrees'
+  );
+  const clearWorktreeStmt = db.prepare('DELETE FROM conversation_worktrees WHERE colleague_id = ? AND session_id = ?');
   const setWorktreeStmt = db.prepare(
     `INSERT INTO conversation_worktrees (colleague_id, session_id, path, branch, repo_path) VALUES (?, ?, ?, ?, ?)
      ON CONFLICT(colleague_id, session_id) DO UPDATE SET path = excluded.path, branch = excluded.branch, repo_path = excluded.repo_path`
@@ -577,6 +581,14 @@ export function openStore({ workforceId, baseDir = join(homedir(), '.hire-juno')
     // (repoPath null for rows from before it was saved), or null.
     getWorktree(colleagueId, sessionId) {
       return getWorktreeStmt.get(colleagueId, sessionId || DEFAULT_SESSION_ID) ?? null;
+    },
+    // Every conversation's worktree, for the cleanup when its PR is done.
+    listWorktrees() {
+      return allWorktreesStmt.all();
+    },
+    // Forgets a conversation's worktree (after it was removed from disk).
+    clearWorktree(colleagueId, sessionId) {
+      clearWorktreeStmt.run(colleagueId, sessionId || DEFAULT_SESSION_ID);
     },
     setWorktree(colleagueId, sessionId, path, branch, repoPath = null) {
       setWorktreeStmt.run(colleagueId, sessionId || DEFAULT_SESSION_ID, path, branch, repoPath);

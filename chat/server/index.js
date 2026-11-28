@@ -52,7 +52,9 @@ import { extractMentions, extractVocativeAddresses } from './mentions.js';
 import { findLayout, readRoster, readRosterCard, resolveAvatarPath } from './roster.js';
 import { ATTACHMENT_MIME_TYPES, DEFAULT_SESSION_ID, openStore } from './store.js';
 import { resolveWorkforce } from './workforceId.js';
-import { activateWorktree, canOfferWorktree, worktreeIsStartRepo } from './useWorktree.js';
+import { activateGithubWorktree, activateWorktree, canOfferWorktree, worktreeIsStartRepo } from './useWorktree.js';
+import { createGithubRepos } from './githubRepos.js';
+import { cleanUpFinishedWorktrees, worktreeOnClose } from './worktreeCleanup.js';
 import { currentBranch, gitRoot, resolveGitDir } from './worktree.js';
 import { addWorkforce, listWorkforces, removeWorkforce, setActiveWorkforce } from '../../shared/workforceRegistry.js';
 import { getOrCreateSession, saveSessionPort } from '../../shared/chatSessions.js';
@@ -702,6 +704,8 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
     const githubAssigned = createGithubAssigned({ env: githubEnv });
     // What a preview card can do: close/reopen, labels, assignees, board column.
     const githubActions = createGithubActions({ env: githubEnv });
+    // GitHub repositories as the base of a conversation's worktree.
+    const githubRepos = createGithubRepos({ env: githubEnv });
     const githubAccountChanged = () => {
       githubPreview.clear();
       githubSearch.clear();
@@ -1102,6 +1106,20 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
           return;
         }
 
+        if (req.method === 'GET' && route === 'api/github-repos') {
+          // The repositories a conversation's worktree can start from: those
+          // of the workforce repo's GitHub account.
+          const owner = workforceGithubOwner();
+          let body;
+          try {
+            body = { owner, repos: owner ? await githubRepos.list(owner) : [] };
+          } catch (err) {
+            body = { owner, repos: [], error: err.code === 'ENOENT' ? 'unavailable' : 'failed' };
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end(JSON.stringify(body));
+          return;
+        }
+
         if (req.method === 'GET' && route === 'api/github-options') {
           // The choices for a card's Labels, Assign and Board menus.
           const ref = cleanGithubRef(Object.fromEntries(url.searchParams));
@@ -1420,6 +1438,28 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
           },
         })
       : null;
+
+    // Worktrees whose pull request is merged or closed are removed (rule 2
+    // in worktreeCleanup.js): checked a minute after start, then every five
+    // minutes. The conversation is told, and its next message runs outside
+    // the removed folder.
+    const checkFinishedWorktrees = () =>
+      cleanUpFinishedWorktrees({
+        store,
+        repos: githubRepos,
+        isBusy: (colleagueId, sessionId) => Boolean(adapters.get(adapterKey(colleagueId, sessionId))?.busy),
+        onRemoved: ({ colleagueId, sessionId, branch, pr }) => {
+          const key = adapterKey(colleagueId, sessionId);
+          adapters.get(key)?.close?.();
+          adapters.delete(key);
+          const text = `Work done: pull request #${pr.number} is ${pr.state === 'MERGED' ? 'merged' : 'closed'}, so the worktree of branch ${branch} was removed. The next message runs in the workforce folder again.`;
+          store.appendMessage(colleagueId, sessionId, 'system', text);
+          broadcast({ colleagueId, sessionId, type: 'message', role: 'system', text });
+          broadcast({ type: 'worktree_changed', colleagueId, sessionId, branch: null, path: null, repoName: null });
+        },
+      }).catch((err) => console.error(`Worktree cleanup: ${err.message}`));
+    setTimeout(checkFinishedWorktrees, 60 * 1000).unref?.();
+    setInterval(checkFinishedWorktrees, 5 * 60 * 1000).unref?.();
 
     // The person's own message in the room: posted there (it comes back as
     // the room's echo, which is what the tabs show), then every colleague it
@@ -1923,6 +1963,13 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
               fail('She is still answering. End the session once she is done.');
               return;
             }
+            // Its worktree goes with it, unless work would be lost: then the
+            // tab asks first and sends `discard` (see worktreeCleanup.js).
+            const onClose = worktreeOnClose(store, colleagueId, sessionId, { discard: payload.discard === true });
+            if (onClose.action === 'confirm') {
+              ws.send(JSON.stringify({ type: 'session_close_confirm', colleagueId, sessionId, dirty: onClose.dirty, unpushed: onClose.unpushed }));
+              return;
+            }
             adapter?.close?.();
             adapters.delete(key);
             handovers.remove(key);
@@ -2254,15 +2301,28 @@ export function runChatServer({ targetDir = process.cwd(), openBrowser = true, o
               return;
             }
             const key = adapterKey(colleagueId, sessionId);
-            const result = activateWorktree({
-              store,
-              workforceId: workforce?.id,
-              repoDir: targetDir,
-              repoPath: typeof payload.repoPath === 'string' && payload.repoPath.trim() ? payload.repoPath.trim() : undefined,
-              colleagueId,
-              sessionId,
-              busy: Boolean(adapters.get(key)?.busy),
-            });
+            // From a GitHub repository (its clone, fetched first) or from a
+            // repo on this machine (the workforce folder or a given path).
+            const result = typeof payload.githubRepo === 'string' && payload.githubRepo.trim()
+              ? await activateGithubWorktree({
+                  store,
+                  repos: githubRepos,
+                  workforceId: workforce?.id,
+                  githubRepo: payload.githubRepo.trim(),
+                  colleagueId,
+                  sessionId,
+                  busy: Boolean(adapters.get(key)?.busy),
+                  onProgress: (message) => broadcast({ type: 'worktree_progress', colleagueId, sessionId, message }),
+                })
+              : activateWorktree({
+                  store,
+                  workforceId: workforce?.id,
+                  repoDir: targetDir,
+                  repoPath: typeof payload.repoPath === 'string' && payload.repoPath.trim() ? payload.repoPath.trim() : undefined,
+                  colleagueId,
+                  sessionId,
+                  busy: Boolean(adapters.get(key)?.busy),
+                });
             if (!result.ok) {
               fail(result.message);
               return;

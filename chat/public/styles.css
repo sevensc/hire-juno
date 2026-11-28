@@ -3771,3 +3771,17 @@ a.gh-card:active, .gh-card__link:active { filter: brightness(0.92); }
 @media (hover: hover) { .media-link:hover { background: var(--bg-message); } }
 .media-link__title { font-weight: 600; overflow-wrap: anywhere; }
 .media-link__kind { font-size: 0.72rem; font-weight: 600; color: var(--accent); text-transform: uppercase; letter-spacing: 0.02em; }
+
+/* Worktree from a GitHub repository (renderConvSettingsWorktree). */
+.worktree-repo-select {
+  width: 100%;
+  min-height: 2.75rem;
+  margin: 0.3rem 0;
+  padding: 0 0.6rem;
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+}
+.model-picker__progress { color: var(--fg-muted); }

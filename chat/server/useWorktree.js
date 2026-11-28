@@ -8,6 +8,7 @@ import { existsSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, isAbsolute, join as joinPath, sep } from 'node:path';
 
+import { parseRepoSlug } from './githubRepos.js';
 import { chatBranchName, createWorktree, gitRoot, worktreeFolderName, worktreesDir } from './worktree.js';
 
 // Whether a conversation could get a worktree: a workforce id to keep it
@@ -92,4 +93,37 @@ export function activateWorktree({ store, workforceId, repoDir, repoPath, collea
   }
   store.setWorktree(colleagueId, sessionId, path, branch, source);
   return { ok: true, created: true, branch, path, repoPath: source };
+}
+
+// Like activateWorktree, with a GitHub repository ("owner/name") as the
+// base: its local clone is made or fetched first (githubRepos.ensureClone),
+// and the new branch starts from the remote's default branch, so the work
+// begins on the current state of GitHub. Async: a first clone takes a while.
+// `onProgress(message)` says what is happening.
+export async function activateGithubWorktree({ store, repos, workforceId, githubRepo, colleagueId, sessionId, busy = false, onProgress = () => {} }) {
+  const existing = store.getWorktree(colleagueId, sessionId);
+  if (existing) return { ok: true, created: false, branch: existing.branch, path: existing.path, repoPath: existing.repoPath };
+  if (!workforceId) return { ok: false, message: 'A worktree needs a workforce id to be stored under, and this workforce has none yet.' };
+  const repo = parseRepoSlug(githubRepo);
+  if (!repo) return { ok: false, message: 'That is not a GitHub repository (owner/name).' };
+  if (busy) return { ok: false, message: 'She is still answering. Try again once the reply is finished.' };
+  let clone;
+  try {
+    onProgress(`Getting ${repo.slug} from GitHub…`);
+    clone = await repos.ensureClone(workforceId, repo);
+  } catch (err) {
+    return { ok: false, message: `Could not get ${repo.slug}: ${String(err.stderr || err.message).trim().split('\n').pop()}` };
+  }
+  // The conversation may have got a worktree while the clone was fetched.
+  const meanwhile = store.getWorktree(colleagueId, sessionId);
+  if (meanwhile) return { ok: true, created: false, branch: meanwhile.branch, path: meanwhile.path, repoPath: meanwhile.repoPath };
+  const branch = chatBranchName(colleagueId, sessionId);
+  const path = joinPath(worktreesDir(workforceId), worktreeFolderName(colleagueId, sessionId));
+  try {
+    createWorktree({ repoDir: clone.dir, worktreeDir: path, branch, start: clone.start });
+  } catch (err) {
+    return { ok: false, message: `Could not create the worktree: ${(err.stderr || err.message).toString().trim()}` };
+  }
+  store.setWorktree(colleagueId, sessionId, path, branch, clone.dir);
+  return { ok: true, created: true, branch, path, repoPath: clone.dir, base: clone.start };
 }

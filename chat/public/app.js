@@ -7183,7 +7183,40 @@
       convSettingsWorktreeEl.append(hint);
       return;
     }
-    hint.textContent = "Creates a git worktree and a branch for this conversation. She keeps what she knows and works there from her next message on. There is no way back from here yet. One worktree per conversation. Leave the path empty for the folder this chat was started in; for another repo, enter its absolute path.";
+    hint.textContent = "Creates a git worktree and a branch for this conversation. She keeps what she knows and works there from her next message on. One worktree per conversation. It is removed again when the branch's pull request is merged or closed, or when the conversation is closed (you are asked first if work would be lost).";
+    const repoSelect = document.createElement("select");
+    repoSelect.setAttribute("aria-label", "GitHub repository");
+    repoSelect.className = "worktree-repo-select";
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "Loading GitHub repositories\u2026";
+    repoSelect.appendChild(placeholder);
+    fetch("api/github-repos").then((r3) => r3.json()).then((data) => {
+      placeholder.textContent = data.repos?.length ? `A GitHub repository${data.owner ? ` of ${data.owner}` : ""}\u2026` : data.error === "unavailable" ? "GitHub needs the GitHub CLI (gh) here" : "No GitHub repositories found";
+      for (const repo of data.repos || []) {
+        const option = document.createElement("option");
+        option.value = repo.slug;
+        option.textContent = `${repo.slug}${repo.private ? " (private)" : ""}`;
+        if (repo.description) option.title = repo.description;
+        repoSelect.appendChild(option);
+      }
+    }).catch(() => {
+      placeholder.textContent = "Could not load GitHub repositories";
+    });
+    const repoButton = document.createElement("button");
+    repoButton.type = "button";
+    repoButton.textContent = "Work in a worktree of this repository";
+    repoButton.addEventListener("click", () => {
+      if (!repoSelect.value) return;
+      error2.hidden = true;
+      error2.classList.remove("model-picker__progress");
+      repoButton.disabled = true;
+      button.disabled = true;
+      socket.send(JSON.stringify({ type: "use_worktree", colleagueId, sessionId, githubRepo: repoSelect.value }));
+    });
+    const orLocal = document.createElement("p");
+    orLocal.className = "model-picker__hint";
+    orLocal.textContent = "Or a repository on this machine: leave the path empty for the folder this chat was started in, or enter its absolute path.";
     const pathInput = document.createElement("input");
     pathInput.type = "text";
     pathInput.placeholder = "Repo path (empty: the folder this chat was started in)";
@@ -7198,12 +7231,14 @@
     error2.hidden = true;
     button.addEventListener("click", () => {
       error2.hidden = true;
+      error2.classList.remove("model-picker__progress");
       button.disabled = true;
+      repoButton.disabled = true;
       const repoPath = pathInput.value.trim();
       socket.send(JSON.stringify({ type: "use_worktree", colleagueId, sessionId, ...repoPath ? { repoPath } : {} }));
     });
-    convSettingsWorktreeEl.append(pathInput, button, hint, error2);
-    worktreeForm = { colleagueId, sessionId, button, error: error2 };
+    convSettingsWorktreeEl.append(hint, repoSelect, repoButton, orLocal, pathInput, button, error2);
+    worktreeForm = { colleagueId, sessionId, button, repoButton, error: error2 };
   }
   var cliInfo = /* @__PURE__ */ new Map();
   async function loadCliInfo(colleagueId, sessionId) {
@@ -8686,10 +8721,26 @@
       refreshSettingsModalIfOpen();
       return;
     }
+    if (update.type === "worktree_progress") {
+      const form2 = worktreeForm;
+      if (form2 && form2.colleagueId === update.colleagueId && form2.sessionId === update.sessionId) {
+        form2.error.hidden = false;
+        form2.error.classList.add("model-picker__progress");
+        form2.error.textContent = update.message;
+      }
+      return;
+    }
+    if (update.type === "session_close_confirm") {
+      const what = [update.dirty ? "changes that are not committed" : "", update.unpushed ? `${update.unpushed} commit${update.unpushed === 1 ? "" : "s"} not pushed` : ""].filter(Boolean).join(" and ");
+      if (window.confirm(`Its worktree has ${what}. Close anyway and delete the worktree and its branch? That work is lost.`)) {
+        socket.send(JSON.stringify({ type: "close_session", colleagueId: update.colleagueId, sessionId: update.sessionId, discard: true }));
+      }
+      return;
+    }
     if (update.type === "worktree_changed") {
       const key2 = convKey(update.colleagueId, update.sessionId);
       const info = worktreeInfo.get(key2) || { available: true };
-      worktreeInfo.set(key2, { ...info, available: true, worktree: { branch: update.branch, path: update.path, repoName: update.repoName } });
+      worktreeInfo.set(key2, { ...info, available: true, worktree: update.branch ? { branch: update.branch, path: update.path, repoName: update.repoName } : null });
       if (key2 === activeConvKey()) {
         renderPaneHeader();
         refreshDiffIfOpen();
@@ -8740,6 +8791,8 @@
       const form2 = worktreeForm;
       if (form2 && form2.colleagueId === update.colleagueId && form2.sessionId === update.sessionId) {
         form2.button.disabled = false;
+        if (form2.repoButton) form2.repoButton.disabled = false;
+        form2.error.classList.remove("model-picker__progress");
         form2.error.textContent = update.message || "Could not create the worktree.";
         form2.error.hidden = false;
       }
