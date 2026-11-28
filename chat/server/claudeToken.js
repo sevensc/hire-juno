@@ -17,14 +17,19 @@ export function tokenFile(home = homedir()) {
   return join(home, '.hire-juno', 'claude-token');
 }
 
-// A token is one line of printable characters without spaces. The bounds
-// only catch an obviously wrong paste (a sentence, a whole terminal
-// screen); whether the token works shows on the next message.
+// A token is one line of printable characters without spaces, as
+// `claude setup-token` prints it: it starts with "sk-ant-" (its sign-in
+// tokens with "sk-ant-oat01-"). Quotes around it and a "Bearer " in front,
+// both easily copied along, are taken off. A paste that is something else
+// (another kind of key, a cut-off token) is refused here, before it would
+// fail every colleague's next message; whether a well-formed token is still
+// valid shows on the next message.
 export function validToken(value) {
   if (typeof value !== 'string') return null;
-  const token = value.trim();
-  if (token.length < 20 || token.length > 500) return null;
+  const token = value.trim().replace(/^bearer\s+/i, '').replace(/^(["'])(.*)\1$/, '$2').trim();
+  if (token.length < 40 || token.length > 500) return null;
   if (!/^[\x21-\x7e]+$/.test(token)) return null;
+  if (!token.startsWith('sk-ant-')) return null;
   return token;
 }
 
@@ -44,7 +49,7 @@ export function loadToken({ env = process.env, home = homedir() } = {}) {
 
 export function saveToken(value, { env = process.env, home = homedir() } = {}) {
   const token = validToken(value);
-  if (!token) throw new Error('That does not look like a token from `claude setup-token`.');
+  if (!token) throw new Error('That does not look like a token from `claude setup-token`: those start with sk-ant-oat01- and are one line. Copy the whole line it prints.');
   const file = tokenFile(home);
   mkdirSync(join(home, '.hire-juno'), { recursive: true, mode: 0o700 });
   writeFileSync(file + '.new', token + '\n', { mode: 0o600 });
